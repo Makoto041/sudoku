@@ -11,7 +11,8 @@ import {
   startDaily,
   submitDaily,
 } from "./ranking";
-import { MemoryStore } from "./store";
+import { scoreMoves, type MoveLog } from "@/lib/game/score";
+import { MemoryStore, fromRankValue, rankValue } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
 const BOB = "22222222-2222-4222-8222-222222222222";
@@ -172,5 +173,63 @@ describe("sanitizeName", () => {
     expect(sanitizeName("👨\u200d👩\u200d👧")).toBe("👨\u200d👩\u200d👧");
     expect(sanitizeName("\u3164\u3164")).toBeNull();
     expect(sanitizeName("\u0301\u0301")).toBeNull();
+  });
+});
+
+describe("スコア", () => {
+  it("並べ順の値から点数とタイムを元に戻せる", () => {
+    for (const [points, timeMs] of [
+      [0, 15_000],
+      [12_345, 600_000],
+      [99_999, 86_400_000],
+      [1, 0],
+    ]) {
+      expect(fromRankValue(rankValue(points, timeMs))).toEqual({ points, timeMs });
+    }
+    // 点数が高いほうが上、同点ならタイムが速いほうが上
+    expect(rankValue(200, 900_000)).toBeLessThan(rankValue(100, 20_000));
+    expect(rankValue(100, 20_000)).toBeLessThan(rankValue(100, 30_000));
+  });
+
+  it("手の記録から点数を計算し、点数の高い順に並べる（端末の表示と同じ計算）", async () => {
+    const store = new MemoryStore();
+    const a = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const b = await startDaily(store, { playerId: BOB, difficulty: "easy" }, T0);
+    const puzzle = parseGrid(a.puzzle);
+    const solution = solve(puzzle)!;
+    const empties = puzzle.flatMap((v, i) => (v ? [] : [i]));
+    // アリス：ゆっくり（20 秒おき）。ボブ：速い（2 秒おき）が最初に 2 回間違える
+    const slow: MoveLog = empties.map((c, k) => [(k + 1) * 20_000, c, solution[c]]);
+    const fastWithMistakes: MoveLog = [
+      [1000, empties[0], (solution[empties[0]] % 9) + 1],
+      [1500, empties[1], (solution[empties[1]] % 9) + 1],
+      ...empties.map((c, k): [number, number, number] => [(k + 1) * 2000, c, solution[c]]),
+    ];
+    const grid = serializeGrid(solution);
+    const ra = await submitDaily(
+      store,
+      { sessionId: a.sessionId, playerId: ALICE, grid, name: "アリス", moves: slow },
+      T0 + empties.length * 20_000 + 1000,
+    );
+    const rb = await submitDaily(
+      store,
+      { sessionId: b.sessionId, playerId: BOB, grid, name: "ボブ", moves: fastWithMistakes },
+      T0 + empties.length * 2000 + 1000,
+    );
+    expect(ra.points).toBe(scoreMoves(puzzle, solution, "easy", slow, ra.timeMs).points);
+    expect(rb.points).toBeGreaterThan(ra.points);
+    const board = await getLeaderboard(store, { scope: "daily", difficulty: "easy", date: "2026-10-15" }, T0);
+    expect(board.entries.map((e) => e.name)).toEqual(["ボブ", "アリス"]);
+    expect(board.entries[0].points).toBe(rb.points);
+  });
+
+  it("手の記録の形が不正なら 400", async () => {
+    const store = new MemoryStore();
+    const a = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const grid = solutionOf(a.puzzle);
+    const base = { sessionId: a.sessionId, playerId: ALICE, grid, name: "a" };
+    await expectStatus(submitDaily(store, { ...base, moves: "x" }, T0 + 60_000), 400);
+    await expectStatus(submitDaily(store, { ...base, moves: [[0, 81, 1]] }, T0 + 60_000), 400);
+    await expectStatus(submitDaily(store, { ...base, moves: [[0, 1, 10]] }, T0 + 60_000), 400);
   });
 });

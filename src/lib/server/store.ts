@@ -15,7 +15,20 @@ export type Session = {
 export type BoardKey =
   { scope: "daily"; date: string; difficulty: Difficulty } | { scope: "best"; difficulty: Difficulty };
 
-export type BoardRow = { playerId: string; timeMs: number };
+export type BoardRow = { playerId: string; timeMs: number; points: number };
+
+/**
+ * 並べ順の値。点数が高いほど、同点ならタイムが速いほど小さくなる（小さいほど上位）。
+ * timeMs は 10 億 ms（約 11 日）未満なので、点数と時間を 1 つの数に詰めて元に戻せる
+ */
+const SCALE = 1e9;
+export function rankValue(points: number, timeMs: number): number {
+  return Math.min(SCALE - 1, Math.max(0, Math.round(timeMs))) - Math.max(0, Math.round(points)) * SCALE;
+}
+export function fromRankValue(v: number): { points: number; timeMs: number } {
+  const points = Math.max(0, Math.ceil(-v / SCALE));
+  return { points, timeMs: v + points * SCALE };
+}
 
 /** ランキングの保存先。本番は Upstash Redis、ローカル開発とテストはメモリ */
 export interface RankingStore {
@@ -24,11 +37,14 @@ export interface RankingStore {
   getSession(id: string): Promise<Session | null>;
   /** セッションを完了にする。既に完了していたら false */
   finishSession(id: string, finishedAt: number): Promise<boolean>;
-  /** 記録を追加。日次は最初の 1 回、歴代はより速いときだけ更新する */
+  /** 記録を追加。日次は最初の 1 回、歴代はより良い（点数が高い、同点なら速い）ときだけ更新する */
   record(date: string, difficulty: Difficulty, row: BoardRow): Promise<void>;
   top(board: BoardKey, limit: number): Promise<BoardRow[]>;
   /** 0 始まりの順位と記録。載っていなければ null */
-  position(board: BoardKey, playerId: string): Promise<{ index: number; timeMs: number } | null>;
+  position(
+    board: BoardKey,
+    playerId: string,
+  ): Promise<{ index: number; timeMs: number; points: number } | null>;
   size(board: BoardKey): Promise<number>;
   getNames(playerIds: string[]): Promise<Record<string, string>>;
   setName(playerId: string, name: string): Promise<void>;
@@ -41,8 +57,9 @@ const SESSION_TTL_SEC = 3 * 24 * 60 * 60;
 const DAILY_TTL_SEC = 400 * 24 * 60 * 60;
 const PREFIX = "sdk";
 
+// スコア制になってからの表（タイム順だった頃の sdk:lb / sdk:best は使わない）
 const boardKey = (b: BoardKey) =>
-  b.scope === "daily" ? `${PREFIX}:lb:${b.date}:${b.difficulty}` : `${PREFIX}:best:${b.difficulty}`;
+  b.scope === "daily" ? `${PREFIX}:lbs:${b.date}:${b.difficulty}` : `${PREFIX}:bests:${b.difficulty}`;
 const startKey = (s: Pick<Session, "playerId" | "date" | "difficulty">) =>
   `${PREFIX}:start:${s.date}:${s.difficulty}:${s.playerId}`;
 const sessionKey = (id: string) => `${PREFIX}:sess:${id}`;
@@ -95,13 +112,10 @@ class RedisStore implements RankingStore {
   async record(date: string, difficulty: Difficulty, row: BoardRow) {
     const daily = boardKey({ scope: "daily", date, difficulty });
     const p = this.redis.pipeline();
-    p.zadd(daily, { nx: true }, { score: row.timeMs, member: row.playerId });
+    const value = rankValue(row.points, row.timeMs);
+    p.zadd(daily, { nx: true }, { score: value, member: row.playerId });
     p.expire(daily, DAILY_TTL_SEC);
-    p.zadd(
-      boardKey({ scope: "best", difficulty }),
-      { lt: true },
-      { score: row.timeMs, member: row.playerId },
-    );
+    p.zadd(boardKey({ scope: "best", difficulty }), { lt: true }, { score: value, member: row.playerId });
     await p.exec();
   }
 
@@ -111,7 +125,7 @@ class RedisStore implements RankingStore {
     });
     const rows: BoardRow[] = [];
     for (let i = 0; i < flat.length; i += 2) {
-      rows.push({ playerId: String(flat[i]), timeMs: Number(flat[i + 1]) });
+      rows.push({ playerId: String(flat[i]), ...fromRankValue(Number(flat[i + 1])) });
     }
     return rows;
   }
@@ -123,7 +137,7 @@ class RedisStore implements RankingStore {
       this.redis.zscore(key, playerId),
     ]);
     if (index === null || score === null) return null;
-    return { index, timeMs: Number(score) };
+    return { index, ...fromRankValue(Number(score)) };
   }
 
   size(board: BoardKey) {
@@ -195,16 +209,17 @@ export class MemoryStore implements RankingStore {
 
   private sorted(b: BoardKey): BoardRow[] {
     return [...this.board(b)]
-      .map(([playerId, timeMs]) => ({ playerId, timeMs }))
-      .sort((x, y) => x.timeMs - y.timeMs || (x.playerId < y.playerId ? -1 : 1));
+      .sort(([pa, a], [pb, b2]) => a - b2 || (pa < pb ? -1 : 1))
+      .map(([playerId, v]) => ({ playerId, ...fromRankValue(v) }));
   }
 
   async record(date: string, difficulty: Difficulty, row: BoardRow) {
+    const value = rankValue(row.points, row.timeMs);
     const daily = this.board({ scope: "daily", date, difficulty });
-    if (!daily.has(row.playerId)) daily.set(row.playerId, row.timeMs);
+    if (!daily.has(row.playerId)) daily.set(row.playerId, value);
     const best = this.board({ scope: "best", difficulty });
     const prev = best.get(row.playerId);
-    if (prev === undefined || row.timeMs < prev) best.set(row.playerId, row.timeMs);
+    if (prev === undefined || value < prev) best.set(row.playerId, value);
   }
 
   async top(b: BoardKey, limit: number) {
@@ -214,7 +229,7 @@ export class MemoryStore implements RankingStore {
   async position(b: BoardKey, playerId: string) {
     const rows = this.sorted(b);
     const index = rows.findIndex((r) => r.playerId === playerId);
-    return index === -1 ? null : { index, timeMs: rows[index].timeMs };
+    return index === -1 ? null : { index, timeMs: rows[index].timeMs, points: rows[index].points };
   }
 
   async size(b: BoardKey) {
