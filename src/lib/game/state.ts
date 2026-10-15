@@ -1,4 +1,5 @@
 import { countSolutions, solve } from "@/lib/sudoku/solver";
+import { applyPlacement, emptyScore, type MoveLog, type ScoreDelta, type ScoreState } from "./score";
 import {
   PEERS,
   UNITS,
@@ -39,6 +40,10 @@ export type GameState = {
   finalMs: number | null;
   /** 日次：サーバーのセッション */
   daily: { sessionId: string; date: string; startedAt: number; clockOffset: number } | null;
+  /** スコア。古い保存データには無い（開いたときに withSolution で付ける） */
+  score?: ScoreState;
+  /** 日次：置いた手の記録。提出時にサーバーへ送り、サーバーがスコアを計算し直す */
+  moves?: MoveLog;
 };
 
 type Move = {
@@ -60,11 +65,14 @@ export type Effect =
       /** 同じ行・列・ブロックに同じ数字がある */
       conflict: boolean;
       units: number[][];
+      /** この手の得点（減点はマイナス）とユニットのボーナス */
+      points: number;
+      bonus: number;
     }
   | { kind: "note"; cell: number; digit: number; on: boolean }
   | { kind: "erase"; cell: number }
   | { kind: "undo"; cell: number }
-  | { kind: "hint"; cell: number; digit: number; units: number[][] }
+  | { kind: "hint"; cell: number; digit: number; units: number[][]; bonus: number }
   | { kind: "solved" }
   | { kind: "rewind"; steps: number }
   | { kind: "blocked" };
@@ -72,10 +80,11 @@ export type Effect =
 export type Action =
   | { type: "select"; cell: number | null }
   | { type: "move"; dr: number; dc: number }
-  | { type: "input"; digit: number; asNote?: boolean }
+  /** t は開始からの経過 ms（スコアの速さに使う。dispatch 側で付ける） */
+  | { type: "input"; digit: number; asNote?: boolean; t?: number }
   | { type: "erase" }
   | { type: "undo" }
-  | { type: "hint" }
+  | { type: "hint"; t?: number }
   | { type: "toggleNotes" }
   | { type: "pause" }
   | { type: "resume" }
@@ -109,16 +118,30 @@ export function newGame(input: {
     status: "playing",
     finalMs: null,
     daily: input.daily ?? null,
+    score: emptyScore(input.puzzle),
+    moves: [],
   };
 }
 
 export const isGiven = (s: GameState, i: number) => s.puzzle[i] !== 0;
 
-/** 解答を持っていなければ端末で解いて付ける（日次・古い保存データ用） */
+/**
+ * 解答とスコアを持っていなければ付ける（日次・古い保存データ用）。
+ * スコアが無い古いデータでは、すでに正しく埋まっているマスを 0 点の得点済みとして扱う
+ */
 export function withSolution(s: GameState): GameState {
-  if (s.solution) return s;
-  const solution = solve(s.puzzle);
-  return solution ? { ...s, solution } : s;
+  const solution = s.solution ?? solve(s.puzzle);
+  if (!solution) return s;
+  let score = s.score;
+  if (!score) {
+    const base = emptyScore(s.puzzle);
+    score = {
+      ...base,
+      scored: s.values.map((v, i) => (v && v === solution[i] ? "1" : base.scored[i])).join(""),
+    };
+  }
+  if (solution === s.solution && score === s.score) return s;
+  return { ...s, solution, score, moves: s.moves ?? [] };
 }
 
 /** その数字が間違いか。フリープレイは解答と比べ、日次は重複の有無で判断する */
@@ -145,7 +168,13 @@ export function isSolved(s: GameState, values: Grid = s.values): boolean {
   return findConflicts(values).size === 0;
 }
 
-function place(s: GameState, cell: number, digit: number, viaHint: boolean): [GameState, Effect[]] {
+function place(
+  s: GameState,
+  cell: number,
+  digit: number,
+  viaHint: boolean,
+  t: number,
+): [GameState, Effect[]] {
   const values = s.values.slice();
   const notes = s.notes.slice();
   const move: Move = { cell, prevValue: values[cell], prevNotes: notes[cell], clearedNotes: [] };
@@ -160,6 +189,10 @@ function place(s: GameState, cell: number, digit: number, viaHint: boolean): [Ga
   }
   const wrong = !viaHint && isWrong(s, cell, values);
   const conflict = PEERS[cell].some((p) => values[p] === digit);
+  let score = s.score;
+  let delta: ScoreDelta | null = null;
+  if (s.solution && score)
+    [score, delta] = applyPlacement(score, { cell, digit, t, viaHint }, s.solution, s.difficulty);
   const next: GameState = {
     ...s,
     values,
@@ -167,10 +200,24 @@ function place(s: GameState, cell: number, digit: number, viaHint: boolean): [Ga
     history: [...s.history, move],
     mistakes: s.mistakes + (wrong ? 1 : 0),
     hints: s.hints + (viaHint ? 1 : 0),
+    score,
+    // 日次はサーバーで計算し直すので、置いた手を残す
+    moves: s.mode === "daily" && !viaHint ? [...(s.moves ?? []), [Math.round(t), cell, digit]] : s.moves,
   };
   const units = wrong ? [] : completedUnits(next, values, cell);
   const effects: Effect[] = [
-    viaHint ? { kind: "hint", cell, digit, units } : { kind: "place", cell, digit, wrong, conflict, units },
+    viaHint
+      ? { kind: "hint", cell, digit, units, bonus: delta?.bonus ?? 0 }
+      : {
+          kind: "place",
+          cell,
+          digit,
+          wrong,
+          conflict,
+          units,
+          points: delta?.points ?? 0,
+          bonus: delta?.bonus ?? 0,
+        },
   ];
   if (isSolved(next, values)) {
     next.status = "solved";
@@ -223,7 +270,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         ];
       }
       if (s.values[cell] === action.digit) return erase(s, cell);
-      return place(s, cell, action.digit, false);
+      return place(s, cell, action.digit, false, action.t ?? 0);
     }
     case "erase": {
       const cell = s.selected;
@@ -250,7 +297,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
       const cell = pickHintCell(s);
       if (cell === null) return [s, [{ kind: "blocked" }]];
-      const [next, effects] = place({ ...s, selected: cell }, cell, s.solution[cell], true);
+      const [next, effects] = place({ ...s, selected: cell }, cell, s.solution[cell], true, action.t ?? 0);
       return [next, effects];
     }
   }
