@@ -17,7 +17,7 @@ async function shot(page: Page, name: string) {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png` });
 }
 
-type Saved = { puzzle: number[]; solution: number[] | null; values: number[] };
+type Saved = { puzzle: number[]; solution: number[] | null; values: number[]; history: unknown[] };
 
 async function savedGame(page: Page, key: string): Promise<Saved> {
   const raw = await page.evaluate((k) => localStorage.getItem(k), key);
@@ -114,4 +114,71 @@ test("鬼の問題を作って遊び始められる", async ({ page }) => {
   await expect(page.locator(".bar-main")).toHaveText("鬼");
   const g = await savedGame(page, "sudoku:free");
   expect(g.puzzle.filter((v) => v !== 0).length).toBeLessThanOrEqual(28);
+});
+
+test("シートの背景をタップしても、下のボタンが押されない", async ({ page }, info) => {
+  test.skip(!info.project.use.hasTouch, "タッチ端末だけで起きる");
+  await page.goto("/");
+  await page.evaluate(() =>
+    localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
+  );
+  await page.reload();
+  let started = false;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/daily/start")) started = true;
+  });
+  const row = (await page.locator(".daily-row").first().boundingBox())!;
+  await page.getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
+  await page.touchscreen.tap(row.x + row.width / 2, row.y + row.height / 2);
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  await page.waitForTimeout(500);
+  expect(started).toBe(false);
+  await expect(page.getByRole("heading", { name: "数独" })).toBeVisible();
+});
+
+test("間違えたマスに正しい数字を入れ直すと揺れない", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cell = g.puzzle.indexOf(0);
+  const cells = page.getByRole("gridcell");
+  await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${(g.solution![cell] % 9) + 1}`);
+  await expect(cells.nth(cell).locator(".digit")).toHaveClass(/shake/);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press(`Digit${g.solution![cell]}`);
+  await expect(cells.nth(cell).locator(".digit")).not.toHaveClass(/shake/);
+});
+
+test("端末の日付がずれていても、今日の一問の続きが消えない", async ({ page }, info) => {
+  // 端末の時計だけ日本時間の前日 22:00 にする（サーバーは実際の時刻）
+  const jst = new Date(Date.now() + 9 * 3600 * 1000);
+  await page.clock.setFixedTime(
+    new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate() - 1, 22 - 9)),
+  );
+  await page.goto("/");
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`日付${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByText("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  await page.getByRole("gridcell").nth(g.puzzle.indexOf(0)).dispatchEvent("pointerdown", {
+    pointerType: "touch",
+    button: 0,
+  });
+  await page.keyboard.press("Digit5");
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await expect(page.locator(".daily-row").first()).toContainText("続ける");
+  await page.locator(".daily-row").first().click();
+  await expect(page.getByText("ランキング戦")).toBeVisible();
+  const after = await savedGame(page, key);
+  expect(after.values[g.puzzle.indexOf(0)]).toBe(5);
 });
