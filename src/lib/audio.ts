@@ -1,6 +1,6 @@
 /**
  * 効果音はすべて Web Audio でその場で合成する（音声ファイルなし）。
- * 数字ごとにペンタトニックの音程を割り当て、置くたびに柔らかいマリンバ風の音が鳴る。
+ * 数字を置くと、碁石を盤に打ったような「パチッ」という音が鳴る（数字ごとに響きの高さが少し違う）。
  * iOS は最初のタップで AudioContext を再開しないと鳴らないので unlock() を入力イベントで呼ぶ。
  */
 
@@ -135,7 +135,16 @@ function tone(s: Ctx, o: ToneOptions) {
 
 function noise(
   s: Ctx,
-  o: { at?: number; duration: number; gain: number; from: number; to: number; q?: number },
+  o: {
+    at?: number;
+    duration: number;
+    gain: number;
+    from: number;
+    to: number;
+    q?: number;
+    attack?: number;
+    type?: BiquadFilterType;
+  },
 ) {
   const t = s.ctx.currentTime + (o.at ?? 0);
   const length = Math.max(1, Math.floor(s.ctx.sampleRate * o.duration));
@@ -145,27 +154,19 @@ function noise(
   const src = s.ctx.createBufferSource();
   src.buffer = buffer;
   const filter = s.ctx.createBiquadFilter();
-  filter.type = "bandpass";
+  filter.type = o.type ?? "bandpass";
   filter.Q.value = o.q ?? 1.2;
   filter.frequency.setValueAtTime(o.from, t);
   filter.frequency.exponentialRampToValueAtTime(o.to, t + o.duration);
   const g = s.ctx.createGain();
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(o.gain, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(o.gain, t + (o.attack ?? 0.004));
   g.gain.exponentialRampToValueAtTime(0.0001, t + o.duration);
   src.connect(filter);
   filter.connect(g);
   g.connect(s.dry);
   src.start(t);
   src.stop(t + o.duration + 0.02);
-}
-
-/** マリンバ風：基音 + 約 4 倍の倍音を短く減衰させ、打鍵のノイズを少し混ぜる */
-function mallet(s: Ctx, freq: number, at = 0, gain = 0.22, reverb = 0.35) {
-  tone(s, { freq, at, gain, decay: 0.42, reverb });
-  tone(s, { freq: freq * 3.93, at, gain: gain * 0.18, decay: 0.08 });
-  tone(s, { freq: freq * 2, at, gain: gain * 0.12, decay: 0.16, type: "triangle" });
-  noise(s, { at, duration: 0.018, gain: gain * 0.25, from: 4200, to: 2400, q: 2 });
 }
 
 /** ベル風：非整数倍音で金属的な余韻 */
@@ -176,6 +177,57 @@ function bell(s: Ctx, freq: number, at = 0, gain = 0.14, decay = 0.9) {
 }
 
 const pitch = (digit: number) => PENTATONIC[Math.min(8, Math.max(0, digit - 1))];
+
+/**
+ * 碁石を盤に打つ音。
+ *  - 当たった瞬間の「パチッ」：ごく短い高域のノイズ
+ *  - 石の硬い響き：2〜4kHz の短い音
+ *  - 盤（木）の胴鳴り：200〜500Hz の「コッ」と、少しの残響
+ * size で石の大きさ（重さ）、tone で響きの高さを変える。毎回ほんの少し揺らして機械的にしない
+ */
+function stone(s: Ctx, o: { at?: number; gain?: number; size?: number; tone?: number } = {}) {
+  const at = o.at ?? 0;
+  const g = o.gain ?? 0.42;
+  const size = o.size ?? 1;
+  const p = (o.tone ?? 1) * (0.985 + Math.random() * 0.03);
+  // パチッ
+  noise(s, {
+    at,
+    duration: 0.01,
+    gain: g * 1.6,
+    from: 7000 * p,
+    to: 3200 * p,
+    q: 0.7,
+    attack: 0.0005,
+    type: "highpass",
+  });
+  noise(s, { at, duration: 0.035, gain: g * 0.6, from: 2600 * p, to: 1500 * p, q: 1.6, attack: 0.0008 });
+  // 石の硬い響き
+  tone(s, { freq: 2380 * p, at, gain: g * 0.35, attack: 0.0008, decay: 0.035 });
+  tone(s, { freq: 3790 * p, at, gain: g * 0.2, attack: 0.0008, decay: 0.02 });
+  // 盤の胴鳴り
+  tone(s, {
+    freq: 520 * p,
+    toFreq: 470 * p,
+    at,
+    gain: g * 0.6 * size,
+    attack: 0.001,
+    decay: 0.09 * size,
+    reverb: 0.25,
+  });
+  tone(s, {
+    freq: 235 * p,
+    toFreq: 205 * p,
+    at,
+    gain: g * 0.55 * size,
+    attack: 0.0015,
+    decay: 0.16 * size,
+    reverb: 0.3,
+  });
+}
+
+/** 数字ごとの響きの高さ（1 で低め、9 で高め。差はわずか） */
+const stoneTone = (digit: number) => 0.93 + Math.min(8, Math.max(0, digit - 1)) * 0.018;
 
 export const sfx = {
   /** マスを選ぶ：木を軽く叩いたような短いクリック */
@@ -191,24 +243,17 @@ export const sfx = {
     if (!s) return;
     tone(s, { freq: 900, toFreq: 700, gain: 0.06, attack: 0.002, decay: 0.05, type: "triangle" });
   },
-  /** 数字を置く：数字ごとに違う音程 */
+  /** 数字を置く：碁石を打つ「パチッ」 */
   place(digit: number) {
     const s = ready();
     if (!s) return;
-    mallet(s, pitch(digit));
+    stone(s, { tone: stoneTone(digit) });
   },
-  /** メモ：1 オクターブ上の小さな粒 */
+  /** メモ：小さく軽い石。消すときはさらに控えめ */
   note(digit: number, on: boolean) {
     const s = ready();
     if (!s) return;
-    const f = pitch(digit) * 2;
-    tone(s, {
-      freq: on ? f : f * 0.94,
-      toFreq: on ? f * 1.02 : f * 0.9,
-      gain: 0.07,
-      decay: 0.09,
-      reverb: 0.2,
-    });
+    stone(s, { gain: on ? 0.16 : 0.1, size: 0.35, tone: stoneTone(digit) * 1.35 });
   },
   erase() {
     const s = ready();
@@ -249,7 +294,7 @@ export const sfx = {
     const s = ready();
     if (!s) return;
     const base = pitch(digit);
-    mallet(s, base, 0, 0.18);
+    stone(s, { tone: stoneTone(digit) });
     const steps = [1.25, 1.5, 2, 2.5, 3];
     for (let k = 0; k < Math.min(2 + count, steps.length); k++) {
       bell(s, base * steps[k], 0.07 + k * 0.065, 0.075, 0.7);
@@ -265,9 +310,10 @@ export const sfx = {
   solved() {
     const s = ready();
     if (!s) return;
-    const arp = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98, 2093.0];
-    arp.forEach((f, k) => mallet(s, f, k * 0.075, 0.17, 0.5));
-    const chordAt = arp.length * 0.075 + 0.05;
+    // 石を続けて打ち、最後に和音
+    const taps = 6;
+    for (let k = 0; k < taps; k++) stone(s, { at: k * 0.07, gain: 0.3 + k * 0.03, tone: 0.92 + k * 0.035 });
+    const chordAt = taps * 0.07 + 0.06;
     for (const f of [523.25, 659.25, 783.99, 987.77]) {
       tone(s, { freq: f, at: chordAt, gain: 0.05, attack: 0.05, decay: 1.6, reverb: 0.8 });
       tone(s, { freq: f * 2, at: chordAt, gain: 0.02, attack: 0.05, decay: 1.2, reverb: 0.8, detune: 6 });
