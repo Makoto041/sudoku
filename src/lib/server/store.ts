@@ -8,6 +8,8 @@ export type Session = {
   difficulty: Difficulty;
   startedAt: number;
   finishedAt?: number;
+  /** 開始時に配った問題（81 文字）。古いセッションには無い */
+  puzzle?: string;
 };
 
 export type BoardKey =
@@ -30,6 +32,9 @@ export interface RankingStore {
   size(board: BoardKey): Promise<number>;
   getNames(playerIds: string[]): Promise<Record<string, string>>;
   setName(playerId: string, name: string): Promise<void>;
+  getDailyPuzzle(date: string, difficulty: Difficulty): Promise<string | null>;
+  /** その日の問題を固定する。既に固定されていればそちらを返す */
+  pinDailyPuzzle(date: string, difficulty: Difficulty, puzzle: string): Promise<string>;
 }
 
 const SESSION_TTL_SEC = 3 * 24 * 60 * 60;
@@ -42,6 +47,8 @@ const startKey = (s: Pick<Session, "playerId" | "date" | "difficulty">) =>
   `${PREFIX}:start:${s.date}:${s.difficulty}:${s.playerId}`;
 const sessionKey = (id: string) => `${PREFIX}:sess:${id}`;
 const NAMES_KEY = `${PREFIX}:names`;
+const puzzleKey = (date: string, difficulty: Difficulty) => `${PREFIX}:puzzle:${date}:${difficulty}`;
+const PUZZLE_TTL_SEC = 7 * 24 * 60 * 60;
 
 class RedisStore implements RankingStore {
   constructor(private redis: Redis) {}
@@ -138,6 +145,16 @@ class RedisStore implements RankingStore {
   async setName(playerId: string, name: string) {
     await this.redis.hset(NAMES_KEY, { [playerId]: name });
   }
+
+  getDailyPuzzle(date: string, difficulty: Difficulty) {
+    return this.redis.get<string>(puzzleKey(date, difficulty));
+  }
+
+  async pinDailyPuzzle(date: string, difficulty: Difficulty, puzzle: string) {
+    const key = puzzleKey(date, difficulty);
+    const set = await this.redis.set(key, puzzle, { nx: true, ex: PUZZLE_TTL_SEC });
+    return set ? puzzle : ((await this.redis.get<string>(key)) ?? puzzle);
+  }
 }
 
 /** ローカル開発・テスト用。プロセスが落ちると消える */
@@ -146,6 +163,7 @@ export class MemoryStore implements RankingStore {
   private sessions = new Map<string, Session>();
   private boards = new Map<string, Map<string, number>>();
   private names = new Map<string, string>();
+  private puzzles = new Map<string, string>();
 
   async startSession(candidate: Session) {
     const existingId = this.starts.get(startKey(candidate));
@@ -214,6 +232,16 @@ export class MemoryStore implements RankingStore {
 
   async setName(playerId: string, name: string) {
     this.names.set(playerId, name);
+  }
+
+  async getDailyPuzzle(date: string, difficulty: Difficulty) {
+    return this.puzzles.get(puzzleKey(date, difficulty)) ?? null;
+  }
+
+  async pinDailyPuzzle(date: string, difficulty: Difficulty, puzzle: string) {
+    const key = puzzleKey(date, difficulty);
+    if (!this.puzzles.has(key)) this.puzzles.set(key, puzzle);
+    return this.puzzles.get(key)!;
   }
 }
 
