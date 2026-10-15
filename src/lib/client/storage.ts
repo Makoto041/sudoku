@@ -32,4 +32,5 @@ export const KEYS = {
   dailyResult: (date: string, difficulty: string) => `sudoku:result:${date}:${difficulty}`,
   stats: "sudoku:stats",
   installHint: "sudoku:install-hint",
+  clockOffset: "sudoku:clock-offset",
 };

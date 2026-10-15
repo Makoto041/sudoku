@@ -65,6 +65,7 @@ export function Home(props: Props) {
             const st = daily[d];
             const result = st.result;
             const playing = st.game && st.game.status !== "solved" && !result;
+            const unsent = st.game?.status === "solved" && !result;
             return (
               <li key={d}>
                 <button
@@ -87,6 +88,8 @@ export function Home(props: Props) {
                         <span className="mono">{formatTime(result.timeMs)}</span>
                         {result.rank !== null && <span className="rank-pill">{result.rank}位</span>}
                       </>
+                    ) : unsent ? (
+                      <span className="accent">未送信</span>
                     ) : playing ? (
                       <span className="accent">続ける · {formatTime(elapsedOf(st.game!))}</span>
                     ) : (
