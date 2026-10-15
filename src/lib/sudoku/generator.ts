@@ -1,5 +1,5 @@
 import type { Difficulty, Grid } from "./core";
-import { gradePuzzle, type LogicLevel } from "./logic";
+import { gradePuzzle, searchEffort, type LogicLevel } from "./logic";
 import { createRng, shuffle } from "./rng";
 import { countSolutions, randomSolution } from "./solver";
 
@@ -25,6 +25,8 @@ export const PROFILES: Record<Difficulty, Profile> = {
   hard: { maxGivens: 28, minGivens: 23, minLevel: 3, maxLevel: 4 },
   expert: { maxGivens: 27, minGivens: 22, minLevel: 5, maxLevel: 5 },
   master: { maxGivens: 28, minGivens: 17, minLevel: 6, maxLevel: 6, exhaust: true },
+  // 極は鬼と同じ作り方の候補から、仮定の手数が最も多いものを選ぶ（generateExtreme）
+  extreme: { maxGivens: 28, minGivens: 17, minLevel: 6, maxLevel: 6, exhaust: true },
 };
 
 const MAX_ATTEMPTS = 60;
@@ -36,6 +38,8 @@ export type Puzzle = {
   solution: Grid;
   givens: number;
   level: LogicLevel;
+  /** 極のみ：仮定の手数（searchEffort） */
+  effort?: { nodes: number; depth: number };
 };
 
 /**
@@ -44,6 +48,11 @@ export type Puzzle = {
  * 組で抜くと難しくなりすぎるときは、片方だけ抜いて細かく合わせる。
  */
 export function generatePuzzle(seed: string, difficulty: Difficulty): Puzzle {
+  if (difficulty === "extreme") return generateExtreme(seed, EXTREME_CANDIDATES);
+  return generateBand(seed, difficulty);
+}
+
+function generateBand(seed: string, difficulty: Difficulty): Puzzle {
   const profile = PROFILES[difficulty];
   const inBand = (level: LogicLevel) => level >= profile.minLevel && level <= profile.maxLevel;
   const rng = createRng(`${seed}:${difficulty}`);
@@ -123,6 +132,40 @@ export function jstDateKey(now: Date = new Date()): string {
 
 export function dailySeed(dateKey: string): string {
   return `daily:${dateKey}`;
+}
+
+/**
+ * 極：鬼と同じ作り方で candidates 個の候補を作り、仮定の手数（分岐の数、同じなら重なりの深さ）が
+ * 最も多いものを選ぶ。手筋では解けず、何段も仮定を重ねないと解けない問題になる
+ */
+export const EXTREME_CANDIDATES = 60;
+
+const harder = (a: { nodes: number; depth: number }, b: { nodes: number; depth: number }) =>
+  a.nodes > b.nodes || (a.nodes === b.nodes && a.depth > b.depth);
+
+function extremeCandidate(seed: string, k: number): Puzzle {
+  const p = generateBand(`${seed}:x${k}`, "master");
+  return { ...p, seed, difficulty: "extreme", effort: searchEffort(p.puzzle) };
+}
+
+export function generateExtreme(seed: string, candidates: number): Puzzle {
+  let best = extremeCandidate(seed, 0);
+  for (let k = 1; k < candidates; k++) {
+    const p = extremeCandidate(seed, k);
+    if (harder(p.effort!, best.effort!)) best = p;
+  }
+  return best;
+}
+
+/** 端末用：候補を 1 つ作るごとに処理を譲り、画面が固まらないようにする */
+export async function generateExtremeAsync(seed: string, candidates: number): Promise<Puzzle> {
+  let best = extremeCandidate(seed, 0);
+  for (let k = 1; k < candidates; k++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const p = extremeCandidate(seed, k);
+    if (harder(p.effort!, best.effort!)) best = p;
+  }
+  return best;
 }
 
 export function generateDaily(dateKey: string, difficulty: Difficulty): Puzzle {

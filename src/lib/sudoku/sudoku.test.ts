@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { DIFFICULTIES, findConflicts, isValidSolution, parseGrid, serializeGrid } from "./core";
-import { PROFILES, generateDaily, generatePuzzle, jstDateKey } from "./generator";
-import { gradePuzzle, solveLogically } from "./logic";
+import { PROFILES, generateDaily, generateExtreme, generatePuzzle, jstDateKey } from "./generator";
+import { gradePuzzle, searchEffort, solveLogically } from "./logic";
 import { countSolutions, solve } from "./solver";
+
+// 極は作るのに時間がかかるので、まとめて回すテストからは外し、下で個別に確かめる
+const BANDED = DIFFICULTIES.filter((d) => d !== "extreme");
 
 // よく知られた問題（シングルだけで解ける）
 const CLASSIC = parseGrid(
@@ -67,7 +70,7 @@ describe("logic grader", () => {
     expect(gradePuzzle(CLASSIC)).toBe(1);
   });
 
-  it.each(DIFFICULTIES)("%s: 手筋は正解を消さず、置いた数字はすべて正しい", (difficulty) => {
+  it.each(BANDED)("%s: 手筋は正解を消さず、置いた数字はすべて正しい", (difficulty) => {
     for (let k = 0; k < 6; k++) {
       const p = generatePuzzle(`logic-${k}`, difficulty);
       const s = solveLogically(p.puzzle);
@@ -81,7 +84,7 @@ describe("logic grader", () => {
 });
 
 describe("generator", () => {
-  it.each(DIFFICULTIES)("%s: 解が 1 つでヒント数が範囲内", (difficulty) => {
+  it.each(BANDED)("%s: 解が 1 つでヒント数が範囲内", (difficulty) => {
     for (const seed of ["a", "b", "c"]) {
       const p = generatePuzzle(seed, difficulty);
       expect(countSolutions(p.puzzle)).toBe(1);
@@ -101,12 +104,12 @@ describe("generator", () => {
 
   it("難易度が上がるほど必要な手筋が難しくなる", () => {
     for (const date of ["2026-10-15", "2026-10-16", "2026-10-24"]) {
-      const levels = DIFFICULTIES.map((d) => generateDaily(date, d).level);
+      const levels = BANDED.map((d) => generateDaily(date, d).level);
       for (let i = 1; i < levels.length; i++) expect(levels[i]).toBeGreaterThan(levels[i - 1]);
     }
   });
 
-  it.each(DIFFICULTIES)("%s: 手筋レベルが難易度の範囲に入る", (difficulty) => {
+  it.each(BANDED)("%s: 手筋レベルが難易度の範囲に入る", (difficulty) => {
     const { minLevel, maxLevel } = PROFILES[difficulty];
     for (let k = 0; k < 8; k++) {
       const { level } = generatePuzzle(`band-${k}`, difficulty);
@@ -118,5 +121,27 @@ describe("generator", () => {
   it("日付は JST で切り替わる", () => {
     expect(jstDateKey(new Date("2026-10-15T14:59:59Z"))).toBe("2026-10-15");
     expect(jstDateKey(new Date("2026-10-15T15:00:00Z"))).toBe("2026-10-16");
+  });
+});
+
+describe("極", () => {
+  it("解が 1 つで、手筋では解けず、候補を増やすほど手数が増える（減らない）", () => {
+    const few = generateExtreme("kiwami-test", 4);
+    const more = generateExtreme("kiwami-test", 16);
+    for (const p of [few, more]) {
+      expect(p.difficulty).toBe("extreme");
+      expect(countSolutions(p.puzzle)).toBe(1);
+      expect(isValidSolution(p.puzzle, p.solution)).toBe(true);
+      expect(p.level).toBe(6);
+      expect(p.effort).toEqual(searchEffort(p.puzzle));
+    }
+    expect(more.effort!.nodes).toBeGreaterThanOrEqual(few.effort!.nodes);
+    // 同じシードなら同じ問題
+    expect(serializeGrid(generateExtreme("kiwami-test", 4).puzzle)).toBe(serializeGrid(few.puzzle));
+  });
+
+  it("仮定の手数は、易しい問題では少なく、解の検証にもなる", () => {
+    expect(searchEffort(CLASSIC).nodes).toBe(0);
+    expect(searchEffort(Array(81).fill(0), 50).nodes).toBeGreaterThan(0);
   });
 });

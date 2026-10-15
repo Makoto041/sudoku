@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
 import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
-import { generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
+import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
 import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
 import { getPlayer, setPlayerName, type Player } from "@/lib/client/player";
@@ -204,8 +204,12 @@ export function App() {
       sfx.tap();
       // 難しい問題は作るのに時間がかかるので、読み込み表示を描いてから作る
       setGenerating(difficulty);
-      setTimeout(() => {
-        const p = generatePuzzle(freeSeed(), difficulty);
+      setTimeout(async () => {
+        // 極は候補をたくさん作って選ぶので、少しずつ作って画面を止めない（端末では候補を少なめに）
+        const p =
+          difficulty === "extreme"
+            ? await generateExtremeAsync(freeSeed(), 24)
+            : generatePuzzle(freeSeed(), difficulty);
         const game = newGame({
           mode: "free",
           difficulty,

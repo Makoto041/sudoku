@@ -387,22 +387,26 @@ p {
 }
 
 .level i:nth-child(1) {
-  height: 6px;
+  height: 5px;
 }
 .level i:nth-child(2) {
-  height: 9px;
+  height: 8px;
 }
 .level i:nth-child(3) {
-  height: 12px;
+  height: 11px;
 }
 .level i:nth-child(4) {
-  height: 15px;
+  height: 14px;
 }
 .level i:nth-child(5) {
-  height: 18px;
+  height: 17px;
+}
+.level i:nth-child(6) {
+  height: 20px;
 }
 
-.level.level-master i.on {
+.level.level-master i.on,
+.level.level-extreme i.on {
   background: var(--danger);
 }
 
@@ -482,17 +486,20 @@ p {
     background 0.15s;
 }
 
-.free-btn.free-master {
-  grid-column: 1 / -1;
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
+.free-btn.free-master,
+.free-btn.free-extreme {
   background: var(--ink);
   color: var(--bg);
 }
 
-.free-btn.free-master .free-best {
-  color: color-mix(in srgb, var(--bg) 65%, transparent);
+.free-btn.free-extreme {
+  background: color-mix(in srgb, var(--danger) 82%, var(--ink));
+  color: #fff;
+}
+
+.free-btn.free-master .free-best,
+.free-btn.free-extreme .free-best {
+  color: color-mix(in srgb, currentColor 65%, transparent);
 }
 
 .free-btn:disabled {

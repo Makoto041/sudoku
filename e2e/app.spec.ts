@@ -283,3 +283,11 @@ test("正しく置くと得点が浮かび、スコアが増える。間違え�
   expect(Number((await score.textContent())!.replace(/,/g, ""))).toBeLessThan(after);
   await shot(page, "score");
 });
+
+test("極の問題を作って遊び始められる", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  await page.locator(".free-extreme").click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".bar-main")).toHaveText("極");
+});

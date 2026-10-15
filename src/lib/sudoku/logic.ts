@@ -287,3 +287,72 @@ export function solveLogically(puzzle: readonly number[]): State & { level: Logi
 export function gradePuzzle(puzzle: readonly number[]): LogicLevel {
   return solveLogically(puzzle).level;
 }
+
+/**
+ * 仮定の手数。シングルとロックドキャンディデートで進められるところまで進め、
+ * 詰まったら候補の最も少ないマスで候補を 1 つずつ仮定して試す。
+ * 解が 1 つであることまで確かめる探索全体で、仮定した回数（nodes）と最も深い仮定の重なり（depth）を数える。
+ * 手筋では解けない問題どうしの難しさを比べるのに使う
+ */
+export function searchEffort(puzzle: readonly number[], limit = 200_000): { nodes: number; depth: number } {
+  let nodes = 0;
+  let deepest = 0;
+
+  const propagate = (s: State): boolean => {
+    for (;;) {
+      let changed = false;
+      for (let i = 0; i < 81; i++) {
+        if (s.grid[i]) continue;
+        const n = bitCount(s.cands[i]);
+        if (n === 0) return false;
+        if (n === 1) {
+          const v = lowestDigit(s.cands[i]);
+          if (PEERS[i].some((p) => s.grid[p] === v)) return false;
+          assign(s, i, v);
+          changed = true;
+        }
+      }
+      for (const unit of UNITS) {
+        for (let d = 1; d <= 9; d++) {
+          const bit = 1 << d;
+          if (unit.some((i) => s.grid[i] === d)) continue;
+          const spots = unit.filter((i) => s.cands[i] & bit);
+          if (spots.length === 0) return false;
+          if (spots.length === 1) {
+            assign(s, spots[0], d);
+            changed = true;
+          }
+        }
+      }
+      if (!changed && !lockedCandidates(s)) return true;
+    }
+  };
+
+  const search = (s: State, depth: number): number => {
+    if (nodes >= limit) return 0;
+    if (!propagate(s)) return 0;
+    let best = -1;
+    let bestN = 10;
+    for (let i = 0; i < 81; i++) {
+      if (s.grid[i]) continue;
+      const n = bitCount(s.cands[i]);
+      if (n < bestN) {
+        best = i;
+        bestN = n;
+      }
+    }
+    if (best === -1) return 1;
+    let found = 0;
+    for (const v of digitsOf(s.cands[best])) {
+      nodes++;
+      deepest = Math.max(deepest, depth + 1);
+      const child: State = { grid: s.grid.slice(), cands: s.cands.slice() };
+      assign(child, best, v);
+      found += search(child, depth + 1);
+    }
+    return found;
+  };
+
+  search(init(puzzle), 0);
+  return { nodes, depth: deepest };
+}
