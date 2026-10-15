@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
-import { DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
+import type { Difficulty } from "@/lib/sudoku/core";
 import type { Settings } from "@/lib/client/settings";
 import { Close } from "./icons";
 
@@ -10,10 +10,13 @@ function Sheet({
   label,
   onClose,
   children,
+  top = false,
 }: {
   label: string;
   onClose: () => void;
   children: React.ReactNode;
+  /** 入力欄のあるシートは上に出し、iPhone のキーボードで隠れないようにする */
+  top?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -24,11 +27,12 @@ function Sheet({
   }, [onClose]);
   return (
     <div
-      className="sheet-backdrop"
+      className={`sheet-backdrop${top ? " is-top" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      onPointerDown={(e) => {
+      // pointerdown で閉じると、指を離したときの click が下のボタンに届いてしまう
+      onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
@@ -91,15 +95,9 @@ export function SettingsSheet({
       <h2 className="sheet-title">設定</h2>
       <div className="toggle-list">
         <Toggle label="効果音" checked={settings.sound} onChange={(v) => set({ sound: v })} />
-        <Toggle
-          label="振動"
-          hint="対応している端末のみ"
-          checked={settings.haptics}
-          onChange={(v) => set({ haptics: v })}
-        />
+        <Toggle label="振動" checked={settings.haptics} onChange={(v) => set({ haptics: v })} />
         <Toggle
           label="間違いをすぐ表示"
-          hint="フリープレイで答えと違う数字を赤くします"
           checked={settings.showMistakes}
           onChange={(v) => set({ showMistakes: v })}
         />
@@ -118,10 +116,20 @@ export function SettingsSheet({
           変更
         </button>
       </div>
-      <p className="muted small keys">
-        キーボード：1〜9 で入力 · Shift+数字 でメモ · 矢印で移動 · N でメモ切替 · Backspace で消す · Z
-        で元に戻す
-      </p>
+      <dl className="keys muted small">
+        <dt>1–9</dt>
+        <dd>入力</dd>
+        <dt>Shift + 1–9</dt>
+        <dd>メモ</dd>
+        <dt>矢印</dt>
+        <dd>移動</dd>
+        <dt>N</dt>
+        <dd>メモ切替</dd>
+        <dt>Backspace</dt>
+        <dd>消す</dd>
+        <dt>Z</dt>
+        <dd>元に戻す</dd>
+      </dl>
     </Sheet>
   );
 }
@@ -149,9 +157,8 @@ export function NameSheet({
   }, []);
   const valid = name.trim().length > 0;
   return (
-    <Sheet label="名前" onClose={onClose}>
-      <h2 className="sheet-title">{difficulty ? "ランキングに参加" : "名前を変更"}</h2>
-      <p className="muted small">ランキングに表示される名前です（12文字まで）</p>
+    <Sheet label="名前" onClose={onClose} top>
+      <h2 className="sheet-title">{difficulty ? "ランキングに表示する名前" : "名前を変更"}</h2>
       <form
         className="name-form"
         onSubmit={(e) => {
@@ -163,17 +170,12 @@ export function NameSheet({
           ref={input}
           className="text-input"
           value={name}
-          maxLength={24}
+          maxLength={12}
           onChange={(e) => setName(e.target.value)}
           placeholder="ニックネーム"
           autoComplete="nickname"
           enterKeyHint="go"
         />
-        {difficulty && (
-          <p className="muted small">
-            「{DIFFICULTY_LABEL[difficulty]}」を始めます。時間はサーバーで計測され、一時停止はできません。
-          </p>
-        )}
         {error && <p className="error-text">{error}</p>}
         <button type="submit" className="btn primary" disabled={!valid || busy}>
           {busy ? <span className="spinner" /> : difficulty ? "はじめる" : "保存"}

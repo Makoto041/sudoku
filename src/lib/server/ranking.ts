@@ -1,5 +1,5 @@
 import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficulty } from "@/lib/sudoku/core";
-import { generateDaily, jstDateKey, type Puzzle } from "@/lib/sudoku/generator";
+import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import type { BoardKey, RankingStore, Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
@@ -31,35 +31,52 @@ export function assertDifficulty(value: unknown): Difficulty {
 }
 
 export function assertDate(value: unknown): string {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new RankingError(400, "invalid date");
-  }
+  const ok =
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
+    new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
+  if (!ok) throw new RankingError(400, "invalid date");
   return value;
 }
 
-/** 表示名を整える：NFKC 正規化、制御文字と前後の空白を除き、最大 NAME_MAX 文字 */
+/**
+ * 表示名を整える：NFKC 正規化、制御文字と前後の空白を除き、最大 NAME_MAX 文字。
+ * 絵文字の結合（ZWJ・異体字セレクタ）は残し、見た目が空になる名前は受け付けない。
+ */
 export function sanitizeName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const cleaned = value
     .normalize("NFKC")
-    .replace(/[\p{C}]/gu, "")
+    .replace(/(?![\u200d\ufe0f])\p{C}/gu, "")
     .replace(/\s+/g, " ")
     .trim();
   const name = [...cleaned].slice(0, NAME_MAX).join("");
-  return name.length > 0 ? name : null;
+  if (!name || /^[\p{M}\p{Z}\u200d\ufe0f\u115f\u1160\u3164\u2800\uffa0]*$/u.test(name)) return null;
+  return name;
 }
 
-// 日次の問題は日付と難易度で決まるので、同じインスタンス内では作り直さない
-const dailyCache = new Map<string, Puzzle>();
-export function dailyPuzzle(date: string, difficulty: Difficulty): Puzzle {
+/**
+ * その日の問題（81 文字）。最初に作ったものを保存先に固定するので、
+ * 生成のコードを日中に変えてデプロイしても、同じ日は全員が同じ問題になる。
+ */
+const dailyCaches = new WeakMap<RankingStore, Map<string, string>>();
+export async function dailyPuzzle(
+  store: RankingStore,
+  date: string,
+  difficulty: Difficulty,
+): Promise<string> {
+  let cache = dailyCaches.get(store);
+  if (!cache) dailyCaches.set(store, (cache = new Map()));
   const key = `${date}:${difficulty}`;
-  let p = dailyCache.get(key);
-  if (!p) {
-    p = generateDaily(date, difficulty);
-    dailyCache.set(key, p);
-    if (dailyCache.size > 32) dailyCache.delete(dailyCache.keys().next().value!);
-  }
-  return p;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const puzzle =
+    (await store.getDailyPuzzle(date, difficulty)) ??
+    (await store.pinDailyPuzzle(date, difficulty, serializeGrid(generateDaily(date, difficulty).puzzle)));
+  cache.set(key, puzzle);
+  if (cache.size > 32) cache.delete(cache.keys().next().value!);
+  return puzzle;
 }
 
 export async function startDaily(
@@ -76,13 +93,13 @@ export async function startDaily(
     date,
     difficulty,
     startedAt: now,
+    puzzle: await dailyPuzzle(store, date, difficulty),
   });
-  const puzzle = dailyPuzzle(session.date, session.difficulty);
   return {
     sessionId: session.id,
     date: session.date,
     difficulty: session.difficulty,
-    puzzle: serializeGrid(puzzle.puzzle),
+    puzzle: session.puzzle ?? (await dailyPuzzle(store, session.date, session.difficulty)),
     startedAt: session.startedAt,
     serverNow: now,
     finished: session.finishedAt !== undefined,
@@ -108,16 +125,18 @@ export async function submitDaily(
   if (!session || session.playerId !== playerId) throw new RankingError(404, "session not found");
   if (session.finishedAt !== undefined) throw new RankingError(409, "already submitted");
 
-  const puzzle = dailyPuzzle(session.date, session.difficulty);
-  if (!isValidSolution(puzzle.puzzle, parseGrid(input.grid))) {
+  const puzzle = session.puzzle ?? (await dailyPuzzle(store, session.date, session.difficulty));
+  if (!isValidSolution(parseGrid(puzzle), parseGrid(input.grid))) {
     throw new RankingError(422, "incorrect solution");
   }
   const timeMs = now - session.startedAt;
   if (timeMs < MIN_PLAUSIBLE_MS) throw new RankingError(422, "too fast");
 
-  if (!(await store.finishSession(session.id, now))) throw new RankingError(409, "already submitted");
+  // 記録は何度書いても同じ結果になる（日次は最初の 1 回、歴代は速いほう）ので先に書き、
+  // 完了の印は最後に付ける。途中で失敗しても再送で記録できる
   await store.setName(playerId, name);
   await store.record(session.date, session.difficulty, { playerId, timeMs });
+  if (!(await store.finishSession(session.id, now))) throw new RankingError(409, "already submitted");
 
   const board: BoardKey = { scope: "daily", date: session.date, difficulty: session.difficulty };
   const [pos, total] = await Promise.all([store.position(board, playerId), store.size(board)]);

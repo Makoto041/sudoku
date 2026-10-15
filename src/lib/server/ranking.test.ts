@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { serializeGrid } from "@/lib/sudoku/core";
+import { parseGrid, serializeGrid } from "@/lib/sudoku/core";
+import { generateDaily } from "@/lib/sudoku/generator";
+import { solve } from "@/lib/sudoku/solver";
 import {
   MIN_PLAUSIBLE_MS,
   RankingError,
-  dailyPuzzle,
   getLeaderboard,
   renamePlayer,
   sanitizeName,
@@ -16,9 +17,11 @@ const ALICE = "11111111-1111-4111-8111-111111111111";
 const BOB = "22222222-2222-4222-8222-222222222222";
 const T0 = Date.parse("2026-10-15T03:00:00Z"); // JST 12:00
 
+const solutionOf = (puzzle: string) => serializeGrid(solve(parseGrid(puzzle))!);
+
 async function solveDaily(store: MemoryStore, playerId: string, elapsedMs: number, name = "テスト") {
   const started = await startDaily(store, { playerId, difficulty: "easy" }, T0);
-  const solution = serializeGrid(dailyPuzzle(started.date, "easy").solution);
+  const solution = solutionOf(started.puzzle);
   return submitDaily(store, { sessionId: started.sessionId, playerId, grid: solution, name }, T0 + elapsedMs);
 }
 
@@ -70,7 +73,7 @@ describe("daily ranking", () => {
   it("2 回目の送信は拒否する", async () => {
     const store = new MemoryStore();
     const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
-    const grid = serializeGrid(dailyPuzzle(started.date, "easy").solution);
+    const grid = solutionOf(started.puzzle);
     const body = { sessionId: started.sessionId, playerId: ALICE, grid, name: "a" };
     await submitDaily(store, body, T0 + 100_000);
     await expectStatus(submitDaily(store, body, T0 + 120_000), 409);
@@ -79,7 +82,7 @@ describe("daily ranking", () => {
   it("誤答・速すぎる送信・他人のセッションは拒否する", async () => {
     const store = new MemoryStore();
     const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
-    const solution = dailyPuzzle(started.date, "easy").solution;
+    const solution = parseGrid(solutionOf(started.puzzle));
     const wrong = solution.slice();
     [wrong[0], wrong[1]] = [wrong[1], wrong[0]];
     const base = { sessionId: started.sessionId, playerId: ALICE, name: "a" };
@@ -105,6 +108,57 @@ describe("daily ranking", () => {
     await expectStatus(startDaily(store, { playerId: "nope", difficulty: "easy" }, T0), 400);
     await expectStatus(startDaily(store, { playerId: ALICE, difficulty: "insane" }, T0), 400);
     await expectStatus(renamePlayer(store, { playerId: ALICE, name: "   " }), 400);
+    await expectStatus(
+      getLeaderboard(store, { scope: "daily", difficulty: "easy", date: "2026-99-99" }, T0),
+      400,
+    );
+  });
+});
+
+describe("daily puzzle pinning", () => {
+  it("固定済みの問題があればそれを配り、その問題で照合する", async () => {
+    const store = new MemoryStore();
+    // 生成のコードが変わる前に固定された問題、という想定で別の日の問題を入れておく
+    const pinned = serializeGrid(generateDaily("2000-01-01", "easy").puzzle);
+    await store.pinDailyPuzzle("2026-10-15", "easy", pinned);
+    const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    expect(started.puzzle).toBe(pinned);
+    const res = await submitDaily(
+      store,
+      { sessionId: started.sessionId, playerId: ALICE, grid: solutionOf(pinned), name: "a" },
+      T0 + 60_000,
+    );
+    expect(res.rank).toBe(1);
+  });
+
+  it("同じ日・難易度は全員が同じ問題", async () => {
+    const store = new MemoryStore();
+    const a = await startDaily(store, { playerId: ALICE, difficulty: "master" }, T0);
+    const b = await startDaily(store, { playerId: BOB, difficulty: "master" }, T0 + 1000);
+    expect(a.puzzle).toBe(b.puzzle);
+  });
+
+  it("記録の途中で失敗しても、再送すれば記録できる", async () => {
+    class Flaky extends MemoryStore {
+      failOnce = true;
+      async record(...args: Parameters<MemoryStore["record"]>) {
+        if (this.failOnce) {
+          this.failOnce = false;
+          throw new Error("redis down");
+        }
+        return super.record(...args);
+      }
+    }
+    const store = new Flaky();
+    const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const body = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      grid: solutionOf(started.puzzle),
+      name: "a",
+    };
+    await expect(submitDaily(store, body, T0 + 60_000)).rejects.toThrow("redis down");
+    await expect(submitDaily(store, body, T0 + 61_000)).resolves.toMatchObject({ rank: 1, timeMs: 61_000 });
   });
 });
 
@@ -115,5 +169,8 @@ describe("sanitizeName", () => {
     expect(sanitizeName("あいうえおかきくけこさしすせそ")).toBe("あいうえおかきくけこさし");
     expect(sanitizeName("")).toBeNull();
     expect(sanitizeName(42)).toBeNull();
+    expect(sanitizeName("👨\u200d👩\u200d👧")).toBe("👨\u200d👩\u200d👧");
+    expect(sanitizeName("\u3164\u3164")).toBeNull();
+    expect(sanitizeName("\u0301\u0301")).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 /** 盤面は長さ 81 の配列。0 は空きマス、1〜9 は数字 */
 export type Grid = number[];
 
-export const DIFFICULTIES = ["easy", "medium", "hard", "expert"] as const;
+export const DIFFICULTIES = ["easy", "medium", "hard", "expert", "master"] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
@@ -9,6 +9,7 @@ export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   medium: "ふつう",
   hard: "むずかしい",
   expert: "エキスパート",
+  master: "鬼",
 };
 
 export function isDifficulty(value: unknown): value is Difficulty {

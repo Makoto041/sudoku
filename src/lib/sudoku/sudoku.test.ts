@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DIFFICULTIES, findConflicts, isValidSolution, parseGrid, serializeGrid } from "./core";
 import { PROFILES, generateDaily, generatePuzzle, jstDateKey } from "./generator";
-import { gradePuzzle } from "./logic";
+import { gradePuzzle, solveLogically } from "./logic";
 import { countSolutions, solve } from "./solver";
 
 // よく知られた問題（シングルだけで解ける）
@@ -66,6 +66,18 @@ describe("logic grader", () => {
   it("シングルで解ける問題はレベル 1", () => {
     expect(gradePuzzle(CLASSIC)).toBe(1);
   });
+
+  it.each(DIFFICULTIES)("%s: 手筋は正解を消さず、置いた数字はすべて正しい", (difficulty) => {
+    for (let k = 0; k < 6; k++) {
+      const p = generatePuzzle(`logic-${k}`, difficulty);
+      const s = solveLogically(p.puzzle);
+      for (let i = 0; i < 81; i++) {
+        if (s.grid[i]) expect(s.grid[i]).toBe(p.solution[i]);
+        else expect(s.cands[i] & (1 << p.solution[i])).not.toBe(0);
+      }
+      if (s.level < 6) expect(s.grid).toEqual(p.solution);
+    }
+  });
 });
 
 describe("generator", () => {
@@ -87,9 +99,20 @@ describe("generator", () => {
     expect(serializeGrid(a.puzzle)).not.toBe(serializeGrid(c.puzzle));
   });
 
-  it("難易度が上がるほどヒントが減る", () => {
-    const givens = DIFFICULTIES.map((d) => generateDaily("2026-10-15", d).givens);
-    for (let i = 1; i < givens.length; i++) expect(givens[i]).toBeLessThanOrEqual(givens[i - 1]);
+  it("難易度が上がるほど必要な手筋が難しくなる", () => {
+    for (const date of ["2026-10-15", "2026-10-16", "2026-10-24"]) {
+      const levels = DIFFICULTIES.map((d) => generateDaily(date, d).level);
+      for (let i = 1; i < levels.length; i++) expect(levels[i]).toBeGreaterThan(levels[i - 1]);
+    }
+  });
+
+  it.each(DIFFICULTIES)("%s: 手筋レベルが難易度の範囲に入る", (difficulty) => {
+    const { minLevel, maxLevel } = PROFILES[difficulty];
+    for (let k = 0; k < 8; k++) {
+      const { level } = generatePuzzle(`band-${k}`, difficulty);
+      expect(level).toBeGreaterThanOrEqual(minLevel);
+      expect(level).toBeLessThanOrEqual(maxLevel);
+    }
   });
 
   it("日付は JST で切り替わる", () => {

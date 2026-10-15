@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
 import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
@@ -32,6 +32,13 @@ function freeSeed() {
   return `${a[0].toString(36)}${a[1].toString(36)}`;
 }
 
+/**
+ * 「今日」はサーバーの時計で決める。端末の時計がずれていても、保存した盤面と同じ日付で探せるように
+ * サーバーとの差を覚えておく（今日の一問を始めたときに更新）。
+ */
+let clockOffset = 0;
+const serverToday = () => jstDateKey(new Date(Date.now() + clockOffset));
+
 function loadGame(key: string): GameState | null {
   const g = load<GameState>(key);
   return g && g.version === 1 && Array.isArray(g.values) && g.values.length === 81 ? g : null;
@@ -43,18 +50,20 @@ export function App() {
   const [player, setPlayer] = useState<Player>({ id: "", name: null });
   const [view, setView] = useState<View>({ name: "home" });
   const [sheet, setSheet] = useState<SheetState>(null);
-  const [today, setToday] = useState(() => jstDateKey());
+  const [today, setToday] = useState(() => serverToday());
   const [starting, setStarting] = useState<Difficulty | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    clockOffset = load<number>(KEYS.clockOffset) ?? 0;
+    setToday(serverToday());
     setSettings(loadSettings());
     setPlayer(getPlayer());
     setMounted(true);
     // 日付が変わったときのために、画面に戻るたびに今日を確認する
     const onVisible = () => {
-      if (document.visibilityState === "visible") setToday(jstDateKey());
+      if (document.visibilityState === "visible") setToday(serverToday());
     };
     document.addEventListener("visibilitychange", onVisible);
     // iOS は最初のタップで音を有効にする
@@ -82,17 +91,18 @@ export function App() {
     const onPop = () => {
       setView({ name: "home" });
       setSheet(null);
+      setToday(serverToday());
       setRefresh((n) => n + 1);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  const viewName = useRef(view.name);
+  viewName.current = view.name;
   const go = useCallback((next: View) => {
-    setView((cur) => {
-      if (cur.name === "home" && next.name !== "home") history.pushState({ v: next.name }, "");
-      return next;
-    });
+    if (viewName.current === "home" && next.name !== "home") history.pushState({ v: next.name }, "");
+    setView(next);
   }, []);
 
   const goHome = useCallback(() => {
@@ -100,6 +110,7 @@ export function App() {
     if (history.state?.v) history.back();
     else {
       setView({ name: "home" });
+      setToday(serverToday());
       setRefresh((n) => n + 1);
     }
   }, []);
@@ -141,6 +152,17 @@ export function App() {
       setStarting(difficulty);
       try {
         const res = await api.start(p.id, difficulty);
+        // 端末の日付がずれていても、サーバーの日付で保存済みの盤面があればそれを続ける
+        clockOffset = res.serverNow - Date.now();
+        save(KEYS.clockOffset, clockOffset);
+        setToday(res.date);
+        const existing = loadGame(KEYS.daily(res.date, difficulty));
+        if (existing && existing.daily?.sessionId === res.sessionId) {
+          setSheet(null);
+          sfx.tap();
+          openGame(existing);
+          return;
+        }
         const game = newGame({
           mode: "daily",
           difficulty,
@@ -156,7 +178,7 @@ export function App() {
         });
         setSheet(null);
         if (res.finished) {
-          setError("この問題はクリア済みです。ランキングで結果を確認できます");
+          setError("クリア済みです");
           return;
         }
         save(KEYS.daily(res.date, difficulty), game);
@@ -172,20 +194,26 @@ export function App() {
     [player, today, openGame],
   );
 
+  const [generating, setGenerating] = useState<Difficulty | null>(null);
   const startFree = useCallback(
     (difficulty: Difficulty) => {
       setSheet(null);
       sfx.tap();
-      const p = generatePuzzle(freeSeed(), difficulty);
-      const game = newGame({
-        mode: "free",
-        difficulty,
-        seed: p.seed,
-        puzzle: p.puzzle,
-        solution: p.solution,
-      });
-      save(KEYS.free, game);
-      openGame(game);
+      // 難しい問題は作るのに時間がかかるので、読み込み表示を描いてから作る
+      setGenerating(difficulty);
+      setTimeout(() => {
+        const p = generatePuzzle(freeSeed(), difficulty);
+        const game = newGame({
+          mode: "free",
+          difficulty,
+          seed: p.seed,
+          puzzle: p.puzzle,
+          solution: p.solution,
+        });
+        save(KEYS.free, game);
+        setGenerating(null);
+        openGame(game);
+      }, 30);
     },
     [openGame],
   );
@@ -240,6 +268,7 @@ export function App() {
             daily={daily}
             free={free}
             starting={starting}
+            generating={generating}
             error={error}
             onDaily={(d) => void startDaily(d)}
             onContinue={() => {

@@ -17,7 +17,7 @@ async function shot(page: Page, name: string) {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png` });
 }
 
-type Saved = { puzzle: number[]; solution: number[] | null; values: number[] };
+type Saved = { puzzle: number[]; solution: number[] | null; values: number[]; history: unknown[] };
 
 async function savedGame(page: Page, key: string): Promise<Saved> {
   const raw = await page.evaluate((k) => localStorage.getItem(k), key);
@@ -74,7 +74,11 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   test.setTimeout(120_000);
   await page.goto("/");
   await page.locator(".daily-row").first().click();
-  await page.getByPlaceholder("ニックネーム").fill(`テスト${test.info().project.name}`);
+  // 名前の入力欄は画面の上半分に出す（iPhone のキーボードで隠れないように）
+  const nameInput = page.getByPlaceholder("ニックネーム");
+  const box = await nameInput.boundingBox();
+  expect(box!.y + box!.height).toBeLessThan(page.viewportSize()!.height / 2);
+  await nameInput.fill(`テスト${test.info().project.name}`);
   await shot(page, "name-sheet");
   await page.getByRole("button", { name: "はじめる" }).click();
   await expect(page.getByText("ランキング戦")).toBeVisible();
@@ -101,4 +105,114 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   await page.getByRole("button", { name: "ランキングを見る" }).click();
   await expect(page.locator(".row.is-me")).toBeVisible();
   await shot(page, "ranking");
+});
+
+test("鬼の問題を作って遊び始められる", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".free-master").click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".bar-main")).toHaveText("鬼");
+  const g = await savedGame(page, "sudoku:free");
+  expect(g.puzzle.filter((v) => v !== 0).length).toBeLessThanOrEqual(28);
+});
+
+test("シートの背景をタップしても、下のボタンが押されない", async ({ page }, info) => {
+  test.skip(!info.project.use.hasTouch, "タッチ端末だけで起きる");
+  await page.addInitScript(() =>
+    localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
+  );
+  await page.goto("/");
+  let started = false;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/daily/start")) started = true;
+  });
+  const row = (await page.locator(".daily-row").first().boundingBox())!;
+  await page.getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
+  await page.touchscreen.tap(row.x + row.width / 2, row.y + row.height / 2);
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  await page.waitForTimeout(500);
+  expect(started).toBe(false);
+  await expect(page.getByRole("heading", { name: "数独" })).toBeVisible();
+});
+
+test("間違えたマスに正しい数字を入れ直すと揺れない", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cell = g.puzzle.indexOf(0);
+  const cells = page.getByRole("gridcell");
+  await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${(g.solution![cell] % 9) + 1}`);
+  await expect(cells.nth(cell).locator(".digit")).toHaveClass(/shake/);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press(`Digit${g.solution![cell]}`);
+  await expect(cells.nth(cell).locator(".digit")).not.toHaveClass(/shake/);
+});
+
+test("端末の日付がずれていても、今日の一問の続きが消えない", async ({ page }, info) => {
+  // 端末の時計だけ日本時間の前日 22:00 にする（サーバーは実際の時刻）
+  const jst = new Date(Date.now() + 9 * 3600 * 1000);
+  await page.clock.setFixedTime(
+    new Date(Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate() - 1, 22 - 9)),
+  );
+  await page.goto("/");
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`日付${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByText("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  await page.getByRole("gridcell").nth(g.puzzle.indexOf(0)).dispatchEvent("pointerdown", {
+    pointerType: "touch",
+    button: 0,
+  });
+  await page.keyboard.press("Digit5");
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await expect(page.locator(".daily-row").first()).toContainText("続ける");
+  await page.locator(".daily-row").first().click();
+  await expect(page.getByText("ランキング戦")).toBeVisible();
+  const after = await savedGame(page, key);
+  expect(after.values[g.puzzle.indexOf(0)]).toBe(5);
+});
+
+test("行き詰まったら知らせ、間違える前まで戻せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  // 空きマス c の周りに、c に入れられる数字をすべて置いて c を埋められなくする
+  const c = g.puzzle.indexOf(0);
+  const peers = (i: number) =>
+    Array.from({ length: 81 }, (_, j) => j).filter(
+      (j) =>
+        j !== i &&
+        (Math.floor(j / 9) === Math.floor(i / 9) ||
+          j % 9 === i % 9 ||
+          (Math.floor(j / 27) === Math.floor(i / 27) && Math.floor((j % 9) / 3) === Math.floor((i % 9) / 3))),
+    );
+  const used = new Set(peers(c).map((j) => g.puzzle[j]));
+  const free = peers(c).filter((j) => g.puzzle[j] === 0);
+  const cells = page.getByRole("gridcell");
+  for (const d of [1, 2, 3, 4, 5, 6, 7, 8, 9].filter((d) => !used.has(d))) {
+    const j = free.shift()!;
+    await cells.nth(j).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${d}`);
+  }
+  await expect(page.getByText("どこかで間違えています")).toBeVisible();
+  await expect(cells.nth(c)).toHaveClass(/stuck/);
+  await page.waitForTimeout(400);
+  await shot(page, "stuck");
+  await page.getByRole("button", { name: "間違える前まで戻す" }).click();
+  await expect(page.getByText("どこかで間違えています")).toBeHidden();
+  await expect(cells.nth(c)).not.toHaveClass(/stuck/);
 });

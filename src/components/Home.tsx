@@ -4,7 +4,7 @@ import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/co
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { SubmitResponse } from "@/lib/client/api";
 import { bestTimes } from "@/lib/client/stats";
-import { Bolt, ChevronRight, Gear, Trophy } from "./icons";
+import { ChevronRight, Gear, Trophy } from "./icons";
 import { InstallHint } from "./InstallHint";
 import { Logo } from "./Logo";
 
@@ -15,6 +15,8 @@ type Props = {
   daily: Record<Difficulty, DailyStatus>;
   free: GameState | null;
   starting: Difficulty | null;
+  /** フリープレイの問題を作っている難易度 */
+  generating: Difficulty | null;
   error: string | null;
   onDaily: (difficulty: Difficulty) => void;
   onContinue: () => void;
@@ -32,7 +34,7 @@ function longDate(date: string) {
 }
 
 export function Home(props: Props) {
-  const { today, daily, free, starting, error } = props;
+  const { today, daily, free, starting, generating, error } = props;
   const best = bestTimes();
   const freeInProgress = free && free.status !== "solved" ? free : null;
 
@@ -63,6 +65,7 @@ export function Home(props: Props) {
             const st = daily[d];
             const result = st.result;
             const playing = st.game && st.game.status !== "solved" && !result;
+            const unsent = st.game?.status === "solved" && !result;
             return (
               <li key={d}>
                 <button
@@ -72,7 +75,7 @@ export function Home(props: Props) {
                   disabled={starting !== null}
                 >
                   <span className={`level level-${d}`} aria-hidden="true">
-                    {[0, 1, 2, 3].map((k) => (
+                    {DIFFICULTIES.map((_, k) => (
                       <i key={k} className={k <= DIFFICULTIES.indexOf(d) ? "on" : ""} />
                     ))}
                   </span>
@@ -85,6 +88,8 @@ export function Home(props: Props) {
                         <span className="mono">{formatTime(result.timeMs)}</span>
                         {result.rank !== null && <span className="rank-pill">{result.rank}位</span>}
                       </>
+                    ) : unsent ? (
+                      <span className="accent">未送信</span>
                     ) : playing ? (
                       <span className="accent">続ける · {formatTime(elapsedOf(st.game!))}</span>
                     ) : (
@@ -98,16 +103,13 @@ export function Home(props: Props) {
           })}
         </ul>
         {error && <p className="error-text">{error}</p>}
-        <p className="muted small note">
-          <Bolt size={14} /> 全員が同じ問題でタイムを競います。時間はサーバーで計測され、止められません
-        </p>
       </section>
 
       <section className="card" aria-labelledby="free-title">
         <div className="card-head">
           <div>
             <h2 id="free-title">フリープレイ</h2>
-            <p className="muted small">好きな難易度で何問でも。ヒントと一時停止が使えます</p>
+            <p className="muted small">ヒントと一時停止が使えます</p>
           </div>
         </div>
         {freeInProgress && (
@@ -124,10 +126,22 @@ export function Home(props: Props) {
         )}
         <div className="free-grid">
           {DIFFICULTIES.map((d) => (
-            <button key={d} type="button" className="free-btn" onClick={() => props.onNewFree(d)}>
+            <button
+              key={d}
+              type="button"
+              className={`free-btn free-${d}`}
+              onClick={() => props.onNewFree(d)}
+              disabled={generating !== null}
+            >
               <span className="free-name">{DIFFICULTY_LABEL[d]}</span>
               <span className="free-best muted">
-                {best[d] ? `ベスト ${formatTime(best[d]!)}` : "新しい問題"}
+                {generating === d ? (
+                  <span className="spinner" aria-label="作成中" />
+                ) : best[d] ? (
+                  `ベスト ${formatTime(best[d]!)}`
+                ) : (
+                  "新しい問題"
+                )}
               </span>
             </button>
           ))}

@@ -10,12 +10,14 @@ type Props = {
   fx: Fx;
   showMistakes: boolean;
   highlightSame: boolean;
+  /** 行き詰まったマス（入る数字が無い） */
+  stuck: ReadonlySet<number>;
   onSelect: (cell: number) => void;
 };
 
 const NOTE_DIGITS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-export function Board({ game, fx, showMistakes, highlightSame, onSelect }: Props) {
+export function Board({ game, fx, showMistakes, highlightSame, stuck, onSelect }: Props) {
   const sel = game.selected;
   const selValue = sel !== null ? game.values[sel] : 0;
   const conflicts = useMemo(() => findConflicts(game.values), [game.values]);
@@ -43,6 +45,7 @@ export function Board({ game, fx, showMistakes, highlightSame, onSelect }: Props
         if (given) classes.push("given");
         else if (value) classes.push("filled");
         if (wrong) classes.push("wrong");
+        if (stuck.has(i)) classes.push("stuck");
         if (sel === i) classes.push("selected");
         else if (sel !== null && (rowOf(sel) === r || colOf(sel) === c || boxOf(sel) === boxOf(i)))
           classes.push("peer");
