@@ -386,16 +386,23 @@ p {
 }
 
 .level i:nth-child(1) {
-  height: 7px;
+  height: 6px;
 }
 .level i:nth-child(2) {
-  height: 10px;
+  height: 9px;
 }
 .level i:nth-child(3) {
-  height: 13px;
+  height: 12px;
 }
 .level i:nth-child(4) {
-  height: 16px;
+  height: 15px;
+}
+.level i:nth-child(5) {
+  height: 18px;
+}
+
+.level.level-master i.on {
+  background: var(--danger);
 }
 
 .level i.on {
@@ -420,15 +427,6 @@ p {
   border-radius: 50%;
   background: var(--success);
   vertical-align: middle;
-}
-
-.note {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  line-height: 1.5;
-  margin-top: 10px;
-  padding: 0 4px;
 }
 
 .continue {
@@ -481,6 +479,23 @@ p {
   transition:
     transform 0.12s,
     background 0.15s;
+}
+
+.free-btn.free-master {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.free-btn.free-master .free-best {
+  color: color-mix(in srgb, var(--bg) 65%, transparent);
+}
+
+.free-btn:disabled {
+  opacity: 0.6;
 }
 
 .free-btn:active {
@@ -1072,6 +1087,25 @@ p {
   }
 }
 
+/* 入力欄のあるシートは上に出す（iPhone のキーボードで隠れないように） */
+.sheet-backdrop.is-top {
+  align-items: flex-start;
+  padding: calc(var(--safe-top) + 12px) 12px 0;
+}
+
+.sheet-backdrop.is-top .sheet {
+  border-radius: 26px;
+  padding-bottom: 22px;
+  animation: drop 0.32s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+@keyframes drop {
+  from {
+    transform: translateY(-24px);
+    opacity: 0;
+  }
+}
+
 .sheet-close {
   position: absolute;
   top: 10px;
@@ -1167,7 +1201,27 @@ p {
 }
 
 .keys {
-  line-height: 1.7;
+  display: none;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  margin: 4px 0 0;
+}
+
+.keys dt {
+  font-family: var(--font-num);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.keys dd {
+  margin: 0;
+}
+
+/* キーボード操作の一覧はマウスのある端末だけに出す */
+@media (hover: hover) and (pointer: fine) {
+  .keys {
+    display: grid;
+  }
 }
 
 .name-form {
@@ -1341,12 +1395,23 @@ p {
 }
 
 .diff-tabs {
+  display: flex;
   background: transparent;
   padding: 0;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -16px;
+  padding: 0 16px;
+}
+
+.diff-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .diff-tabs button {
+  flex: 1 0 auto;
+  padding: 0 14px;
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
 }
@@ -1355,10 +1420,6 @@ p {
   background: var(--ink);
   color: var(--bg);
   box-shadow: none;
-}
-
-.ranking-note {
-  padding: 0 4px;
 }
 
 .board-list {
@@ -1500,9 +1561,4 @@ p {
     animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
   }
-}
-
-.note svg {
-  flex: none;
-  margin-top: 2px;
 }

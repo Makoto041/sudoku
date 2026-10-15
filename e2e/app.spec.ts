@@ -74,7 +74,11 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   test.setTimeout(120_000);
   await page.goto("/");
   await page.locator(".daily-row").first().click();
-  await page.getByPlaceholder("ニックネーム").fill(`テスト${test.info().project.name}`);
+  // 名前の入力欄は画面の上半分に出す（iPhone のキーボードで隠れないように）
+  const nameInput = page.getByPlaceholder("ニックネーム");
+  const box = await nameInput.boundingBox();
+  expect(box!.y + box!.height).toBeLessThan(page.viewportSize()!.height / 2);
+  await nameInput.fill(`テスト${test.info().project.name}`);
   await shot(page, "name-sheet");
   await page.getByRole("button", { name: "はじめる" }).click();
   await expect(page.getByText("ランキング戦")).toBeVisible();
@@ -101,4 +105,13 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   await page.getByRole("button", { name: "ランキングを見る" }).click();
   await expect(page.locator(".row.is-me")).toBeVisible();
   await shot(page, "ranking");
+});
+
+test("鬼の問題を作って遊び始められる", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".free-master").click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".bar-main")).toHaveText("鬼");
+  const g = await savedGame(page, "sudoku:free");
+  expect(g.puzzle.filter((v) => v !== 0).length).toBeLessThanOrEqual(28);
 });
