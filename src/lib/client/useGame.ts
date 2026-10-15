@@ -89,10 +89,8 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
       if (effects.length === 0) return;
       playEffects(
         effects.map((e) =>
-          // 「間違いを表示しない」設定のときは、間違いでも普通の音にする（フリープレイのみ）
-          e.kind === "place" && e.wrong && !options.showMistakes && next.mode === "free"
-            ? { ...e, wrong: false }
-            : e,
+          // 「間違いをすぐ表示」がオフのときは、重複していない間違いは普通の音にする
+          e.kind === "place" && e.wrong && !options.showMistakes && !e.conflict ? { ...e, wrong: false } : e,
         ),
       );
       const key = ++fxKey.current;
@@ -103,7 +101,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
             out.pop = { cell: e.cell, key };
             // 揺れは間違えたその入力だけ。正しく入れ直したら前の揺れを引き継がない
             out.shake =
-              e.kind === "place" && e.wrong && (options.showMistakes || next.mode === "daily")
+              e.kind === "place" && ((e.wrong && options.showMistakes) || e.conflict)
                 ? { cell: e.cell, key }
                 : null;
             if (e.units.length) {

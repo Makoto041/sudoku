@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { findConflicts, parseGrid } from "@/lib/sudoku/core";
+import { bitCount, candidatesAt, digitsOf, findConflicts, parseGrid } from "@/lib/sudoku/core";
 import { generatePuzzle } from "@/lib/sudoku/generator";
 import { countSolutions } from "@/lib/sudoku/solver";
-import { elapsedOf, formatTime, newGame, reduce, stuckCells, type Action, type GameState } from "./state";
+import {
+  elapsedOf,
+  formatTime,
+  newGame,
+  reduce,
+  stuckCells,
+  withSolution,
+  type Action,
+  type GameState,
+} from "./state";
 
 function freeGame() {
   const p = generatePuzzle("state-test", "easy");
@@ -141,5 +150,29 @@ describe("行き詰まり", () => {
 
   it("行き詰まっていなければ何も返さない", () => {
     expect(stuckCells(play(Array(81).fill(0)))).toEqual([]);
+  });
+});
+
+describe("日次の間違い表示", () => {
+  it("端末で解いた解答と照合し、重複しない間違いも間違いとして扱う。ヒントは使えない", () => {
+    const p = generatePuzzle("daily-wrong", "hard");
+    const s0 = withSolution(
+      newGame({
+        mode: "daily",
+        difficulty: "hard",
+        seed: "2026-10-16",
+        puzzle: p.puzzle,
+        solution: null,
+        daily: { sessionId: "s", date: "2026-10-16", startedAt: 0, clockOffset: 0 },
+      }),
+    );
+    expect(s0.solution).toEqual(p.solution);
+    // 候補が 2 つ以上あるマスに、解答ではない候補を入れる（重複はしない）
+    const cell = p.puzzle.findIndex((v, i) => !v && bitCount(candidatesAt(p.puzzle, i)) >= 2);
+    const wrongDigit = digitsOf(candidatesAt(p.puzzle, cell)).find((d) => d !== p.solution[cell])!;
+    const { s, effects } = run(s0, { type: "select", cell }, { type: "input", digit: wrongDigit });
+    expect(effects[0]).toMatchObject({ kind: "place", wrong: true, conflict: false });
+    expect(s.mistakes).toBe(1);
+    expect(run(s, { type: "hint" }).effects[0].kind).toBe("blocked");
   });
 });
