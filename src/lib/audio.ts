@@ -1,6 +1,7 @@
 /**
- * 効果音はすべて Web Audio でその場で合成する（音声ファイルなし）。
- * 数字を置くと、碁石を盤に打ったような「パチッ」という音が鳴る（数字ごとに響きの高さが少し違う）。
+ * 効果音。数字を置く音だけは録音（ビリヤードの球どうしが当たる「カチッ」、public/sounds/clack.mp3）を使い、
+ * 数字ごとに高さを少し変えて鳴らす。読み込み前やオフラインで読めないときは合成音で代わりに鳴らす。
+ * そのほかの音は Web Audio でその場で合成する。
  * iOS は最初のタップで AudioContext を再開しないと鳴らないので unlock() を入力イベントで呼ぶ。
  */
 
@@ -9,10 +10,28 @@ type Ctx = {
   master: GainNode;
   dry: GainNode;
   reverb: GainNode;
+  /** リミッターを通さない出口。録音の鋭い立ち上がりは、リミッターを通すと 4 分の 1 ほどに潰れてしまう */
+  direct: GainNode;
 };
 
 let state: Ctx | null = null;
 let enabled = true;
+/** 置く音の録音。読み込めるまでは null */
+let clackBuffer: AudioBuffer | null = null;
+const CLACK_URL = "/sounds/clack.mp3";
+
+function loadClack(ctx: AudioContext) {
+  fetch(CLACK_URL)
+    .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(String(res.status)))))
+    // 古い Safari は Promise を返さないので、コールバック形式で呼ぶ
+    .then((data) => new Promise<AudioBuffer>((resolve, reject) => ctx.decodeAudioData(data, resolve, reject)))
+    .then((buffer) => {
+      clackBuffer = buffer;
+    })
+    .catch(() => {
+      /* 読めなければ合成音のまま */
+    });
+}
 
 // C メジャーペンタトニック（C5 から 9 音）
 const PENTATONIC = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98];
@@ -66,7 +85,12 @@ function setup(): Ctx | null {
   const reverb = ctx.createGain();
   reverb.connect(convolver);
 
-  state = { ctx, master, dry, reverb };
+  const direct = ctx.createGain();
+  direct.gain.value = 0.9;
+  direct.connect(ctx.destination);
+
+  state = { ctx, master, dry, reverb, direct };
+  loadClack(ctx);
   return state;
 }
 
@@ -226,6 +250,31 @@ function stone(s: Ctx, o: { at?: number; gain?: number; size?: number; tone?: nu
   });
 }
 
+/**
+ * 置く音。録音があればそれを、無ければ合成の石の音を鳴らす。
+ * rate で高さ（再生速度）を変え、毎回ほんの少し揺らして機械的にしない
+ */
+function knock(s: Ctx, o: { at?: number; gain?: number; rate?: number } = {}) {
+  const rate = (o.rate ?? 1) * (0.99 + Math.random() * 0.02);
+  if (!clackBuffer) {
+    stone(s, { at: o.at, gain: 0.42 * (o.gain ?? 1), tone: rate });
+    return;
+  }
+  const t = s.ctx.currentTime + (o.at ?? 0);
+  const src = s.ctx.createBufferSource();
+  src.buffer = clackBuffer;
+  src.playbackRate.value = rate;
+  const g = s.ctx.createGain();
+  g.gain.value = 0.6 * (o.gain ?? 1);
+  src.connect(g);
+  g.connect(s.direct);
+  const send = s.ctx.createGain();
+  send.gain.value = 0.12;
+  g.connect(send);
+  send.connect(s.reverb);
+  src.start(t);
+}
+
 /** 数字ごとの響きの高さ（1 で低め、9 で高め。差はわずか） */
 const stoneTone = (digit: number) => 0.93 + Math.min(8, Math.max(0, digit - 1)) * 0.018;
 
@@ -243,17 +292,17 @@ export const sfx = {
     if (!s) return;
     tone(s, { freq: 900, toFreq: 700, gain: 0.06, attack: 0.002, decay: 0.05, type: "triangle" });
   },
-  /** 数字を置く：碁石を打つ「パチッ」 */
+  /** 数字を置く：球が当たる「カチッ」。数字ごとに高さが少し違う */
   place(digit: number) {
     const s = ready();
     if (!s) return;
-    stone(s, { tone: stoneTone(digit) });
+    knock(s, { rate: stoneTone(digit) });
   },
-  /** メモ：小さく軽い石。消すときはさらに控えめ */
+  /** メモ：小さく高めの「カチッ」。消すときはさらに控えめ */
   note(digit: number, on: boolean) {
     const s = ready();
     if (!s) return;
-    stone(s, { gain: on ? 0.16 : 0.1, size: 0.35, tone: stoneTone(digit) * 1.35 });
+    knock(s, { gain: on ? 0.32 : 0.2, rate: stoneTone(digit) * 1.3 });
   },
   erase() {
     const s = ready();
@@ -294,7 +343,7 @@ export const sfx = {
     const s = ready();
     if (!s) return;
     const base = pitch(digit);
-    stone(s, { tone: stoneTone(digit) });
+    knock(s, { rate: stoneTone(digit) });
     const steps = [1.25, 1.5, 2, 2.5, 3];
     for (let k = 0; k < Math.min(2 + count, steps.length); k++) {
       bell(s, base * steps[k], 0.07 + k * 0.065, 0.075, 0.7);
@@ -310,9 +359,9 @@ export const sfx = {
   solved() {
     const s = ready();
     if (!s) return;
-    // 石を続けて打ち、最後に和音
+    // 「カチッ」を続けて鳴らし、最後に和音
     const taps = 6;
-    for (let k = 0; k < taps; k++) stone(s, { at: k * 0.07, gain: 0.3 + k * 0.03, tone: 0.92 + k * 0.035 });
+    for (let k = 0; k < taps; k++) knock(s, { at: k * 0.07, gain: 0.7 + k * 0.06, rate: 0.92 + k * 0.035 });
     const chordAt = taps * 0.07 + 0.06;
     for (const f of [523.25, 659.25, 783.99, 987.77]) {
       tone(s, { freq: f, at: chordAt, gain: 0.05, attack: 0.05, decay: 1.6, reverb: 0.8 });

@@ -13,15 +13,15 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 
 ## しくみ
 
-| 場所                 | 内容                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------- |
-| `src/lib/sudoku/`    | 盤面の基本処理、解答探索（ビットマスク＋MRV）、人の手筋による難易度判定、シードから決まる問題生成 |
-| `src/lib/game/`      | ゲームの状態遷移（純粋関数）。入力・メモ・元に戻す・ヒント・クリア判定                            |
-| `src/lib/audio.ts`   | 効果音。Web Audio でその場で合成（音声ファイルなし）。数字ごとにペンタトニックの音程              |
-| `src/lib/haptics.ts` | 触覚。Android は Vibration API、iOS 18 以降の Safari は switch 型チェックボックスの触覚           |
-| `src/lib/server/`    | ランキング API の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                         |
-| `src/app/api/`       | Route Handlers（`/api/daily/start`, `/api/daily/submit`, `/api/leaderboard`, `/api/player`）      |
-| `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける                    |
+| 場所                 | 内容                                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `src/lib/sudoku/`    | 盤面の基本処理、解答探索（ビットマスク＋MRV）、人の手筋による難易度判定、シードから決まる問題生成              |
+| `src/lib/game/`      | ゲームの状態遷移（純粋関数）。入力・メモ・元に戻す・ヒント・クリア判定                                         |
+| `src/lib/audio.ts`   | 効果音。数字を置く音は録音（`public/sounds/clack.mp3`）を数字ごとに高さを変えて鳴らし、ほかは Web Audio で合成 |
+| `src/lib/haptics.ts` | 触覚。Android は Vibration API、iOS 18 以降の Safari は switch 型チェックボックスの触覚                        |
+| `src/lib/server/`    | ランキング API の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                                      |
+| `src/app/api/`       | Route Handlers（`/api/daily/start`, `/api/daily/submit`, `/api/leaderboard`, `/api/player`）                   |
+| `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける                                 |
 
 ### ランキングの公正さ
 
@@ -29,6 +29,10 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 - 時間はサーバーが計測します（開始を受け付けた時刻から、正しい解答を受け取った時刻まで）。一時停止はできません。
 - 同じプレイヤーが開始し直しても最初の開始時刻が使われ、記録は最初のクリアの 1 回だけです。15 秒未満のクリアは記録しません。
 - プレイヤーは端末ごとの匿名 ID とニックネームで識別します。ログインが無いので、ID を作り直す不正までは防げません。
+
+## 音源
+
+- `public/sounds/clack.mp3`：Za-Games「[billiard ball clack](https://freesound.org/people/Za-Games/sounds/539854/)」（Freesound、CC0）を切り出して音量をそろえたもの
 
 ## 開発
 
