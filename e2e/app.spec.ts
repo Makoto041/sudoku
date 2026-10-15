@@ -1,6 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 import { solve } from "../src/lib/sudoku/solver";
 
+// ページ内で例外が出たら失敗にする（効果音や触覚の処理も含む）
+let pageErrors: string[] = [];
+test.beforeEach(({ page }) => {
+  pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+});
+test.afterEach(() => {
+  expect(pageErrors).toEqual([]);
+});
+
 const SHOTS = process.env.E2E_SHOTS;
 
 async function shot(page: Page, name: string) {
