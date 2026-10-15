@@ -52,7 +52,7 @@ class RedisStore implements RankingStore {
       ex: SESSION_TTL_SEC,
     });
     if (claimed) {
-      await this.redis.set(sessionKey(candidate.id), candidate, { ex: SESSION_TTL_SEC });
+      await this.redis.set(sessionKey(candidate.id), JSON.stringify(candidate), { ex: SESSION_TTL_SEC });
       return candidate;
     }
     const existingId = await this.redis.get<string>(startKey(candidate));
@@ -60,12 +60,13 @@ class RedisStore implements RankingStore {
     if (existing) return existing;
     // 開始キーだけ残ってセッションが消えていた場合は作り直す
     await this.redis.set(startKey(candidate), candidate.id, { ex: SESSION_TTL_SEC });
-    await this.redis.set(sessionKey(candidate.id), candidate, { ex: SESSION_TTL_SEC });
+    await this.redis.set(sessionKey(candidate.id), JSON.stringify(candidate), { ex: SESSION_TTL_SEC });
     return candidate;
   }
 
-  getSession(id: string) {
-    return this.redis.get<Session>(sessionKey(id));
+  async getSession(id: string) {
+    const raw = await this.redis.get<string>(sessionKey(id));
+    return raw ? (JSON.parse(raw) as Session) : null;
   }
 
   async finishSession(id: string, finishedAt: number) {
@@ -77,7 +78,9 @@ class RedisStore implements RankingStore {
     if (!won) return false;
     const session = await this.getSession(id);
     if (session) {
-      await this.redis.set(sessionKey(id), { ...session, finishedAt }, { ex: SESSION_TTL_SEC });
+      await this.redis.set(sessionKey(id), JSON.stringify({ ...session, finishedAt }), {
+        ex: SESSION_TTL_SEC,
+      });
     }
     return true;
   }
@@ -122,7 +125,7 @@ class RedisStore implements RankingStore {
 
   async getNames(playerIds: string[]) {
     if (playerIds.length === 0) return {};
-    const names = await this.redis.hmget<Record<string, string>>(NAMES_KEY, ...playerIds);
+    const names = await this.redis.hmget<Record<string, string | null>>(NAMES_KEY, ...playerIds);
     const out: Record<string, string> = {};
     for (const id of playerIds) {
       const name = names?.[id];
@@ -224,7 +227,8 @@ export function getStore(): RankingStore | null {
   const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
   if (url && token) {
-    cached = new RedisStore(new Redis({ url, token }));
+    // 名前が "123" や "null" でも文字列のまま扱えるよう、値の自動 JSON 変換は使わない
+    cached = new RedisStore(new Redis({ url, token, automaticDeserialization: false }));
   } else if (process.env.VERCEL) {
     cached = null;
   } else {
