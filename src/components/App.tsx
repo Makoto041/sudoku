@@ -5,7 +5,7 @@ import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
 import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
-import { newGame, type GameState } from "@/lib/game/state";
+import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
 import { getPlayer, setPlayerName, type Player } from "@/lib/client/player";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
@@ -133,7 +133,10 @@ export function App() {
     [mounted, refresh, view.name],
   );
 
-  const openGame = useCallback((game: GameState) => go({ name: "game", game, key: Date.now() }), [go]);
+  const openGame = useCallback(
+    (game: GameState) => go({ name: "game", game: withSolution(game), key: Date.now() }),
+    [go],
+  );
 
   const startDaily = useCallback(
     async (difficulty: Difficulty, p: Player = player) => {

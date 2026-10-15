@@ -87,8 +87,9 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
     Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
   );
   const g = await savedGame(page, key);
-  expect(g.solution).toBeNull();
+  // 解答はサーバーから受け取らず、端末で解いたものを持つ
   const solution = solve(g.puzzle)!;
+  expect(g.solution).toEqual(solution);
   const last = await fill(page, g.puzzle, solution, true);
   await shot(page, "game-daily");
   // サーバーは 15 秒未満のクリアを受け付けない
@@ -215,4 +216,39 @@ test("行き詰まったら知らせ、間違える前まで戻せる", async ({
   await page.getByRole("button", { name: "間違える前まで戻す" }).click();
   await expect(page.getByText("どこかで間違えています")).toBeHidden();
   await expect(cells.nth(c)).not.toHaveClass(/stuck/);
+});
+
+test("今日の一問でも、重複しない間違いを赤く表示する", async ({ page }, info) => {
+  await page.goto("/");
+  await page.locator(".daily-row").nth(2).click();
+  await page.getByPlaceholder("ニックネーム").fill(`赤${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByText("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  // 同じ行・列・ブロックに無い数字のうち、解答ではないものを入れる
+  const peersOf = (i: number) =>
+    g.puzzle.filter(
+      (_, j) =>
+        j !== i &&
+        (Math.floor(j / 9) === Math.floor(i / 9) ||
+          j % 9 === i % 9 ||
+          (Math.floor(j / 27) === Math.floor(i / 27) && Math.floor((j % 9) / 3) === Math.floor((i % 9) / 3))),
+    );
+  let cell = -1;
+  let digit = 0;
+  for (let i = 0; i < 81 && cell < 0; i++) {
+    if (g.puzzle[i]) continue;
+    const used = new Set(peersOf(i));
+    const d = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((d) => !used.has(d) && d !== solution[i]);
+    if (d) [cell, digit] = [i, d];
+  }
+  const target = page.getByRole("gridcell").nth(cell);
+  await target.dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${digit}`);
+  await expect(target).toHaveClass(/wrong/);
+  await expect(page.locator(".stat-value").first()).toHaveText("1");
 });

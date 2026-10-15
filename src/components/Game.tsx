@@ -223,7 +223,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
 
       <div className="status-row">
         <div className="stat">
-          {settings.showMistakes || isDaily ? (
+          {settings.showMistakes ? (
             <>
               <span className="stat-label">ミス</span>
               <span className="stat-value">{game.mistakes}</span>

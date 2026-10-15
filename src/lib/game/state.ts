@@ -1,4 +1,4 @@
-import { countSolutions } from "@/lib/sudoku/solver";
+import { countSolutions, solve } from "@/lib/sudoku/solver";
 import {
   PEERS,
   UNITS,
@@ -19,7 +19,10 @@ export type GameState = {
   /** フリープレイのシード、または日次の日付 */
   seed: string;
   puzzle: Grid;
-  /** フリープレイのみ。日次では解答を持たない */
+  /**
+   * 解答。フリープレイは作ったときのもの、日次は端末で解いたもの（サーバーからは受け取らない）。
+   * 古い保存データの日次には無いことがある
+   */
   solution: Grid | null;
   values: Grid;
   /** マスごとのメモ（bit1〜bit9） */
@@ -48,7 +51,16 @@ type Move = {
 
 /** 入力の結果。音・アニメーションの出し分けに使う */
 export type Effect =
-  | { kind: "place"; cell: number; digit: number; wrong: boolean; units: number[][] }
+  | {
+      kind: "place";
+      cell: number;
+      digit: number;
+      /** 解答と違う */
+      wrong: boolean;
+      /** 同じ行・列・ブロックに同じ数字がある */
+      conflict: boolean;
+      units: number[][];
+    }
   | { kind: "note"; cell: number; digit: number; on: boolean }
   | { kind: "erase"; cell: number }
   | { kind: "undo"; cell: number }
@@ -102,6 +114,13 @@ export function newGame(input: {
 
 export const isGiven = (s: GameState, i: number) => s.puzzle[i] !== 0;
 
+/** 解答を持っていなければ端末で解いて付ける（日次・古い保存データ用） */
+export function withSolution(s: GameState): GameState {
+  if (s.solution) return s;
+  const solution = solve(s.puzzle);
+  return solution ? { ...s, solution } : s;
+}
+
 /** その数字が間違いか。フリープレイは解答と比べ、日次は重複の有無で判断する */
 export function isWrong(s: GameState, i: number, values: Grid = s.values): boolean {
   const v = values[i];
@@ -140,6 +159,7 @@ function place(s: GameState, cell: number, digit: number, viaHint: boolean): [Ga
     }
   }
   const wrong = !viaHint && isWrong(s, cell, values);
+  const conflict = PEERS[cell].some((p) => values[p] === digit);
   const next: GameState = {
     ...s,
     values,
@@ -150,7 +170,7 @@ function place(s: GameState, cell: number, digit: number, viaHint: boolean): [Ga
   };
   const units = wrong ? [] : completedUnits(next, values, cell);
   const effects: Effect[] = [
-    viaHint ? { kind: "hint", cell, digit, units } : { kind: "place", cell, digit, wrong, units },
+    viaHint ? { kind: "hint", cell, digit, units } : { kind: "place", cell, digit, wrong, conflict, units },
   ];
   if (isSolved(next, values)) {
     next.status = "solved";
@@ -227,7 +247,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return [cur, [{ kind: "rewind", steps }]];
     }
     case "hint": {
-      if (!s.solution) return [s, [{ kind: "blocked" }]];
+      if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
       const cell = pickHintCell(s);
       if (cell === null) return [s, [{ kind: "blocked" }]];
       const [next, effects] = place({ ...s, selected: cell }, cell, s.solution[cell], true);

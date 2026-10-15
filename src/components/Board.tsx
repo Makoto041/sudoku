@@ -34,11 +34,8 @@ export function Board({ game, fx, showMistakes, highlightSame, stuck, onSelect }
         const r = rowOf(i);
         const c = colOf(i);
         const given = isGiven(game, i);
-        // フリープレイでは解答と照合、日次では同じユニット内の重複を間違いとして示す
-        const wrong =
-          !given &&
-          value !== 0 &&
-          (game.mode === "daily" ? conflicts.has(i) : showMistakes && isWrong(game, i));
+        // 重複はいつも、解答と違う数字は「間違いをすぐ表示」がオンのときに赤くする
+        const wrong = !given && value !== 0 && (conflicts.has(i) || (showMistakes && isWrong(game, i)));
         const classes = ["cell"];
         if (c % 3 === 2 && c < 8) classes.push("edge-r");
         if (r % 3 === 2 && r < 8) classes.push("edge-b");
