@@ -81,7 +81,7 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   await nameInput.fill(`テスト${test.info().project.name}`);
   await shot(page, "name-sheet");
   await page.getByRole("button", { name: "はじめる" }).click();
-  await expect(page.getByText("ランキング戦")).toBeVisible();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
 
   const key = await page.evaluate(() =>
     Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
@@ -165,7 +165,7 @@ test("端末の日付がずれていても、今日の一問の続きが消え�
   await page.locator(".daily-row").first().click();
   await page.getByPlaceholder("ニックネーム").fill(`日付${info.project.name}`);
   await page.getByRole("button", { name: "はじめる" }).click();
-  await expect(page.getByText("ランキング戦")).toBeVisible();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
   const key = await page.evaluate(() =>
     Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
   );
@@ -178,7 +178,7 @@ test("端末の日付がずれていても、今日の一問の続きが消え�
   await page.getByRole("button", { name: "ホームに戻る" }).click();
   await expect(page.locator(".daily-row").first()).toContainText("続ける");
   await page.locator(".daily-row").first().click();
-  await expect(page.getByText("ランキング戦")).toBeVisible();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
   const after = await savedGame(page, key);
   expect(after.values[g.puzzle.indexOf(0)]).toBe(5);
 });
@@ -223,7 +223,7 @@ test("今日の一問でも、重複しない間違いを赤く表示する", as
   await page.locator(".daily-row").nth(2).click();
   await page.getByPlaceholder("ニックネーム").fill(`赤${info.project.name}`);
   await page.getByRole("button", { name: "はじめる" }).click();
-  await expect(page.getByText("ランキング戦")).toBeVisible();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
   const key = await page.evaluate(() =>
     Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
   );
@@ -250,7 +250,7 @@ test("今日の一問でも、重複しない間違いを赤く表示する", as
   await target.dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
   await page.keyboard.press(`Digit${digit}`);
   await expect(target).toHaveClass(/wrong/);
-  await expect(page.locator(".stat-value").first()).toHaveText("1");
+  await expect(page.locator(".stat-pair .stat-value")).toHaveText("1");
 });
 
 test("置く音の録音を配信している", async ({ request }) => {
@@ -258,4 +258,28 @@ test("置く音の録音を配信している", async ({ request }) => {
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("audio/mpeg");
   expect((await res.body()).length).toBeGreaterThan(1000);
+});
+
+test("正しく置くと得点が浮かび、スコアが増える。間違えると減る", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /ふつう/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const empties = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const cells = page.getByRole("gridcell");
+  const score = page.locator(".score-value");
+  await expect(score).toHaveText("0");
+  await cells.nth(empties[0]).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![empties[0]]}`);
+  await expect(page.locator(".popup.gain")).toHaveText(/^\+\d+$/);
+  const after = Number((await score.textContent())!.replace(/,/g, ""));
+  expect(after).toBeGreaterThan(0);
+  await cells.nth(empties[1]).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${(g.solution![empties[1]] % 9) + 1}`);
+  await expect(page.locator(".popup.loss")).toBeVisible();
+  expect(Number((await score.textContent())!.replace(/,/g, ""))).toBeLessThan(after);
+  await shot(page, "score");
 });

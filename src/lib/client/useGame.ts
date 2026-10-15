@@ -13,9 +13,13 @@ export type Fx = {
   /** 揃ったユニットのマスと、波打たせる順番 */
   flash: { cells: Map<number, number>; key: number } | null;
   solvedKey: number | null;
+  /** マスの上に浮かべる得点（直近のものだけ残す） */
+  popups: Popup[];
 };
 
-const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null };
+export type Popup = { id: number; cell: number; text: string; kind: "gain" | "bonus" | "loss" };
+
+const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, popups: [] };
 
 export function storageKeyFor(s: GameState): string {
   return s.mode === "daily" && s.daily ? KEYS.daily(s.daily.date, s.difficulty) : KEYS.free;
@@ -81,7 +85,10 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
   const fxKey = useRef(0);
 
   const dispatch = useCallback(
-    (action: Action) => {
+    (raw: Action) => {
+      // 置く操作には経過時間を付ける（スコアの速さに使う）
+      const action: Action =
+        raw.type === "input" || raw.type === "hint" ? { ...raw, t: elapsedOf(gameRef.current) } : raw;
       const [next, effects] = reduce(gameRef.current, action);
       if (next === gameRef.current && effects.length === 0) return;
       gameRef.current = next;
@@ -96,7 +103,15 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
       const key = ++fxKey.current;
       setFx((prev) => {
         const out: Fx = { ...prev };
+        const popups: Popup[] = [];
         for (const e of effects) {
+          if (e.kind === "place" && e.points !== 0) {
+            const text = e.points > 0 ? `+${e.points}` : `${e.points}`.replace("-", "−");
+            popups.push({ id: key * 10, cell: e.cell, text, kind: e.points > 0 ? "gain" : "loss" });
+          }
+          if ((e.kind === "place" || e.kind === "hint") && e.bonus > 0) {
+            popups.push({ id: key * 10 + 1, cell: e.cell, text: `+${e.bonus}`, kind: "bonus" });
+          }
           if (e.kind === "place" || e.kind === "hint") {
             out.pop = { cell: e.cell, key };
             // 揺れは間違えたその入力だけ。正しく入れ直したら前の揺れを引き継がない
@@ -118,6 +133,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
           }
           if (e.kind === "solved") out.solvedKey = key;
         }
+        if (popups.length) out.popups = [...prev.popups, ...popups].slice(-6);
         return out;
       });
     },

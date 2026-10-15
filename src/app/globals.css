@@ -583,6 +583,96 @@ p {
   align-items: center;
 }
 
+.score-stat {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  line-height: 1.15;
+}
+
+.score-stat .stat-label {
+  font-size: 11px;
+}
+
+.score-value {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  animation: bump 0.25s cubic-bezier(0.25, 1.5, 0.45, 1);
+}
+
+@keyframes bump {
+  from {
+    transform: scale(1.15);
+  }
+}
+
+.stat-pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.stat-end {
+  gap: 10px;
+}
+
+/* 盤面の上に浮かべる得点。盤面と同じ大きさの層に、マスの位置で置く */
+.popups {
+  --size: min(100cqw, 100cqh);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--size);
+  height: var(--size);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.popup {
+  position: absolute;
+  left: calc((var(--c) + 0.5) * 100% / 9);
+  top: calc(var(--r) * 100% / 9);
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: max(14px, calc(var(--size) * 0.038));
+  color: var(--accent-ink);
+  text-shadow:
+    0 0 3px var(--surface),
+    0 0 6px var(--surface);
+  white-space: nowrap;
+  animation: float-up 0.9s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+.popup.bonus {
+  color: var(--gold);
+  font-size: max(16px, calc(var(--size) * 0.046));
+  animation-delay: 0.12s;
+}
+
+.popup.loss {
+  color: var(--danger);
+}
+
+@keyframes float-up {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 10%) scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, -40%) scale(1.05);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -140%) scale(1);
+  }
+}
+
 .clock {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
@@ -1338,7 +1428,7 @@ p {
   letter-spacing: 0.08em;
 }
 
-.result-time {
+.result-score {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
   font-size: 54px;
@@ -1347,6 +1437,12 @@ p {
   color: var(--accent-ink);
   margin: 4px 0;
   animation: pop 0.45s cubic-bezier(0.25, 1.5, 0.45, 1) both 0.1s;
+}
+
+.result-unit {
+  font-size: 20px;
+  margin-left: 4px;
+  font-weight: 700;
 }
 
 .result-rank {
@@ -1569,9 +1665,21 @@ p {
   vertical-align: 1px;
 }
 
-.time {
-  font-weight: 600;
+.score {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+}
+
+.points {
+  font-weight: 700;
   font-size: 16px;
+}
+
+.time {
+  font-size: 12px;
+  color: var(--ink-2);
 }
 
 .skeleton .row {

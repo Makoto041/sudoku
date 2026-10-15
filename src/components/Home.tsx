@@ -3,7 +3,8 @@
 import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { SubmitResponse } from "@/lib/client/api";
-import { bestTimes } from "@/lib/client/stats";
+import { bestScores } from "@/lib/client/stats";
+import { formatPoints } from "@/lib/game/score";
 import { ChevronRight, Gear, Trophy } from "./icons";
 import { InstallHint } from "./InstallHint";
 import { Logo } from "./Logo";
@@ -35,7 +36,7 @@ function longDate(date: string) {
 
 export function Home(props: Props) {
   const { today, daily, free, starting, generating, error } = props;
-  const best = bestTimes();
+  const best = bestScores();
   const freeInProgress = free && free.status !== "solved" ? free : null;
 
   return (
@@ -85,7 +86,11 @@ export function Home(props: Props) {
                       <span className="spinner" aria-label="読み込み中" />
                     ) : result ? (
                       <>
-                        <span className="mono">{formatTime(result.timeMs)}</span>
+                        <span className="mono">
+                          {result.points !== undefined
+                            ? `${formatPoints(result.points)}点`
+                            : formatTime(result.timeMs)}
+                        </span>
                         {result.rank !== null && <span className="rank-pill">{result.rank}位</span>}
                       </>
                     ) : unsent ? (
@@ -137,8 +142,8 @@ export function Home(props: Props) {
               <span className="free-best muted">
                 {generating === d ? (
                   <span className="spinner" aria-label="作成中" />
-                ) : best[d] ? (
-                  `ベスト ${formatTime(best[d]!)}`
+                ) : best[d] != null ? (
+                  `ベスト ${formatPoints(best[d]!)}点`
                 ) : (
                   "新しい問題"
                 )}

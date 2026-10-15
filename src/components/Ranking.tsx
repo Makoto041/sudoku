@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
+import { formatPoints } from "@/lib/game/score";
 import { formatTime } from "@/lib/game/state";
 import { api, describeError, type LeaderboardResponse } from "@/lib/client/api";
 import { ChevronLeft, Refresh } from "./icons";
@@ -141,7 +142,10 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
                     {e.name}
                     {e.isMe && <span className="me-tag">あなた</span>}
                   </span>
-                  <span className="time mono">{formatTime(e.timeMs)}</span>
+                  <span className="score">
+                    <span className="points mono">{formatPoints(e.points)}</span>
+                    <span className="time mono">{formatTime(e.timeMs)}</span>
+                  </span>
                 </li>
               ))}
             </ol>
@@ -153,7 +157,7 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
             <span>
               あなた <strong>{data.me.rank}</strong> 位<span className="muted"> / {data.total}人</span>
             </span>
-            <span className="mono">{formatTime(data.me.timeMs)}</span>
+            <span className="mono">{formatPoints(data.me.points)}点</span>
           </div>
         )}
       </div>

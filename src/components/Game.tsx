@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTY_LABEL, serializeGrid } from "@/lib/sudoku/core";
 import { elapsedOf, formatTime, stuckCells, type GameState } from "@/lib/game/state";
@@ -10,6 +10,7 @@ import type { Settings } from "@/lib/client/settings";
 import { KEYS, load, save } from "@/lib/client/storage";
 import { useGame } from "@/lib/client/useGame";
 import { recordFreeClear, type FreeClear } from "@/lib/client/stats";
+import { formatPoints } from "@/lib/game/score";
 import { haptic } from "@/lib/haptics";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
@@ -52,6 +53,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
           playerId: player.id,
           grid: serializeGrid(g.values),
           name: player.name ?? "名無し",
+          moves: g.moves ?? [],
         });
         save(KEYS.dailyResult(g.daily.date, g.difficulty), result);
         setOutcome({ state: "done", result });
@@ -72,6 +74,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
               date: g.daily.date,
               difficulty: g.difficulty,
               timeMs: board.me.timeMs,
+              points: board.me.points,
               rank: board.me.rank,
               total: board.total,
             };
@@ -93,7 +96,10 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
     if (game.status !== "solved" || handled.current) return;
     handled.current = true;
     if (game.mode === "daily") void submit(game);
-    else setFreeClear(recordFreeClear(game.difficulty, game.elapsedMs, game.mistakes, game.hints));
+    else
+      setFreeClear(
+        recordFreeClear(game.difficulty, game.elapsedMs, game.score?.points ?? 0, game.mistakes, game.hints),
+      );
   }, [game, submit]);
 
   // 盤面のアニメーションを見せてから結果を出す
@@ -222,25 +228,27 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
       </header>
 
       <div className="status-row">
-        <div className="stat">
-          {settings.showMistakes ? (
-            <>
-              <span className="stat-label">ミス</span>
-              <span className="stat-value">{game.mistakes}</span>
-            </>
-          ) : (
-            <>
-              <span className="stat-label">進み具合</span>
-              <span className="stat-value">{Math.round((filled / Math.max(1, toFill)) * 100)}%</span>
-            </>
-          )}
+        <div className="stat score-stat" aria-label="スコア">
+          <span className="stat-label">スコア</span>
+          <span key={game.score?.points ?? 0} className="stat-value score-value">
+            {formatPoints(game.score?.points ?? 0)}
+          </span>
         </div>
         <Clock game={game} />
         <div className="stat stat-end">
+          {settings.showMistakes ? (
+            <span className="stat-pair">
+              <span className="stat-label">ミス</span>
+              <span className="stat-value">{game.mistakes}</span>
+            </span>
+          ) : (
+            <span className="stat-pair">
+              <span className="stat-value">{Math.round((filled / Math.max(1, toFill)) * 100)}%</span>
+            </span>
+          )}
           {isDaily ? (
-            <span className="live-chip">
+            <span className="live-chip" role="img" aria-label="ランキング戦">
               <span className="live-dot" />
-              ランキング戦
             </span>
           ) : (
             <button
@@ -269,6 +277,17 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             stuck={stuck}
             onSelect={onSelect}
           />
+          <div className="popups" aria-hidden="true">
+            {fx.popups.map((p) => (
+              <span
+                key={p.id}
+                className={`popup ${p.kind}`}
+                style={{ "--r": Math.floor(p.cell / 9), "--c": p.cell % 9 } as CSSProperties}
+              >
+                {p.text}
+              </span>
+            ))}
+          </div>
           {game.status === "paused" && (
             <button
               type="button"
