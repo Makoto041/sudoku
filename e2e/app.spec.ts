@@ -252,3 +252,10 @@ test("今日の一問でも、重複しない間違いを赤く表示する", as
   await expect(target).toHaveClass(/wrong/);
   await expect(page.locator(".stat-value").first()).toHaveText("1");
 });
+
+test("置く音の録音を配信している", async ({ request }) => {
+  const res = await request.get("/sounds/clack.mp3");
+  expect(res.status()).toBe(200);
+  expect(res.headers()["content-type"]).toContain("audio/mpeg");
+  expect((await res.body()).length).toBeGreaterThan(1000);
+});
