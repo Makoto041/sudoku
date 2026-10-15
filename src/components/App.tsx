@@ -58,16 +58,17 @@ export function App() {
     };
     document.addEventListener("visibilitychange", onVisible);
     // iOS は最初のタップで音を有効にする
+    // タッチの pointerdown はユーザー操作とみなされないことがあるので、指を離したときにも再開する
+    // （アプリ切り替えや着信で止まった後も、次の操作で鳴るようにする）
     const unlock = () => unlockAudio();
-    window.addEventListener("pointerdown", unlock, { capture: true });
-    window.addEventListener("keydown", unlock, { capture: true });
+    const UNLOCK_EVENTS = ["pointerdown", "pointerup", "touchend", "keydown"] as const;
+    for (const type of UNLOCK_EVENTS) window.addEventListener(type, unlock, { capture: true });
     if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("pointerdown", unlock, { capture: true });
-      window.removeEventListener("keydown", unlock, { capture: true });
+      for (const type of UNLOCK_EVENTS) window.removeEventListener(type, unlock, { capture: true });
     };
   }, []);
 
