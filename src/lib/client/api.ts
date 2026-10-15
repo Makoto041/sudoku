@@ -1,3 +1,4 @@
+import type { MoveLog } from "@/lib/game/score";
 import type { Difficulty } from "@/lib/sudoku/core";
 
 export type StartResponse = {
@@ -14,11 +15,13 @@ export type SubmitResponse = {
   date: string;
   difficulty: Difficulty;
   timeMs: number;
+  /** スコア制になる前に保存した結果には無い */
+  points?: number;
   rank: number | null;
   total: number;
 };
 
-export type LeaderboardEntry = { rank: number; name: string; timeMs: number; isMe: boolean };
+export type LeaderboardEntry = { rank: number; name: string; points: number; timeMs: number; isMe: boolean };
 
 export type LeaderboardResponse = {
   scope: "daily" | "best";
@@ -26,7 +29,7 @@ export type LeaderboardResponse = {
   difficulty: Difficulty;
   total: number;
   entries: LeaderboardEntry[];
-  me: { rank: number; timeMs: number; name: string | null } | null;
+  me: { rank: number; points: number; timeMs: number; name: string | null } | null;
 };
 
 export class ApiError extends Error {
@@ -60,7 +63,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ playerId, difficulty }),
     }),
-  submit: (input: { sessionId: string; playerId: string; grid: string; name: string }) =>
+  submit: (input: { sessionId: string; playerId: string; grid: string; name: string; moves: MoveLog }) =>
     request<SubmitResponse>("/api/daily/submit", { method: "POST", body: JSON.stringify(input) }),
   leaderboard: (q: { scope: "daily" | "best"; difficulty: Difficulty; date?: string; playerId?: string }) => {
     const params = new URLSearchParams({ scope: q.scope, difficulty: q.difficulty });

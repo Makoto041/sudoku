@@ -1,35 +1,49 @@
 import type { Difficulty } from "@/lib/sudoku/core";
 import { KEYS, load, save } from "./storage";
 
-type DifficultyStats = { played: number; bestMs: number | null; cleanBestMs: number | null };
+type DifficultyStats = {
+  played: number;
+  bestMs: number | null;
+  cleanBestMs: number | null;
+  /** スコア制になってからの最高点 */
+  bestPoints?: number | null;
+};
 type Stats = Partial<Record<Difficulty, DifficultyStats>>;
 
-export type FreeClear = { bestMs: number | null; isBest: boolean; played: number };
+export type FreeClear = {
+  bestMs: number | null;
+  bestPoints: number | null;
+  isBest: boolean;
+  played: number;
+};
 
-/** フリープレイの自己ベスト（端末内のみ）。ヒントを使ったクリアはベストに数えない */
+/** フリープレイの自己ベスト（端末内のみ）。ベストは最高点で、ヒントを使ったクリアも点数で比べる */
 export function recordFreeClear(
   difficulty: Difficulty,
   ms: number,
+  points: number,
   mistakes: number,
   hints: number,
 ): FreeClear {
   const stats = load<Stats>(KEYS.stats) ?? {};
-  const cur = stats[difficulty] ?? { played: 0, bestMs: null, cleanBestMs: null };
-  const eligible = hints === 0;
-  const isBest = eligible && (cur.bestMs === null || ms < cur.bestMs);
+  const cur = stats[difficulty] ?? { played: 0, bestMs: null, cleanBestMs: null, bestPoints: null };
+  const noHints = hints === 0;
+  const prevPoints = cur.bestPoints ?? null;
+  const isBest = prevPoints === null || points > prevPoints;
   const next: DifficultyStats = {
     played: cur.played + 1,
-    bestMs: isBest ? ms : cur.bestMs,
+    bestMs: noHints && (cur.bestMs === null || ms < cur.bestMs) ? ms : cur.bestMs,
     cleanBestMs:
-      eligible && mistakes === 0 && (cur.cleanBestMs === null || ms < cur.cleanBestMs) ? ms : cur.cleanBestMs,
+      noHints && mistakes === 0 && (cur.cleanBestMs === null || ms < cur.cleanBestMs) ? ms : cur.cleanBestMs,
+    bestPoints: isBest ? points : prevPoints,
   };
   save(KEYS.stats, { ...stats, [difficulty]: next });
-  return { bestMs: next.bestMs, isBest, played: next.played };
+  return { bestMs: next.bestMs, bestPoints: next.bestPoints ?? null, isBest, played: next.played };
 }
 
-export function bestTimes(): Partial<Record<Difficulty, number | null>> {
+export function bestScores(): Partial<Record<Difficulty, number | null>> {
   const stats = load<Stats>(KEYS.stats) ?? {};
   const out: Partial<Record<Difficulty, number | null>> = {};
-  for (const [k, v] of Object.entries(stats)) out[k as Difficulty] = v?.bestMs ?? null;
+  for (const [k, v] of Object.entries(stats)) out[k as Difficulty] = v?.bestPoints ?? null;
   return out;
 }
