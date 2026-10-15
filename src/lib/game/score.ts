@@ -20,6 +20,10 @@ export const BASE_POINTS: Record<Difficulty, number> = {
 };
 
 const SPEED_WINDOW_MS = 20_000;
+/** これより短い間隔の手には速さのボーナスを付けない（人の操作ではまず出ない速さ） */
+export const MIN_HUMAN_INTERVAL_MS = 200;
+/** 記録の時刻が実際の経過時間をこれ以上超えていたら、その手は数えない（時計のずれの許容） */
+const LATE_TOLERANCE_MS = 5_000;
 const COMBO_STEP = 0.05;
 const COMBO_MAX_STEPS = 10;
 const UNIT_BONUS = 3;
@@ -52,9 +56,10 @@ export function emptyScore(puzzle: readonly number[]): ScoreState {
   };
 }
 
-/** 前の得点からの間隔による倍率（1〜2） */
+/** 前の得点からの間隔による倍率（1〜2）。短すぎる間隔はボーナスなし */
 export function speedMultiplier(dtMs: number): number {
-  const x = Math.min(1, Math.max(0, (SPEED_WINDOW_MS - Math.max(0, dtMs)) / SPEED_WINDOW_MS));
+  if (dtMs < MIN_HUMAN_INTERVAL_MS) return 1;
+  const x = Math.min(1, Math.max(0, (SPEED_WINDOW_MS - dtMs) / SPEED_WINDOW_MS));
   return 1 + x;
 }
 
@@ -135,7 +140,8 @@ export type MoveLog = [number, number, number][];
 
 /**
  * 記録からスコアを計算し直す（サーバー用）。
- * 時刻は 0〜limitMs に収め、時刻順に並べ直してから計算する。ヒントの記録は受け付けない
+ * 時刻順に並べ直してから計算する。実際の経過時間（limitMs）を大きく超えた時刻の手は数えない。
+ * ヒントの記録は受け付けない
  */
 export function scoreMoves(
   puzzle: Grid,
@@ -145,7 +151,8 @@ export function scoreMoves(
   limitMs: number,
 ): ScoreState {
   const sorted = moves
-    .map(([t, cell, digit], k) => ({ t: Math.min(limitMs, Math.max(0, t)), cell, digit, k }))
+    .filter(([t]) => t <= limitMs + LATE_TOLERANCE_MS)
+    .map(([t, cell, digit], k) => ({ t: Math.max(0, t), cell, digit, k }))
     .sort((a, b) => a.t - b.t || a.k - b.k);
   let st = emptyScore(puzzle);
   for (const m of sorted) {
