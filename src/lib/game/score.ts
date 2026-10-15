@@ -17,6 +17,7 @@ export const BASE_POINTS: Record<Difficulty, number> = {
   hard: 100,
   expert: 150,
   master: 200,
+  extreme: 300,
 };
 
 const SPEED_WINDOW_MS = 20_000;
