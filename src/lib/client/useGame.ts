@@ -97,9 +97,11 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
         for (const e of effects) {
           if (e.kind === "place" || e.kind === "hint") {
             out.pop = { cell: e.cell, key };
-            if (e.kind === "place" && e.wrong && (options.showMistakes || next.mode === "daily")) {
-              out.shake = { cell: e.cell, key };
-            }
+            // 揺れは間違えたその入力だけ。正しく入れ直したら前の揺れを引き継がない
+            out.shake =
+              e.kind === "place" && e.wrong && (options.showMistakes || next.mode === "daily")
+                ? { cell: e.cell, key }
+                : null;
             if (e.units.length) {
               const cells = new Map<number, number>();
               for (const unit of e.units) {

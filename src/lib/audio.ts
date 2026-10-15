@@ -89,6 +89,8 @@ function ready(): Ctx | null {
   if (!enabled) return null;
   const s = setup();
   if (!s || s.ctx.state === "closed") return null;
+  // iOS の着信などで止まっている間（interrupted）は予約しない。復帰時にまとめて鳴ってしまう
+  if ((s.ctx.state as string) === "interrupted") return null;
   if (s.ctx.state !== "running") void s.ctx.resume();
   return s;
 }

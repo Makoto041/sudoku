@@ -25,18 +25,26 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // タブを素早く切り替えたとき、遅れて届いた古い応答で表示を上書きしない
+  const latest = useRef(0);
   const load = useCallback(async () => {
+    const id = ++latest.current;
     setLoading(true);
     setError(null);
     try {
-      setData(
-        await api.leaderboard({ scope, difficulty, date: scope === "daily" ? date : undefined, playerId }),
-      );
+      const res = await api.leaderboard({
+        scope,
+        difficulty,
+        date: scope === "daily" ? date : undefined,
+        playerId,
+      });
+      if (id === latest.current) setData(res);
     } catch (err) {
+      if (id !== latest.current) return;
       setError(describeError(err));
       setData(null);
     } finally {
-      setLoading(false);
+      if (id === latest.current) setLoading(false);
     }
   }, [scope, difficulty, date, playerId]);
 

@@ -135,7 +135,8 @@ p {
   max-width: 560px;
   margin: 0 auto;
   min-height: 100dvh;
-  padding: calc(var(--safe-top) + 8px) 16px calc(var(--safe-bottom) + 14px);
+  padding: calc(var(--safe-top) + 8px) max(16px, env(safe-area-inset-right)) calc(var(--safe-bottom) + 14px)
+    max(16px, env(safe-area-inset-left));
   display: flex;
   flex-direction: column;
 }
@@ -162,8 +163,8 @@ p {
 }
 
 .icon-btn.small {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   border-radius: 10px;
 }
 
@@ -248,7 +249,7 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 32px;
+  height: 36px;
   padding: 0 12px;
   border-radius: 999px;
   background: var(--surface-2);
@@ -1046,6 +1047,48 @@ p {
   }
   .pad-digit {
     font-size: 34px;
+  }
+}
+
+/* スマホの横向き：高さが足りないので、盤面の右に小さめの操作を置く */
+@media (min-aspect-ratio: 5/4) and (max-height: 520px) {
+  .game-body {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 20px;
+  }
+  .bar {
+    height: 44px;
+  }
+  .status-row {
+    height: 28px;
+    max-width: 640px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  .board-wrap {
+    flex: 1 1 auto;
+  }
+  .controls {
+    width: min(44vw, 340px);
+    flex: none;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 0;
+  }
+  .tool {
+    padding: 2px 0;
+  }
+  .pad {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .pad-key {
+    height: min(56px, 15dvh);
+    border-radius: 12px;
+  }
+  .pad-digit {
+    font-size: 24px;
   }
 }
 
