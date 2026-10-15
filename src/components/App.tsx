@@ -1,0 +1,324 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
+import { setHapticsEnabled } from "@/lib/haptics";
+import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
+import { generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
+import { newGame, type GameState } from "@/lib/game/state";
+import { api, describeError, type SubmitResponse } from "@/lib/client/api";
+import { getPlayer, setPlayerName, type Player } from "@/lib/client/player";
+import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
+import { KEYS, load, remove, save } from "@/lib/client/storage";
+import { Game } from "./Game";
+import { Home, type DailyStatus } from "./Home";
+import { Ranking } from "./Ranking";
+import { ConfirmSheet, NameSheet, SettingsSheet } from "./Sheets";
+
+type View =
+  | { name: "home" }
+  | { name: "game"; game: GameState; key: number }
+  | { name: "ranking"; difficulty: Difficulty; date?: string };
+
+type SheetState =
+  | { kind: "settings" }
+  | { kind: "name"; difficulty: Difficulty | null }
+  | { kind: "confirmFree"; difficulty: Difficulty }
+  | null;
+
+function freeSeed() {
+  const a = new Uint32Array(2);
+  crypto.getRandomValues(a);
+  return `${a[0].toString(36)}${a[1].toString(36)}`;
+}
+
+function loadGame(key: string): GameState | null {
+  const g = load<GameState>(key);
+  return g && g.version === 1 && Array.isArray(g.values) && g.values.length === 81 ? g : null;
+}
+
+export function App() {
+  const [mounted, setMounted] = useState(false);
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [player, setPlayer] = useState<Player>({ id: "", name: null });
+  const [view, setView] = useState<View>({ name: "home" });
+  const [sheet, setSheet] = useState<SheetState>(null);
+  const [today, setToday] = useState(() => jstDateKey());
+  const [starting, setStarting] = useState<Difficulty | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    setSettings(loadSettings());
+    setPlayer(getPlayer());
+    setMounted(true);
+    // 日付が変わったときのために、画面に戻るたびに今日を確認する
+    const onVisible = () => {
+      if (document.visibilityState === "visible") setToday(jstDateKey());
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    // iOS は最初のタップで音を有効にする
+    const unlock = () => unlockAudio();
+    window.addEventListener("pointerdown", unlock, { capture: true });
+    window.addEventListener("keydown", unlock, { capture: true });
+    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pointerdown", unlock, { capture: true });
+      window.removeEventListener("keydown", unlock, { capture: true });
+    };
+  }, []);
+
+  useEffect(() => {
+    setSoundEnabled(settings.sound);
+    setHapticsEnabled(settings.haptics);
+  }, [settings]);
+
+  // ブラウザの戻る操作でホームへ
+  useEffect(() => {
+    const onPop = () => {
+      setView({ name: "home" });
+      setSheet(null);
+      setRefresh((n) => n + 1);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const go = useCallback((next: View) => {
+    setView((cur) => {
+      if (cur.name === "home" && next.name !== "home") history.pushState({ v: next.name }, "");
+      return next;
+    });
+  }, []);
+
+  const goHome = useCallback(() => {
+    sfx.tap();
+    if (history.state?.v) history.back();
+    else {
+      setView({ name: "home" });
+      setRefresh((n) => n + 1);
+    }
+  }, []);
+
+  const daily = useMemo(() => {
+    const out = {} as Record<Difficulty, DailyStatus>;
+    for (const d of DIFFICULTIES) {
+      out[d] = mounted
+        ? { game: loadGame(KEYS.daily(today, d)), result: load<SubmitResponse>(KEYS.dailyResult(today, d)) }
+        : { game: null, result: null };
+    }
+    return out;
+    // refresh でホームに戻ったときに読み直す
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, today, refresh, view.name]);
+
+  const free = useMemo(
+    () => (mounted ? loadGame(KEYS.free) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mounted, refresh, view.name],
+  );
+
+  const openGame = useCallback((game: GameState) => go({ name: "game", game, key: Date.now() }), [go]);
+
+  const startDaily = useCallback(
+    async (difficulty: Difficulty, p: Player = player) => {
+      setError(null);
+      const saved = loadGame(KEYS.daily(today, difficulty));
+      if (saved) {
+        sfx.tap();
+        openGame(saved);
+        return;
+      }
+      if (!p.name) {
+        sfx.tap();
+        setSheet({ kind: "name", difficulty });
+        return;
+      }
+      setStarting(difficulty);
+      try {
+        const res = await api.start(p.id, difficulty);
+        const game = newGame({
+          mode: "daily",
+          difficulty,
+          seed: res.date,
+          puzzle: parseGrid(res.puzzle),
+          solution: null,
+          daily: {
+            sessionId: res.sessionId,
+            date: res.date,
+            startedAt: res.startedAt,
+            clockOffset: res.serverNow - Date.now(),
+          },
+        });
+        setSheet(null);
+        if (res.finished) {
+          setError("この問題はクリア済みです。ランキングで結果を確認できます");
+          return;
+        }
+        save(KEYS.daily(res.date, difficulty), game);
+        sfx.tap();
+        openGame(game);
+      } catch (err) {
+        setError(describeError(err));
+        setSheet(null);
+      } finally {
+        setStarting(null);
+      }
+    },
+    [player, today, openGame],
+  );
+
+  const startFree = useCallback(
+    (difficulty: Difficulty) => {
+      setSheet(null);
+      sfx.tap();
+      const p = generatePuzzle(freeSeed(), difficulty);
+      const game = newGame({
+        mode: "free",
+        difficulty,
+        seed: p.seed,
+        puzzle: p.puzzle,
+        solution: p.solution,
+      });
+      save(KEYS.free, game);
+      openGame(game);
+    },
+    [openGame],
+  );
+
+  const requestFree = useCallback(
+    (difficulty: Difficulty) => {
+      const cur = loadGame(KEYS.free);
+      if (cur && cur.status !== "solved" && cur.history.length > 0) {
+        sfx.tap();
+        setSheet({ kind: "confirmFree", difficulty });
+      } else {
+        startFree(difficulty);
+      }
+    },
+    [startFree],
+  );
+
+  const updateSettings = (s: Settings) => {
+    setSettings(s);
+    saveSettings(s);
+  };
+
+  const [nameBusy, setNameBusy] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const submitName = async (name: string, difficulty: Difficulty | null) => {
+    setNameBusy(true);
+    setNameError(null);
+    const next = setPlayerName(name);
+    setPlayer(next);
+    try {
+      if (difficulty) {
+        await startDaily(difficulty, next);
+      } else {
+        await api.rename(next.id, name).catch(() => {});
+        setSheet(null);
+      }
+    } catch (err) {
+      setNameError(describeError(err));
+    } finally {
+      setNameBusy(false);
+    }
+  };
+
+  if (!mounted) return <div className="screen boot" />;
+
+  return (
+    <>
+      {view.name === "home" && (
+        <>
+          <Home
+            today={today}
+            daily={daily}
+            free={free}
+            starting={starting}
+            error={error}
+            onDaily={(d) => void startDaily(d)}
+            onContinue={() => {
+              const g = loadGame(KEYS.free);
+              if (g) {
+                sfx.tap();
+                openGame(g);
+              }
+            }}
+            onNewFree={requestFree}
+            onRanking={() => {
+              sfx.tap();
+              go({ name: "ranking", difficulty: "easy" });
+            }}
+            onSettings={() => {
+              sfx.tap();
+              setSheet({ kind: "settings" });
+            }}
+          />
+        </>
+      )}
+      {view.name === "game" && (
+        <Game
+          key={view.key}
+          initial={view.game}
+          settings={settings}
+          player={player}
+          onExit={goHome}
+          onOpenSettings={() => {
+            sfx.tap();
+            setSheet({ kind: "settings" });
+          }}
+          onRanking={(g) => {
+            sfx.tap();
+            setView({ name: "ranking", difficulty: g.difficulty, date: g.daily?.date });
+          }}
+          onNewFree={(g) => {
+            remove(KEYS.free);
+            startFree(g.difficulty);
+          }}
+        />
+      )}
+      {view.name === "ranking" && (
+        <Ranking
+          today={today}
+          playerId={player.id}
+          initialDifficulty={view.difficulty}
+          initialDate={view.date}
+          onBack={goHome}
+        />
+      )}
+
+      {sheet?.kind === "settings" && (
+        <SettingsSheet
+          settings={settings}
+          playerName={player.name}
+          onChange={updateSettings}
+          onRename={() => setSheet({ kind: "name", difficulty: null })}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "name" && (
+        <NameSheet
+          initial={player.name ?? ""}
+          difficulty={sheet.difficulty}
+          busy={nameBusy || starting !== null}
+          error={nameError}
+          onSubmit={(name) => void submitName(name, sheet.difficulty)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "confirmFree" && (
+        <ConfirmSheet
+          title="新しい問題を始めますか？"
+          body="途中のフリープレイは消えます。"
+          confirm="新しく始める"
+          onConfirm={() => startFree(sheet.difficulty)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+    </>
+  );
+}
