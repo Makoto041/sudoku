@@ -1,6 +1,13 @@
 // オフラインでもフリープレイを遊べるようにするための Service Worker
-const CACHE = "sudoku-v1";
-const PRECACHE = ["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/apple-touch-icon.png"];
+const CACHE = "sudoku-v2";
+const PRECACHE = [
+  "/",
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/icon-192.png",
+  "/apple-touch-icon.png",
+  "/sounds/clack.mp3",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
