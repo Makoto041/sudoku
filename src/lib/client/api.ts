@@ -74,10 +74,11 @@ export const api = {
 
 export function describeError(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 0) return "オフラインのため接続できませんでした";
+    if (err.status === 0) return "オフラインです";
     if (err.status === 503) return "ランキングは準備中です";
-    if (err.status === 409) return "この問題は記録済みです";
+    if (err.status === 404) return "記録の期限が切れています";
+    if (err.status === 409) return "記録済みです";
     if (err.status === 422) return "記録できませんでした";
   }
-  return "通信に失敗しました。もう一度お試しください";
+  return "通信に失敗しました";
 }

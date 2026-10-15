@@ -56,6 +56,29 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
         setOutcome({ state: "done", result });
         sfx.ranked();
       } catch (err) {
+        // 記録済みなら、ランキングから自分の順位を取って表示する
+        if (err instanceof ApiError && err.status === 409) {
+          const board = await api
+            .leaderboard({
+              scope: "daily",
+              difficulty: g.difficulty,
+              date: g.daily.date,
+              playerId: player.id,
+            })
+            .catch(() => null);
+          if (board?.me) {
+            const result = {
+              date: g.daily.date,
+              difficulty: g.difficulty,
+              timeMs: board.me.timeMs,
+              rank: board.me.rank,
+              total: board.total,
+            };
+            save(KEYS.dailyResult(g.daily.date, g.difficulty), result);
+            setOutcome({ state: "done", result });
+            return;
+          }
+        }
         const retry = !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
         setOutcome({ state: "error", message: describeError(err), retry });
       }
@@ -198,7 +221,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
         <Clock game={game} />
         <div className="stat stat-end">
           {isDaily ? (
-            <span className="live-chip" title="時間はサーバーで計測され、止められません">
+            <span className="live-chip">
               <span className="live-dot" />
               ランキング戦
             </span>

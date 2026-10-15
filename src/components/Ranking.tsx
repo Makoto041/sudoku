@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
 import { formatTime } from "@/lib/game/state";
@@ -44,7 +44,13 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
     void load();
   }, [load]);
 
-  const meVisible = data?.entries.some((e) => e.isMe);
+  // 選んだ難易度のタブが横にはみ出していたら見える位置まで寄せる
+  const tabs = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    tabs.current
+      ?.querySelector<HTMLElement>("[aria-selected=true]")
+      ?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+  }, [difficulty]);
 
   return (
     <div className="screen ranking">
@@ -90,7 +96,7 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
           ))}
         </div>
 
-        <div className="diff-tabs" role="tablist">
+        <div className="diff-tabs" role="tablist" ref={tabs}>
           {DIFFICULTIES.map((d) => (
             <button
               key={d}
@@ -108,21 +114,9 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
           ))}
         </div>
 
-        <p className="muted small ranking-note">
-          {scope === "daily"
-            ? "今日の問題の最初のクリアタイム。日付は日本時間 0 時に切り替わります"
-            : "今日の一問でのそれぞれの最速タイム"}
-        </p>
-
         <div className="board-list" aria-busy={loading}>
           {error && <p className="empty">{error}</p>}
-          {!error && data && data.entries.length === 0 && (
-            <p className="empty">
-              まだ記録がありません
-              <br />
-              <span className="muted small">最初のクリアを狙いましょう</span>
-            </p>
-          )}
+          {!error && data && data.entries.length === 0 && <p className="empty">まだ記録がありません</p>}
           {!error && !data && loading && (
             <ol className="rows skeleton">
               {Array.from({ length: 6 }, (_, k) => (
@@ -146,20 +140,12 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
           )}
         </div>
 
-        {data && (
+        {data?.me && (
           <div className="me-bar">
-            {data.me ? (
-              <>
-                <span>
-                  あなた <strong>{data.me.rank}</strong> 位<span className="muted"> / {data.total}人</span>
-                </span>
-                <span className="mono">{formatTime(data.me.timeMs)}</span>
-              </>
-            ) : (
-              <span className="muted">
-                {data.total}人が参加{meVisible ? "" : " · まだ記録がありません"}
-              </span>
-            )}
+            <span>
+              あなた <strong>{data.me.rank}</strong> 位<span className="muted"> / {data.total}人</span>
+            </span>
+            <span className="mono">{formatTime(data.me.timeMs)}</span>
           </div>
         )}
       </div>

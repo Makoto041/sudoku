@@ -20,12 +20,8 @@ export function InstallHint() {
   if (!show) return null;
   return (
     <div className="install-hint" role="note">
-      <span>
-        ホーム画面に追加するとアプリのように遊べます。
-        <br />
-        <span className="install-step">
-          下の <Share size={15} /> から「ホーム画面に追加」
-        </span>
+      <span className="install-step">
+        <Share size={15} /> →「ホーム画面に追加」でアプリになります
       </span>
       <button
         type="button"

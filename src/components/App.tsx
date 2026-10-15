@@ -156,7 +156,7 @@ export function App() {
         });
         setSheet(null);
         if (res.finished) {
-          setError("この問題はクリア済みです。ランキングで結果を確認できます");
+          setError("クリア済みです");
           return;
         }
         save(KEYS.daily(res.date, difficulty), game);
@@ -172,20 +172,26 @@ export function App() {
     [player, today, openGame],
   );
 
+  const [generating, setGenerating] = useState<Difficulty | null>(null);
   const startFree = useCallback(
     (difficulty: Difficulty) => {
       setSheet(null);
       sfx.tap();
-      const p = generatePuzzle(freeSeed(), difficulty);
-      const game = newGame({
-        mode: "free",
-        difficulty,
-        seed: p.seed,
-        puzzle: p.puzzle,
-        solution: p.solution,
-      });
-      save(KEYS.free, game);
-      openGame(game);
+      // 難しい問題は作るのに時間がかかるので、読み込み表示を描いてから作る
+      setGenerating(difficulty);
+      setTimeout(() => {
+        const p = generatePuzzle(freeSeed(), difficulty);
+        const game = newGame({
+          mode: "free",
+          difficulty,
+          seed: p.seed,
+          puzzle: p.puzzle,
+          solution: p.solution,
+        });
+        save(KEYS.free, game);
+        setGenerating(null);
+        openGame(game);
+      }, 30);
     },
     [openGame],
   );
@@ -240,6 +246,7 @@ export function App() {
             daily={daily}
             free={free}
             starting={starting}
+            generating={generating}
             error={error}
             onDaily={(d) => void startDaily(d)}
             onContinue={() => {
