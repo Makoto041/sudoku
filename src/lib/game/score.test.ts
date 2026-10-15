@@ -17,11 +17,13 @@ const empties = p.puzzle.flatMap((v, i) => (v ? [] : [i]));
 
 describe("倍率", () => {
   it("速さは 0 秒で 2 倍、20 秒以上で 1 倍", () => {
-    expect(speedMultiplier(0)).toBe(2);
+    expect(speedMultiplier(200)).toBeCloseTo(1.99);
     expect(speedMultiplier(10_000)).toBe(1.5);
     expect(speedMultiplier(20_000)).toBe(1);
     expect(speedMultiplier(60_000)).toBe(1);
-    expect(speedMultiplier(-5)).toBe(2);
+    // 人の操作ではまず出ない短い間隔にはボーナスを付けない
+    expect(speedMultiplier(0)).toBe(1);
+    expect(speedMultiplier(199)).toBe(1);
   });
 
   it("コンボは 1 手ごとに +5%、最大 +50%", () => {
@@ -37,12 +39,13 @@ describe("1 手ごとの得点", () => {
     let st = emptyScore(p.puzzle);
     const [a, b] = empties;
     let d;
-    [st, d] = applyPlacement(st, { cell: a, digit: p.solution[a], t: 0 }, p.solution, "medium");
-    expect(d).toMatchObject({ kind: "correct", points: base * 2 });
-    [st, d] = applyPlacement(st, { cell: b, digit: p.solution[b], t: 10_000 }, p.solution, "medium");
+    [st, d] = applyPlacement(st, { cell: a, digit: p.solution[a], t: 200 }, p.solution, "medium");
+    // 75 × 1.99 = 149.25 → 5 点単位で 150
+    expect(d).toMatchObject({ kind: "correct", points: 150 });
+    [st, d] = applyPlacement(st, { cell: b, digit: p.solution[b], t: 10_200 }, p.solution, "medium");
     // 1.5 倍 × コンボ 1.05 = 118.125 → 5 点単位で 120
     expect(d).toMatchObject({ kind: "correct", points: 120 });
-    expect(st.points).toBe(base * 2 + 120);
+    expect(st.points).toBe(150 + 120);
     expect(st.streak).toBe(2);
   });
 
@@ -108,8 +111,15 @@ describe("記録からの計算（サーバー用）", () => {
     // 順番を入れ替えても同じ、範囲外の時刻は丸める
     const shuffled = [...moves].reverse();
     expect(scoreMoves(p.puzzle, p.solution, "medium", shuffled, 10_000_000).points).toBe(st.points);
+    // 実際の経過時間を大きく超えた時刻の手は数えない（間隔を 0 に縮めてボーナスを稼げない）
     const late: MoveLog = moves.map(([t, c, d]) => [t + 1e9, c, d]);
-    expect(scoreMoves(p.puzzle, p.solution, "medium", late, 5000).points).toBeGreaterThan(0);
+    expect(scoreMoves(p.puzzle, p.solution, "medium", late, 5000).points).toBe(0);
+    // 同じ時刻にまとめた記録は、速さのボーナスが付かない
+    const bunched: MoveLog = moves.map(([, c, d]) => [4000, c, d]);
+    const spaced: MoveLog = moves.map(([, c, d], k) => [(k + 1) * 1000, c, d]);
+    expect(scoreMoves(p.puzzle, p.solution, "medium", bunched, 1e7).points).toBeLessThan(
+      scoreMoves(p.puzzle, p.solution, "medium", spaced, 1e7).points,
+    );
   });
 
   it("ヒントのマス（最初からある数字）への記録は無視する", () => {
