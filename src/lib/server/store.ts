@@ -125,12 +125,13 @@ class RedisStore implements RankingStore {
 
   async getNames(playerIds: string[]) {
     if (playerIds.length === 0) return {};
-    const names = await this.redis.hmget<Record<string, string | null>>(NAMES_KEY, ...playerIds);
+    // 自動変換を切っているので、HMGET はフィールド順の配列のまま返る
+    const raw = (await this.redis.hmget(NAMES_KEY, ...playerIds)) as unknown;
     const out: Record<string, string> = {};
-    for (const id of playerIds) {
-      const name = names?.[id];
-      if (name) out[id] = String(name);
-    }
+    playerIds.forEach((id, i) => {
+      const name = Array.isArray(raw) ? raw[i] : (raw as Record<string, unknown> | null)?.[id];
+      if (typeof name === "string" && name) out[id] = name;
+    });
     return out;
   }
 
