@@ -31,7 +31,8 @@ function Sheet({
       role="dialog"
       aria-modal="true"
       aria-label={label}
-      onPointerDown={(e) => {
+      // pointerdown で閉じると、指を離したときの click が下のボタンに届いてしまう
+      onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >

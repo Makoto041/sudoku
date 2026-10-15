@@ -113,7 +113,11 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest("input:not([type=checkbox]), textarea") || e.metaKey || e.altKey) return;
+      if (target?.closest("input, textarea") || e.metaKey || e.altKey) return;
+      // 設定などのシートを開いている間は盤面を操作しない
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      // フォーカス中のボタンは Space/Enter で押せるようにし、一時停止に回さない
+      if ((e.key === " " || e.key === "Enter") && target?.closest("button")) return;
       if (e.ctrlKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
         dispatch({ type: "undo" });
