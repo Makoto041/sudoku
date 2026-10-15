@@ -48,6 +48,10 @@ function playEffects(effects: Effect[]) {
         sfx.undo();
         haptic("light");
         break;
+      case "rewind":
+        sfx.rewind();
+        haptic("medium");
+        break;
       case "hint":
         if (e.units.length) sfx.unit(e.units.length, e.digit);
         else sfx.hint(e.digit);

@@ -1,15 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTY_LABEL, serializeGrid } from "@/lib/sudoku/core";
-import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
+import { elapsedOf, formatTime, stuckCells, type GameState } from "@/lib/game/state";
 import { api, ApiError, describeError, type SubmitResponse } from "@/lib/client/api";
 import type { Player } from "@/lib/client/player";
 import type { Settings } from "@/lib/client/settings";
 import { KEYS, load, save } from "@/lib/client/storage";
 import { useGame } from "@/lib/client/useGame";
 import { recordFreeClear, type FreeClear } from "@/lib/client/stats";
+import { haptic } from "@/lib/haptics";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
 import { Result } from "./Result";
@@ -187,6 +188,18 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
     [dispatch],
   );
 
+  // 入る数字が無いマスが出たら、どこかで間違えているので知らせる
+  const stuck = useMemo(() => new Set(stuckCells(game)), [game]);
+  const isStuck = stuck.size > 0;
+  const wasStuck = useRef(isStuck);
+  useEffect(() => {
+    if (isStuck && !wasStuck.current) {
+      sfx.error();
+      haptic("medium");
+    }
+    wasStuck.current = isStuck;
+  }, [isStuck]);
+
   const isDaily = game.mode === "daily";
   const filled = game.values.filter((v, i) => v && !game.puzzle[i]).length;
   const toFill = game.puzzle.filter((v) => !v).length;
@@ -253,6 +266,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             fx={fx}
             showMistakes={settings.showMistakes}
             highlightSame={settings.highlightSame}
+            stuck={stuck}
             onSelect={onSelect}
           />
           {game.status === "paused" && (
@@ -273,6 +287,14 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
         </div>
 
         <div className="controls">
+          {isStuck && (
+            <div className="stuck-bar" role="alert">
+              <span>どこかで間違えています</span>
+              <button type="button" className="btn small" onClick={() => dispatch({ type: "rewind" })}>
+                間違える前まで戻す
+              </button>
+            </div>
+          )}
           <Tools
             game={game}
             onUndo={() => dispatch({ type: "undo" })}

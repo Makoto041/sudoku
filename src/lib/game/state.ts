@@ -1,3 +1,4 @@
+import { countSolutions } from "@/lib/sudoku/solver";
 import {
   PEERS,
   UNITS,
@@ -53,6 +54,7 @@ export type Effect =
   | { kind: "undo"; cell: number }
   | { kind: "hint"; cell: number; digit: number; units: number[][] }
   | { kind: "solved" }
+  | { kind: "rewind"; steps: number }
   | { kind: "blocked" };
 
 export type Action =
@@ -65,6 +67,7 @@ export type Action =
   | { type: "toggleNotes" }
   | { type: "pause" }
   | { type: "resume" }
+  | { type: "rewind" }
   | { type: "tick"; ms: number }
   | { type: "finalize"; ms: number };
 
@@ -210,15 +213,18 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
     case "undo": {
       const move = s.history[s.history.length - 1];
       if (!move) return [s, [{ kind: "blocked" }]];
-      const values = s.values.slice();
-      const notes = s.notes.slice();
-      values[move.cell] = move.prevValue;
-      notes[move.cell] = move.prevNotes;
-      for (const [p, mask] of move.clearedNotes) notes[p] = mask;
-      return [
-        { ...s, values, notes, history: s.history.slice(0, -1), selected: move.cell },
-        [{ kind: "undo", cell: move.cell }],
-      ];
+      return [undoOnce(s), [{ kind: "undo", cell: move.cell }]];
+    }
+    case "rewind": {
+      // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す
+      let cur = s;
+      let steps = 0;
+      while (cur.history.length > 0 && countSolutions(cur.values, 1) === 0) {
+        cur = undoOnce(cur);
+        steps++;
+      }
+      if (steps === 0) return [s, [{ kind: "blocked" }]];
+      return [cur, [{ kind: "rewind", steps }]];
     }
     case "hint": {
       if (!s.solution) return [s, [{ kind: "blocked" }]];
@@ -228,6 +234,34 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return [next, effects];
     }
   }
+}
+
+function undoOnce(s: GameState): GameState {
+  const move = s.history[s.history.length - 1];
+  if (!move) return s;
+  const values = s.values.slice();
+  const notes = s.notes.slice();
+  values[move.cell] = move.prevValue;
+  notes[move.cell] = move.prevNotes;
+  for (const [p, mask] of move.clearedNotes) notes[p] = mask;
+  return { ...s, values, notes, history: s.history.slice(0, -1), selected: move.cell };
+}
+
+/**
+ * 行き詰まったマス：空いているのに入る数字が 1 つもないマス。
+ * すべて埋まっているのに解けていないときは、重複しているマスを返す。
+ */
+export function stuckCells(s: GameState): number[] {
+  if (s.status === "solved") return [];
+  const out: number[] = [];
+  let empty = 0;
+  for (let i = 0; i < 81; i++) {
+    if (s.values[i]) continue;
+    empty++;
+    if (candidatesAt(s.values, i) === 0) out.push(i);
+  }
+  if (empty === 0 && !isSolved(s)) return [...findConflicts(s.values)];
+  return out;
 }
 
 function erase(s: GameState, cell: number): [GameState, Effect[]] {

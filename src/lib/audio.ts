@@ -222,6 +222,14 @@ export const sfx = {
     tone(s, { freq: 1318.5, gain: 0.07, decay: 0.07 });
     tone(s, { freq: 1046.5, at: 0.055, gain: 0.07, decay: 0.12, reverb: 0.2 });
   },
+  /** 間違える前まで戻す：下がっていく 3 音 */
+  rewind() {
+    const s = ready();
+    if (!s) return;
+    [1568, 1318.5, 1046.5].forEach((f, k) =>
+      tone(s, { freq: f, at: k * 0.06, gain: 0.07, decay: 0.12, reverb: 0.25 }),
+    );
+  },
   /** 間違い：耳障りにならない、低くこもった 2 音 */
   error() {
     const s = ready();

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { findConflicts, parseGrid } from "@/lib/sudoku/core";
 import { generatePuzzle } from "@/lib/sudoku/generator";
-import { elapsedOf, formatTime, newGame, reduce, type Action, type GameState } from "./state";
+import { countSolutions } from "@/lib/sudoku/solver";
+import { elapsedOf, formatTime, newGame, reduce, stuckCells, type Action, type GameState } from "./state";
 
 function freeGame() {
   const p = generatePuzzle("state-test", "easy");
@@ -91,5 +93,53 @@ describe("game reducer", () => {
   it("時間の表示", () => {
     expect(formatTime(65_000)).toBe("01:05");
     expect(formatTime(3_725_000)).toBe("1:02:05");
+  });
+});
+
+describe("行き詰まり", () => {
+  // 2026-10-16 のエキスパート（旧生成コード）と、重複は無いが解けなくなった実際の盤面
+  const PUZZLE = parseGrid(
+    "000009000030020010709000506600003070003702600050400008901000307080040020000100000",
+  );
+  const STUCK = parseGrid(
+    "164579283835624719729831546618953472403782695257406138941268357586347921372195864",
+  );
+
+  function play(values: number[]) {
+    let s = newGame({
+      mode: "daily",
+      difficulty: "expert",
+      seed: "2026-10-16",
+      puzzle: PUZZLE,
+      solution: null,
+      daily: { sessionId: "s", date: "2026-10-16", startedAt: 0, clockOffset: 0 },
+    });
+    for (let i = 0; i < 81; i++) {
+      if (PUZZLE[i] || !values[i]) continue;
+      [s] = reduce(s, { type: "select", cell: i });
+      [s] = reduce(s, { type: "input", digit: values[i] });
+    }
+    return s;
+  }
+
+  it("入る数字が無いマスを見つける", () => {
+    const s = play(STUCK);
+    expect(findConflicts(s.values).size).toBe(0);
+    expect(stuckCells(s).sort((a, b) => a - b)).toEqual([37, 49]);
+  });
+
+  it("間違える前まで戻すと、解ける盤面に戻る", () => {
+    const s = play(STUCK);
+    const [back, effects] = reduce(s, { type: "rewind" });
+    expect(effects[0]).toMatchObject({ kind: "rewind" });
+    expect(back.history.length).toBeLessThan(s.history.length);
+    expect(countSolutions(back.values, 1)).toBe(1);
+    expect(stuckCells(back)).toEqual([]);
+    // 解ける盤面では何もしない
+    expect(reduce(back, { type: "rewind" })[1][0].kind).toBe("blocked");
+  });
+
+  it("行き詰まっていなければ何も返さない", () => {
+    expect(stuckCells(play(Array(81).fill(0)))).toEqual([]);
   });
 });

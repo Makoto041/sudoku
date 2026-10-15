@@ -118,11 +118,10 @@ test("鬼の問題を作って遊び始められる", async ({ page }) => {
 
 test("シートの背景をタップしても、下のボタンが押されない", async ({ page }, info) => {
   test.skip(!info.project.use.hasTouch, "タッチ端末だけで起きる");
-  await page.goto("/");
-  await page.evaluate(() =>
+  await page.addInitScript(() =>
     localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
   );
-  await page.reload();
+  await page.goto("/");
   let started = false;
   page.on("request", (r) => {
     if (r.url().includes("/api/daily/start")) started = true;
@@ -181,4 +180,39 @@ test("端末の日付がずれていても、今日の一問の続きが消え�
   await expect(page.getByText("ランキング戦")).toBeVisible();
   const after = await savedGame(page, key);
   expect(after.values[g.puzzle.indexOf(0)]).toBe(5);
+});
+
+test("行き詰まったら知らせ、間違える前まで戻せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  // 空きマス c の周りに、c に入れられる数字をすべて置いて c を埋められなくする
+  const c = g.puzzle.indexOf(0);
+  const peers = (i: number) =>
+    Array.from({ length: 81 }, (_, j) => j).filter(
+      (j) =>
+        j !== i &&
+        (Math.floor(j / 9) === Math.floor(i / 9) ||
+          j % 9 === i % 9 ||
+          (Math.floor(j / 27) === Math.floor(i / 27) && Math.floor((j % 9) / 3) === Math.floor((i % 9) / 3))),
+    );
+  const used = new Set(peers(c).map((j) => g.puzzle[j]));
+  const free = peers(c).filter((j) => g.puzzle[j] === 0);
+  const cells = page.getByRole("gridcell");
+  for (const d of [1, 2, 3, 4, 5, 6, 7, 8, 9].filter((d) => !used.has(d))) {
+    const j = free.shift()!;
+    await cells.nth(j).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${d}`);
+  }
+  await expect(page.getByText("どこかで間違えています")).toBeVisible();
+  await expect(cells.nth(c)).toHaveClass(/stuck/);
+  await page.waitForTimeout(400);
+  await shot(page, "stuck");
+  await page.getByRole("button", { name: "間違える前まで戻す" }).click();
+  await expect(page.getByText("どこかで間違えています")).toBeHidden();
+  await expect(cells.nth(c)).not.toHaveClass(/stuck/);
 });
