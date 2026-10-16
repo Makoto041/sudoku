@@ -7,6 +7,16 @@ import { ApiError, describeError } from "@/lib/client/api";
 import type { Settings } from "@/lib/client/settings";
 import { Close } from "./icons";
 
+/** 各難易度で必要になる手筋（問題の作り方と同じ基準） */
+const LEVEL_TECHNIQUES: [string, string][] = [
+  ["かんたん", "シングル"],
+  ["ふつう", "ロックドキャンディデート"],
+  ["むずかしい", "ペア・トリプル・X-Wing"],
+  ["エキスパート", "XY-Wing・XYZ-Wing・ソードフィッシュ"],
+  ["鬼", "チェーンや仮定"],
+  ["極", "何段も重ねた仮定"],
+];
+
 function Sheet({
   label,
   onClose,
@@ -122,6 +132,17 @@ export function SettingsSheet({
         </button>
       </div>
       <Transfer onCreate={onCreateTransfer} onClaim={onClaim} />
+      <div className="levels">
+        <span className="toggle-label">難易度と手筋</span>
+        <dl className="levels-list">
+          {LEVEL_TECHNIQUES.map(([label, techniques]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{techniques}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
       <dl className="keys muted small">
         <dt>1–9</dt>
         <dd>入力</dd>

@@ -805,6 +805,55 @@ p {
   font-weight: 700;
 }
 
+.cell.hint-focus {
+  background: color-mix(in srgb, var(--gold) 12%, var(--surface));
+}
+
+.cell.hint-pattern {
+  background: color-mix(in srgb, var(--gold) 30%, var(--surface));
+}
+
+.cell.hint-target {
+  background: color-mix(in srgb, var(--gold) 30%, var(--surface));
+  box-shadow: inset 0 0 0 2px var(--gold);
+}
+
+.hint-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 8px 10px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--gold) 14%, var(--surface));
+  animation: rise 0.25s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.hint-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hint-title {
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.hint-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.hint-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
 .cell.stuck {
   box-shadow: inset 0 0 0 2px var(--danger);
 }
@@ -1947,4 +1996,34 @@ p {
   font-family: var(--font-num);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.levels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.levels-list {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.levels-list div {
+  display: grid;
+  grid-template-columns: 6.5em 1fr;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.levels-list dt {
+  font-weight: 700;
+}
+
+.levels-list dd {
+  margin: 0;
+  color: var(--ink-2);
 }
