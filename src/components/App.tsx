@@ -7,18 +7,23 @@ import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
 import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
-import { getPlayer, setPlayerName, type Player } from "@/lib/client/player";
+import { adoptPlayer, getPlayer, setPlayerName, type Player } from "@/lib/client/player";
+import { loadRecords, localRecords } from "@/lib/client/history";
+import { mergeRecords, summarize, type ClearRecord } from "@/lib/client/records";
+import { mergeStats } from "@/lib/client/stats";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
 import { Ranking } from "./Ranking";
+import { Records } from "./Records";
 import { ConfirmSheet, NameSheet, SettingsSheet } from "./Sheets";
 
 type View =
   | { name: "home" }
   | { name: "game"; game: GameState; key: number }
-  | { name: "ranking"; difficulty: Difficulty; date?: string };
+  | { name: "ranking"; difficulty: Difficulty; date?: string }
+  | { name: "records" };
 
 type SheetState =
   | { kind: "settings" }
@@ -126,6 +131,21 @@ export function App() {
     // refresh でホームに戻ったときに読み直す
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, today, refresh, view.name]);
+
+  // 連続日数（端末の結果と、前回取ったサーバーの履歴から。開いたときに裏で取り直す）
+  const [historyTick, setHistoryTick] = useState(0);
+  useEffect(() => {
+    if (!mounted || !player.id) return;
+    void loadRecords(player.id).then(() => setHistoryTick((n) => n + 1));
+  }, [mounted, player.id, refresh]);
+  const streak = useMemo(
+    () =>
+      mounted
+        ? summarize(mergeRecords(load<ClearRecord[]>(KEYS.historyCache) ?? [], localRecords()), today).streak
+        : 0,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mounted, today, refresh, historyTick, view.name],
+  );
 
   const free = useMemo(
     () => (mounted ? loadGame(KEYS.free) : null),
@@ -286,6 +306,11 @@ export function App() {
               }
             }}
             onNewFree={requestFree}
+            streak={streak}
+            onRecords={() => {
+              sfx.tap();
+              go({ name: "records" });
+            }}
             onRanking={() => {
               sfx.tap();
               go({ name: "ranking", difficulty: "easy" });
@@ -318,6 +343,7 @@ export function App() {
           }}
         />
       )}
+      {view.name === "records" && <Records today={today} playerId={player.id} onBack={goHome} />}
       {view.name === "ranking" && (
         <Ranking
           today={today}
@@ -334,6 +360,17 @@ export function App() {
           playerName={player.name}
           onChange={updateSettings}
           onRename={() => setSheet({ kind: "name", difficulty: null })}
+          onCreateTransfer={() =>
+            api.transfer({ playerId: player.id, name: player.name, stats: load(KEYS.stats) })
+          }
+          onClaim={async (code: string) => {
+            const res = await api.claim(code);
+            const next = adoptPlayer(res.playerId, res.name);
+            if (res.stats && typeof res.stats === "object") mergeStats(res.stats);
+            setPlayer(next);
+            setRefresh((n) => n + 1);
+            void loadRecords(next.id);
+          }}
           onClose={() => setSheet(null)}
         />
       )}

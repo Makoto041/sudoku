@@ -1744,3 +1744,207 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- 記録 ---------- */
+
+.head-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.streak-chip {
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--same);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
+.records {
+  gap: 12px;
+}
+
+.streak-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 20px 16px;
+}
+
+.streak-main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.streak-num {
+  font-size: 48px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent-ink);
+}
+
+.streak-unit {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.streak-sub {
+  font-size: 13px;
+}
+
+.card-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.cal-head {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.cal-title {
+  text-align: center;
+  font-weight: 700;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.perfect-chip {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  background: color-mix(in srgb, var(--gold) 20%, transparent);
+  color: var(--gold);
+  vertical-align: 2px;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  text-align: center;
+}
+
+.cal-week {
+  font-size: 11px;
+  color: var(--ink-3);
+  padding-bottom: 2px;
+}
+
+.cal-day {
+  position: relative;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.cal-day.is-played {
+  /* クリアした難易度の数で濃くする（1〜6） */
+  background: color-mix(in srgb, var(--accent) calc(28% + var(--n) * 12%), transparent);
+  color: var(--accent-contrast);
+  font-weight: 700;
+}
+
+.cal-day.is-today {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.cal-day.is-future {
+  opacity: 0.35;
+}
+
+.cal-foot {
+  margin-top: 8px;
+  text-align: right;
+}
+
+.rec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.rec-table th,
+.rec-table td {
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-table th:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+.rec-table thead th {
+  font-size: 12px;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.rec-table tr:last-child th,
+.rec-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------- 引き継ぎ ---------- */
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.transfer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.transfer-code {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.transfer-code .code {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.transfer-code .toggle-hint {
+  flex-basis: 100%;
+}
+
+.transfer-form {
+  display: flex;
+  gap: 8px;
+}
+
+.transfer-form .text-input {
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  font-family: var(--font-num);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

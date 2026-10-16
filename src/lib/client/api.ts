@@ -1,4 +1,5 @@
 import type { MoveLog } from "@/lib/game/score";
+import type { ClearRecord } from "./records";
 import type { Difficulty } from "@/lib/sudoku/core";
 
 export type StartResponse = {
@@ -72,6 +73,18 @@ export const api = {
     if (q.playerId) params.set("playerId", q.playerId);
     return request<LeaderboardResponse>(`/api/leaderboard?${params}`);
   },
+  history: (playerId: string) =>
+    request<{ entries: ClearRecord[] }>(`/api/player/history?${new URLSearchParams({ playerId })}`),
+  transfer: (input: { playerId: string; name: string | null; stats: unknown }) =>
+    request<{ code: string; expiresAt: number }>("/api/player/transfer", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  claim: (code: string) =>
+    request<{ playerId: string; name: string | null; stats: unknown }>("/api/player/claim", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
   rename: (playerId: string, name: string) =>
     request<{ name: string }>("/api/player", { method: "POST", body: JSON.stringify({ playerId, name }) }),
 };

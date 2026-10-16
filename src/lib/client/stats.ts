@@ -47,3 +47,26 @@ export function bestScores(): Partial<Record<Difficulty, number | null>> {
   for (const [k, v] of Object.entries(stats)) out[k as Difficulty] = v?.bestPoints ?? null;
   return out;
 }
+
+/** 引き継ぎで受け取った記録と合わせる（難易度ごとに良い方を残す） */
+export function mergeStats(incoming: unknown) {
+  if (!incoming || typeof incoming !== "object") return;
+  const cur = load<Stats>(KEYS.stats) ?? {};
+  const out: Stats = { ...cur };
+  for (const [k, v] of Object.entries(incoming as Stats)) {
+    if (!v || typeof v !== "object") continue;
+    const a = cur[k as Difficulty];
+    const pick = (
+      x: number | null | undefined,
+      y: number | null | undefined,
+      better: (p: number, q: number) => boolean,
+    ) => (x == null ? (y ?? null) : y == null ? x : better(x, y) ? x : y);
+    out[k as Difficulty] = {
+      played: Math.max(a?.played ?? 0, Number(v.played) || 0),
+      bestMs: pick(a?.bestMs, v.bestMs, (p, q) => p < q),
+      cleanBestMs: pick(a?.cleanBestMs, v.cleanBestMs, (p, q) => p < q),
+      bestPoints: pick(a?.bestPoints, v.bestPoints, (p, q) => p > q),
+    };
+  }
+  save(KEYS.stats, out);
+}
