@@ -11,7 +11,7 @@ import {
   startDaily,
   submitDaily,
 } from "./ranking";
-import { scoreMoves, type MoveLog } from "@/lib/game/score";
+import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { MemoryStore, fromRankValue, rankValue } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
@@ -231,5 +231,23 @@ describe("スコア", () => {
     await expectStatus(submitDaily(store, { ...base, moves: "x" }, T0 + 60_000), 400);
     await expectStatus(submitDaily(store, { ...base, moves: [[0, 81, 1]] }, T0 + 60_000), 400);
     await expectStatus(submitDaily(store, { ...base, moves: [[0, 1, 10]] }, T0 + 60_000), 400);
+  });
+});
+
+describe("時間ボーナス", () => {
+  it("サーバーが測った経過時間で時間ボーナスを付け、内訳を返す", async () => {
+    const store = new MemoryStore();
+    const a = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const puzzle = parseGrid(a.puzzle);
+    const solution = solve(puzzle)!;
+    const empties = puzzle.flatMap((v, i) => (v ? [] : [i]));
+    const moves: MoveLog = empties.map((c, k) => [(k + 1) * 1000, c, solution[c]]);
+    const res = await submitDaily(
+      store,
+      { sessionId: a.sessionId, playerId: ALICE, grid: serializeGrid(solution), name: "a", moves },
+      T0 + 120_000,
+    );
+    expect(res.timeBonus).toBe(timeBonus("easy", puzzle, 120_000));
+    expect(res.points).toBe(scoreMoves(puzzle, solution, "easy", moves, 120_000).points + res.timeBonus);
   });
 });

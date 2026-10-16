@@ -36,6 +36,7 @@ export function Result({
   const time = done ? done.timeMs : elapsedOf(game);
   // 日次はサーバーが計算し直した点数、まだ届いていなければ端末の点数
   const points = done?.points ?? game.score?.points ?? 0;
+  const bonus = done?.timeBonus ?? game.score?.timeBonus;
 
   const share = async () => {
     sfx.tap();
@@ -110,6 +111,12 @@ export function Result({
             <dt>タイム</dt>
             <dd>{formatTime(time)}</dd>
           </div>
+          {bonus !== undefined && (
+            <div>
+              <dt>タイムボーナス</dt>
+              <dd>+{formatPoints(bonus)}</dd>
+            </div>
+          )}
           <div>
             <dt>ミス</dt>
             <dd>{game.mistakes}</dd>

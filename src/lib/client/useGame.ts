@@ -131,7 +131,12 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
               out.flash = { cells, key };
             }
           }
-          if (e.kind === "solved") out.solvedKey = key;
+          if (e.kind === "solved") {
+            out.solvedKey = key;
+            if (e.timeBonus > 0) {
+              popups.push({ id: key * 10 + 2, cell: e.cell, text: `+${e.timeBonus}`, kind: "bonus" });
+            }
+          }
         }
         if (popups.length) out.popups = [...prev.popups, ...popups].slice(-6);
         return out;

@@ -17,6 +17,7 @@ export type SubmitResponse = {
   timeMs: number;
   /** スコア制になる前に保存した結果には無い */
   points?: number;
+  timeBonus?: number;
   rank: number | null;
   total: number;
 };

@@ -3,13 +3,17 @@ import { UNITS, UNITS_OF, type Difficulty, type Grid } from "@/lib/sudoku/core";
 /**
  * スコアの計算。ブラウザ（遊んでいる間の表示）とサーバー（ランキングの記録）で同じものを使う。
  *
- * - 正しい数字を置くと、難易度の基本点 × 速さの倍率 × コンボの倍率
- *   - 速さ：前の得点から 0 秒で 2 倍、20 秒以上で 1 倍（その間はなめらかに下がる）
+ * - 正しい数字を置くと、難易度の基本点 × コンボの倍率
  *   - コンボ：続けて正解するたびに +5%（最大 +50%）。間違えると切れる
  * - 行・列・ブロックのすべてのマスで得点したとき、そのユニットごとに基本点 × 3
  * - 間違えると基本点ぶん減点（0 より下がらない）
  * - 同じマスで得点するのは 1 回だけ（消して置き直しても増えない）
  * - ヒントで埋めたマスは 0 点で、コンボが切れる
+ * - 解き終えたら時間ボーナス：基本点 × 空きマス数 × 2 × (1 − 経過時間 ÷ 基準時間)。基準時間を過ぎたら 0
+ *
+ * 速さは「解き終えるまでの時間」だけで測る。手と手の間隔で測ると、メモで解いておいて最後に
+ * まとめて置くだけで点が増え（鬼で 1.5 倍）、日次では端末が送る手の時刻も書き換えられてしまう。
+ * 解き終えるまでの時間は、日次ならサーバーが測る
  */
 export const BASE_POINTS: Record<Difficulty, number> = {
   easy: 50,
@@ -20,9 +24,16 @@ export const BASE_POINTS: Record<Difficulty, number> = {
   extreme: 300,
 };
 
-const SPEED_WINDOW_MS = 20_000;
-/** これより短い間隔の手には速さのボーナスを付けない（人の操作ではまず出ない速さ） */
-export const MIN_HUMAN_INTERVAL_MS = 200;
+/** 時間ボーナスが 0 になる時間 */
+export const PAR_MS: Record<Difficulty, number> = {
+  easy: 10 * 60_000,
+  medium: 15 * 60_000,
+  hard: 25 * 60_000,
+  expert: 40 * 60_000,
+  master: 60 * 60_000,
+  extreme: 120 * 60_000,
+};
+const TIME_BONUS_FACTOR = 2;
 /** 記録の時刻が実際の経過時間をこれ以上超えていたら、その手は数えない（時計のずれの許容） */
 const LATE_TOLERANCE_MS = 5_000;
 const COMBO_STEP = 0.05;
@@ -39,6 +50,8 @@ export type ScoreState = {
   scored: string;
   /** ボーナスを付けたユニット（UNITS の番号のビット） */
   units: number;
+  /** 解き終えたときに足した時間ボーナス（points に含む） */
+  timeBonus?: number;
 };
 
 export type ScoreDelta =
@@ -57,18 +70,18 @@ export function emptyScore(puzzle: readonly number[]): ScoreState {
   };
 }
 
-/** 前の得点からの間隔による倍率（1〜2）。短すぎる間隔はボーナスなし */
-export function speedMultiplier(dtMs: number): number {
-  if (dtMs < MIN_HUMAN_INTERVAL_MS) return 1;
-  const x = Math.min(1, Math.max(0, (SPEED_WINDOW_MS - dtMs) / SPEED_WINDOW_MS));
-  return 1 + x;
+const roundTo5 = (n: number) => Math.round(n / 5) * 5;
+
+/** 解き終えたときの時間ボーナス */
+export function timeBonus(difficulty: Difficulty, puzzle: readonly number[], elapsedMs: number): number {
+  const empties = puzzle.filter((v) => !v).length;
+  const left = Math.min(1, Math.max(0, 1 - elapsedMs / PAR_MS[difficulty]));
+  return roundTo5(BASE_POINTS[difficulty] * empties * TIME_BONUS_FACTOR * left);
 }
 
 export function comboMultiplier(streak: number): number {
   return 1 + Math.min(Math.max(0, streak - 1), COMBO_MAX_STEPS) * COMBO_STEP;
 }
-
-const roundTo5 = (n: number) => Math.round(n / 5) * 5;
 
 /** このマスを埋めたことで、すべてのマスで得点済みになったユニット（まだボーナスを付けていないもの） */
 function newlyCompletedUnits(scored: string, units: number, cell: number): number[] {
@@ -125,7 +138,7 @@ export function applyPlacement(
   if (st.scored[cell] === "1") return [st, { kind: "repeat", points: 0, bonus: 0, units: [] }];
 
   const streak = st.streak + 1;
-  const points = roundTo5(base * speedMultiplier(t - st.lastAt) * comboMultiplier(streak));
+  const points = roundTo5(base * comboMultiplier(streak));
   const scored = markScored(st.scored, cell);
   const done = newlyCompletedUnits(scored, st.units, cell);
   const unitsMask = done.reduce((m, u) => m | (1 << u), st.units);
