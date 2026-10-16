@@ -1,6 +1,6 @@
 import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
-import { scoreMoves, type MoveLog } from "@/lib/game/score";
+import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import type { BoardKey, RankingStore, Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
@@ -136,7 +136,8 @@ export async function submitDaily(
   if (timeMs < MIN_PLAUSIBLE_MS) throw new RankingError(422, "too fast");
   // 点数は送られてきた手の記録をサーバーで計算し直す（端末の点数は使わない）。
   // 解は 1 つなので、正しいと確かめた盤面がそのまま解答になる
-  const points = scoreMoves(puzzle, solution, session.difficulty, moves, timeMs).points;
+  const bonus = timeBonus(session.difficulty, puzzle, timeMs);
+  const points = scoreMoves(puzzle, solution, session.difficulty, moves, timeMs).points + bonus;
 
   // 記録は何度書いても同じ結果になる（日次は最初の 1 回、歴代は良いほう）ので先に書き、
   // 完了の印は最後に付ける。途中で失敗しても再送で記録できる
@@ -151,6 +152,7 @@ export async function submitDaily(
     difficulty: session.difficulty,
     timeMs,
     points,
+    timeBonus: bonus,
     rank: pos ? pos.index + 1 : null,
     total,
   };

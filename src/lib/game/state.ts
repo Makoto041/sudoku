@@ -1,5 +1,12 @@
 import { countSolutions, solve } from "@/lib/sudoku/solver";
-import { applyPlacement, emptyScore, type MoveLog, type ScoreDelta, type ScoreState } from "./score";
+import {
+  applyPlacement,
+  emptyScore,
+  timeBonus,
+  type MoveLog,
+  type ScoreDelta,
+  type ScoreState,
+} from "./score";
 import {
   PEERS,
   UNITS,
@@ -73,7 +80,8 @@ export type Effect =
   | { kind: "erase"; cell: number }
   | { kind: "undo"; cell: number }
   | { kind: "hint"; cell: number; digit: number; units: number[][]; bonus: number }
-  | { kind: "solved" }
+  /** timeBonus は解き終えたときの時間ボーナス（日次はサーバーが測り直す） */
+  | { kind: "solved"; cell: number; timeBonus: number }
   | { kind: "rewind"; steps: number }
   | { kind: "blocked" };
 
@@ -220,9 +228,11 @@ function place(
         },
   ];
   if (isSolved(next, values)) {
+    const bonus = next.score ? timeBonus(s.difficulty, s.puzzle, t) : 0;
+    if (next.score) next.score = { ...next.score, points: next.score.points + bonus, timeBonus: bonus };
     next.status = "solved";
     next.selected = null;
-    effects.push({ kind: "solved" });
+    effects.push({ kind: "solved", cell, timeBonus: bonus });
   }
   return [next, effects];
 }
