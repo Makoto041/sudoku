@@ -143,6 +143,7 @@ export async function submitDaily(
   // 完了の印は最後に付ける。途中で失敗しても再送で記録できる
   await store.setName(playerId, name);
   await store.record(session.date, session.difficulty, { playerId, timeMs, points });
+  await store.addHistory(playerId, { date: session.date, difficulty: session.difficulty, points, timeMs });
   if (!(await store.finishSession(session.id, now))) throw new RankingError(409, "already submitted");
 
   const board: BoardKey = { scope: "daily", date: session.date, difficulty: session.difficulty };
@@ -241,4 +242,60 @@ export async function renamePlayer(store: RankingStore, input: { playerId?: unkn
   if (!name) throw new RankingError(400, "invalid name");
   await store.setName(playerId, name);
   return { name };
+}
+
+/** 今日の一問のクリア履歴（記録画面用） */
+export async function getHistory(store: RankingStore, input: { playerId?: unknown }) {
+  const playerId = assertPlayerId(input.playerId);
+  const entries = await store.getHistory(playerId);
+  entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return { entries };
+}
+
+// 紛らわしい 0/O/1/I を除いた 32 文字。8 文字で約 1 兆通り
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CODE_LENGTH = 8;
+const TRANSFER_TTL_SEC = 24 * 60 * 60;
+const MAX_STATS_BYTES = 4096;
+
+function newCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(CODE_LENGTH));
+  return [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+}
+
+/** 入力されたコードを整える（小文字・空白・ハイフンを許す） */
+export function normalizeCode(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const code = value.toUpperCase().replace(/[\s-]/g, "");
+  return code.length === CODE_LENGTH && [...code].every((c) => CODE_ALPHABET.includes(c)) ? code : null;
+}
+
+/** 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える */
+export async function createTransfer(
+  store: RankingStore,
+  input: { playerId?: unknown; name?: unknown; stats?: unknown },
+  now = Date.now(),
+) {
+  const playerId = assertPlayerId(input.playerId);
+  const name = input.name === null || input.name === undefined ? null : sanitizeName(input.name);
+  const stats = input.stats ?? null;
+  const payload = JSON.stringify({ playerId, name, stats });
+  if (payload.length > MAX_STATS_BYTES) throw new RankingError(400, "too large");
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = newCode();
+    if (await store.putTransfer(code, payload, TRANSFER_TTL_SEC)) {
+      return { code, expiresAt: now + TRANSFER_TTL_SEC * 1000 };
+    }
+  }
+  throw new RankingError(500, "could not create code");
+}
+
+/** 引き継ぎコードを使う。プレイヤー ID・名前・端末の記録を返し、コードは消える */
+export async function claimTransfer(store: RankingStore, input: { code?: unknown }) {
+  const code = normalizeCode(input.code);
+  if (!code) throw new RankingError(400, "invalid code");
+  const raw = await store.takeTransfer(code);
+  if (!raw) throw new RankingError(404, "code not found");
+  const data = JSON.parse(raw) as { playerId: string; name: string | null; stats: unknown };
+  return { playerId: data.playerId, name: data.name, stats: data.stats ?? null };
 }

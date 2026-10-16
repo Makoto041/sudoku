@@ -122,19 +122,34 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.addInitScript(() =>
     localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
   );
+  // 設定シートは上寄せで縦に長いので、シートの下にボタンが見える高さにする
+  await page.setViewportSize({ width: 393, height: 1100 });
   await page.goto("/");
   let started = false;
   page.on("request", (r) => {
     if (r.url().includes("/api/daily/start")) started = true;
   });
-  const row = (await page.locator(".daily-row").first().boundingBox())!;
   await page.getByRole("button", { name: "設定" }).click();
-  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
-  await page.touchscreen.tap(row.x + row.width / 2, row.y + row.height / 2);
-  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  const sheet = page.getByRole("dialog", { name: "設定" });
+  await expect(sheet).toBeVisible();
+  // シートの下に見えている背景のうち、その下にボタンがある位置を叩く
+  const sheetBottom = await sheet.locator(".sheet").evaluate((el) => el.getBoundingClientRect().bottom);
+  const target = await page.evaluate((bottom) => {
+    for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
+      const r = el.getBoundingClientRect();
+      if (r.top > bottom + 4 && r.bottom < window.innerHeight) {
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+    }
+    return null;
+  }, sheetBottom);
+  expect(target).not.toBeNull();
+  await page.touchscreen.tap(target!.x, target!.y);
+  await expect(sheet).toBeHidden();
   await page.waitForTimeout(500);
   expect(started).toBe(false);
   await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await expect(page.getByRole("grid")).toHaveCount(0);
 });
 
 test("間違えたマスに正しい数字を入れ直すと揺れない", async ({ page }) => {
@@ -290,4 +305,63 @@ test("極の問題を作って遊び始められる", async ({ page }) => {
   await page.locator(".free-extreme").click();
   await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".bar-main")).toHaveText("極");
+});
+
+test("今日の一問を解くと連続日数が付き、記録画面のカレンダーに残る", async ({ page }, info) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`記録${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  const last = await fill(page, g.puzzle, solution, true);
+  await page.waitForTimeout(15_500);
+  await page
+    .getByRole("gridcell")
+    .nth(last)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[last]}`);
+  await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "ホーム", exact: true }).click();
+  await expect(page.locator(".streak-chip")).toHaveText("1日連続");
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(page.locator(".streak-num")).toHaveText("1");
+  await expect(page.locator(".cal-day.is-played")).toHaveCount(1);
+  await expect(page.locator(".rec-table tbody tr").first().locator("td").first()).toHaveText("1");
+  await shot(page, "records");
+});
+
+test("引き継ぎコードで別の端末に同じプレイヤーを移せる", async ({ browser }) => {
+  const a = await browser.newContext();
+  const pa = await a.newPage();
+  await pa.addInitScript(() =>
+    localStorage.setItem(
+      "sudoku:player",
+      JSON.stringify({ id: "33333333-3333-4333-8333-333333333333", name: "引き継ぎ元" }),
+    ),
+  );
+  await pa.goto("/");
+  await pa.getByRole("button", { name: "設定" }).click();
+  await pa.getByRole("button", { name: "コードを発行" }).click();
+  const code = (await pa.locator(".transfer-code .code").textContent())!;
+  expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  await a.close();
+
+  const b = await browser.newContext();
+  const pb = await b.newPage();
+  await pb.goto("/");
+  await pb.getByRole("button", { name: "設定" }).click();
+  await pb.getByRole("button", { name: "コードを入力" }).click();
+  await pb.getByLabel("引き継ぎコード").fill(code.toLowerCase());
+  await pb.getByRole("button", { name: "引き継ぐ" }).click();
+  await expect(pb.getByText("引き継ぎました")).toBeVisible();
+  const player = JSON.parse((await pb.evaluate(() => localStorage.getItem("sudoku:player")))!);
+  expect(player).toEqual({ id: "33333333-3333-4333-8333-333333333333", name: "引き継ぎ元" });
+  await expect(pb.getByText("引き継ぎ元")).toBeVisible();
+  await b.close();
 });

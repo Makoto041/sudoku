@@ -5,7 +5,7 @@ import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { SubmitResponse } from "@/lib/client/api";
 import { bestScores } from "@/lib/client/stats";
 import { formatPoints } from "@/lib/game/score";
-import { ChevronRight, Gear, Trophy } from "./icons";
+import { Calendar, ChevronRight, Gear, Trophy } from "./icons";
 import { InstallHint } from "./InstallHint";
 import { Logo } from "./Logo";
 
@@ -24,6 +24,9 @@ type Props = {
   onNewFree: (difficulty: Difficulty) => void;
   onRanking: () => void;
   onSettings: () => void;
+  onRecords: () => void;
+  /** 今日の一問の連続日数 */
+  streak: number;
 };
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
@@ -46,16 +49,28 @@ export function Home(props: Props) {
           <Logo size={34} />
           <h1>ナンプレ</h1>
         </div>
-        <button type="button" className="icon-btn" onClick={props.onSettings} aria-label="設定">
-          <Gear />
-        </button>
+        <div className="head-actions">
+          <button type="button" className="icon-btn" onClick={props.onRecords} aria-label="記録">
+            <Calendar />
+          </button>
+          <button type="button" className="icon-btn" onClick={props.onSettings} aria-label="設定">
+            <Gear />
+          </button>
+        </div>
       </header>
 
       <section className="card daily" aria-labelledby="daily-title">
         <div className="card-head">
           <div>
             <h2 id="daily-title">今日の一問</h2>
-            <p className="muted small">{longDate(today)}</p>
+            <p className="muted small">
+              {longDate(today)}
+              {props.streak > 0 && (
+                <button type="button" className="streak-chip" onClick={props.onRecords}>
+                  {props.streak}日連続
+                </button>
+              )}
+            </p>
           </div>
           <button type="button" className="chip-btn" onClick={props.onRanking}>
             <Trophy size={16} /> ランキング

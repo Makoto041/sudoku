@@ -20,6 +20,13 @@ export function getPlayer(): Player {
   return player;
 }
 
+/** 引き継ぎコードで受け取ったプレイヤーに切り替える */
+export function adoptPlayer(id: string, name: string | null): Player {
+  const player = { id, name };
+  save(KEYS.player, player);
+  return player;
+}
+
 export function setPlayerName(name: string): Player {
   const player = { ...getPlayer(), name };
   save(KEYS.player, player);

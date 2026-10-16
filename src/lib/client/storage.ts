@@ -24,6 +24,22 @@ export function remove(key: string) {
   }
 }
 
+/** 前方一致するキーと値を集める */
+export function loadByPrefix<T>(prefix: string): [string, T][] {
+  const out: [string, T][] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(prefix)) continue;
+      const v = load<T>(key);
+      if (v !== null) out.push([key, v]);
+    }
+  } catch {
+    /* 使えなければ空 */
+  }
+  return out;
+}
+
 export const KEYS = {
   player: "sudoku:player",
   settings: "sudoku:settings",
@@ -33,4 +49,5 @@ export const KEYS = {
   stats: "sudoku:stats",
   installHint: "sudoku:install-hint",
   clockOffset: "sudoku:clock-offset",
+  historyCache: "sudoku:history",
 };

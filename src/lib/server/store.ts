@@ -51,7 +51,22 @@ export interface RankingStore {
   getDailyPuzzle(date: string, difficulty: Difficulty): Promise<string | null>;
   /** その日の問題を固定する。既に固定されていればそちらを返す */
   pinDailyPuzzle(date: string, difficulty: Difficulty, puzzle: string): Promise<string>;
+  /** 今日の一問のクリア履歴に足す。同じ日・難易度は最初の 1 回だけ */
+  addHistory(playerId: string, entry: HistoryEntry): Promise<void>;
+  getHistory(playerId: string): Promise<HistoryEntry[]>;
+  /** 引き継ぎコードを保存する。コードが既に使われていれば false */
+  putTransfer(code: string, payload: string, ttlSec: number): Promise<boolean>;
+  /** 引き継ぎコードを取り出して消す（1 回だけ使える） */
+  takeTransfer(code: string): Promise<string | null>;
 }
+
+export type HistoryEntry = {
+  date: string;
+  difficulty: Difficulty;
+  /** スコア制になる前の記録には無い */
+  points: number | null;
+  timeMs: number;
+};
 
 const SESSION_TTL_SEC = 3 * 24 * 60 * 60;
 const DAILY_TTL_SEC = 400 * 24 * 60 * 60;
@@ -66,6 +81,19 @@ const sessionKey = (id: string) => `${PREFIX}:sess:${id}`;
 const NAMES_KEY = `${PREFIX}:names`;
 const puzzleKey = (date: string, difficulty: Difficulty) => `${PREFIX}:puzzle:${date}:${difficulty}`;
 const PUZZLE_TTL_SEC = 7 * 24 * 60 * 60;
+const historyKey = (playerId: string) => `${PREFIX}:hist:${playerId}`;
+const HISTORY_TTL_SEC = 800 * 24 * 60 * 60;
+const transferKey = (code: string) => `${PREFIX}:xfer:${code}`;
+
+function toHistory(field: string, value: string): HistoryEntry | null {
+  const [date, difficulty] = field.split(":");
+  try {
+    const v = JSON.parse(value) as { points: number | null; timeMs: number };
+    return { date, difficulty: difficulty as Difficulty, points: v.points ?? null, timeMs: v.timeMs };
+  } catch {
+    return null;
+  }
+}
 
 class RedisStore implements RankingStore {
   constructor(private redis: Redis) {}
@@ -169,6 +197,35 @@ class RedisStore implements RankingStore {
     const set = await this.redis.set(key, puzzle, { nx: true, ex: PUZZLE_TTL_SEC });
     return set ? puzzle : ((await this.redis.get<string>(key)) ?? puzzle);
   }
+
+  async addHistory(playerId: string, entry: HistoryEntry) {
+    const key = historyKey(playerId);
+    const p = this.redis.pipeline();
+    p.hsetnx(
+      key,
+      `${entry.date}:${entry.difficulty}`,
+      JSON.stringify({ points: entry.points, timeMs: entry.timeMs }),
+    );
+    p.expire(key, HISTORY_TTL_SEC);
+    await p.exec();
+  }
+
+  async getHistory(playerId: string) {
+    // 自動変換を切っているので、HGETALL はフィールドと値が交互に並んだ配列で返る
+    const raw = (await this.redis.hgetall(historyKey(playerId))) as unknown;
+    const pairs: [string, string][] = Array.isArray(raw)
+      ? raw.flatMap((v, i, a) => (i % 2 === 0 ? [[String(v), String(a[i + 1])] as [string, string]] : []))
+      : Object.entries((raw as Record<string, unknown> | null) ?? {}).map(([k, v]) => [k, String(v)]);
+    return pairs.map(([k, v]) => toHistory(k, v)).filter((e): e is HistoryEntry => e !== null);
+  }
+
+  async putTransfer(code: string, payload: string, ttlSec: number) {
+    return (await this.redis.set(transferKey(code), payload, { nx: true, ex: ttlSec })) !== null;
+  }
+
+  async takeTransfer(code: string) {
+    return this.redis.getdel<string>(transferKey(code));
+  }
 }
 
 /** ローカル開発・テスト用。プロセスが落ちると消える */
@@ -178,6 +235,8 @@ export class MemoryStore implements RankingStore {
   private boards = new Map<string, Map<string, number>>();
   private names = new Map<string, string>();
   private puzzles = new Map<string, string>();
+  private history = new Map<string, Map<string, string>>();
+  private transfers = new Map<string, string>();
 
   async startSession(candidate: Session) {
     const existingId = this.starts.get(startKey(candidate));
@@ -257,6 +316,30 @@ export class MemoryStore implements RankingStore {
     const key = puzzleKey(date, difficulty);
     if (!this.puzzles.has(key)) this.puzzles.set(key, puzzle);
     return this.puzzles.get(key)!;
+  }
+
+  async addHistory(playerId: string, entry: HistoryEntry) {
+    let h = this.history.get(playerId);
+    if (!h) this.history.set(playerId, (h = new Map()));
+    const field = `${entry.date}:${entry.difficulty}`;
+    if (!h.has(field)) h.set(field, JSON.stringify({ points: entry.points, timeMs: entry.timeMs }));
+  }
+
+  async getHistory(playerId: string) {
+    const h = this.history.get(playerId) ?? new Map<string, string>();
+    return [...h].map(([k, v]) => toHistory(k, v)).filter((e): e is HistoryEntry => e !== null);
+  }
+
+  async putTransfer(code: string, payload: string) {
+    if (this.transfers.has(code)) return false;
+    this.transfers.set(code, payload);
+    return true;
+  }
+
+  async takeTransfer(code: string) {
+    const v = this.transfers.get(code) ?? null;
+    this.transfers.delete(code);
+    return v;
   }
 }
 

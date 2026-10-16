@@ -10,6 +10,10 @@ import {
   sanitizeName,
   startDaily,
   submitDaily,
+  getHistory,
+  createTransfer,
+  claimTransfer,
+  normalizeCode,
 } from "./ranking";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { MemoryStore, fromRankValue, rankValue } from "./store";
@@ -249,5 +253,43 @@ describe("時間ボーナス", () => {
     );
     expect(res.timeBonus).toBe(timeBonus("easy", puzzle, 120_000));
     expect(res.points).toBe(scoreMoves(puzzle, solution, "easy", moves, 120_000).points + res.timeBonus);
+  });
+});
+
+describe("記録と引き継ぎ", () => {
+  it("今日の一問をクリアすると履歴に残り、同じ日・難易度は最初の 1 回だけ", async () => {
+    const store = new MemoryStore();
+    await solveDaily(store, ALICE, 100_000, "アリス");
+    const { entries } = await getHistory(store, { playerId: ALICE });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ date: "2026-10-15", difficulty: "easy", timeMs: 100_000 });
+    expect(typeof entries[0].points).toBe("number");
+    await store.addHistory(ALICE, { date: "2026-10-15", difficulty: "easy", points: 1, timeMs: 1 });
+    expect((await getHistory(store, { playerId: ALICE })).entries[0].timeMs).toBe(100_000);
+  });
+
+  it("引き継ぎコードで同じプレイヤー ID と名前・記録を受け取れ、コードは 1 回だけ使える", async () => {
+    const store = new MemoryStore();
+    const { code, expiresAt } = await createTransfer(
+      store,
+      { playerId: ALICE, name: "アリス", stats: { easy: { bestPoints: 1234 } } },
+      T0,
+    );
+    expect(code).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+    expect(expiresAt).toBe(T0 + 24 * 60 * 60 * 1000);
+    const pretty = `${code.slice(0, 4).toLowerCase()}-${code.slice(4)}`;
+    await expect(claimTransfer(store, { code: pretty })).resolves.toEqual({
+      playerId: ALICE,
+      name: "アリス",
+      stats: { easy: { bestPoints: 1234 } },
+    });
+    await expectStatus(claimTransfer(store, { code }), 404);
+    await expectStatus(claimTransfer(store, { code: "abc" }), 400);
+    expect(normalizeCode("0000-0000")).toBeNull();
+  });
+
+  it("大きすぎる記録は受け付けない", async () => {
+    const store = new MemoryStore();
+    await expectStatus(createTransfer(store, { playerId: ALICE, stats: "x".repeat(5000) }), 400);
   });
 });
