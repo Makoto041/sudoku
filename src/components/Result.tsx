@@ -40,7 +40,7 @@ export function Result({
   const share = async () => {
     sfx.tap();
     const label = DIFFICULTY_LABEL[game.difficulty];
-    const head = isDaily ? `数独 今日の一問（${label}）` : `数独（${label}）`;
+    const head = isDaily ? `ナンプレ 今日の一問（${label}）` : `ナンプレ（${label}）`;
     const rank = done?.rank ? ` / ${done.rank}位（${done.total}人中）` : "";
     const text = `${head} ${formatPoints(points)}点（${formatTime(time)}）${rank}`;
     const url = location.origin;

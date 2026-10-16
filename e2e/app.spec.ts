@@ -38,14 +38,14 @@ async function fill(page: Page, puzzle: number[], solution: number[], leaveLast 
 
 test("フリープレイを最後まで解ける", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "数独" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
   await shot(page, "home");
 
   await page
     .getByRole("button", { name: /かんたん/ })
     .last()
     .click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
   const g = await savedGame(page, "sudoku:free");
   const cells = page.getByRole("gridcell");
   const first = g.puzzle.indexOf(0);
@@ -111,7 +111,7 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
 test("鬼の問題を作って遊び始められる", async ({ page }) => {
   await page.goto("/");
   await page.locator(".free-master").click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".bar-main")).toHaveText("鬼");
   const g = await savedGame(page, "sudoku:free");
   expect(g.puzzle.filter((v) => v !== 0).length).toBeLessThanOrEqual(28);
@@ -134,7 +134,7 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
   await page.waitForTimeout(500);
   expect(started).toBe(false);
-  await expect(page.getByRole("heading", { name: "数独" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
 });
 
 test("間違えたマスに正しい数字を入れ直すと揺れない", async ({ page }) => {
@@ -143,7 +143,7 @@ test("間違えたマスに正しい数字を入れ直すと揺れない", async
     .getByRole("button", { name: /かんたん/ })
     .last()
     .click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
   const g = await savedGame(page, "sudoku:free");
   const cell = g.puzzle.indexOf(0);
   const cells = page.getByRole("gridcell");
@@ -189,7 +189,7 @@ test("行き詰まったら知らせ、間違える前まで戻せる", async ({
     .getByRole("button", { name: /かんたん/ })
     .last()
     .click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
   const g = await savedGame(page, "sudoku:free");
   // 空きマス c の周りに、c に入れられる数字をすべて置いて c を埋められなくする
   const c = g.puzzle.indexOf(0);
@@ -266,7 +266,7 @@ test("正しく置くと得点が浮かび、スコアが増える。間違え�
     .getByRole("button", { name: /ふつう/ })
     .last()
     .click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
   const g = await savedGame(page, "sudoku:free");
   const empties = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
   const cells = page.getByRole("gridcell");
@@ -288,6 +288,6 @@ test("極の問題を作って遊び始められる", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
   await page.locator(".free-extreme").click();
-  await expect(page.getByRole("grid", { name: "数独の盤面" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible({ timeout: 30_000 });
   await expect(page.locator(".bar-main")).toHaveText("極");
 });

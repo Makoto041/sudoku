@@ -44,7 +44,7 @@ export function Home(props: Props) {
       <header className="home-head">
         <div className="brand">
           <Logo size={34} />
-          <h1>数独</h1>
+          <h1>ナンプレ</h1>
         </div>
         <button type="button" className="icon-btn" onClick={props.onSettings} aria-label="設定">
           <Gear />

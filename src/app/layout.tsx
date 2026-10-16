@@ -2,10 +2,10 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "数独",
-  description: "効果音が気持ちいい、シンプルな数独。毎日の一問でタイムを競えます。",
-  applicationName: "数独",
-  appleWebApp: { capable: true, title: "数独", statusBarStyle: "default" },
+  title: "ナンプレ",
+  description: "置くたびに気持ちいい音が鳴る、シンプルなナンプレ。毎日の一問で点数を競えます。",
+  applicationName: "ナンプレ",
+  appleWebApp: { capable: true, title: "ナンプレ", statusBarStyle: "default" },
   formatDetection: { telephone: false },
   icons: {
     icon: [

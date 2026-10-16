@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "数独",
-    short_name: "数独",
-    description: "効果音が気持ちいい、シンプルな数独。毎日の一問でタイムを競えます。",
+    name: "ナンプレ",
+    short_name: "ナンプレ",
+    description: "置くたびに気持ちいい音が鳴る、シンプルなナンプレ。毎日の一問で点数を競えます。",
     id: "/",
     start_url: "/",
     scope: "/",
