@@ -27,7 +27,7 @@ export function Board({ game, fx, showMistakes, highlightSame, stuck, onSelect }
     <div
       className={`board${hidden ? " is-hidden" : ""}${game.status === "solved" ? " is-solved" : ""}`}
       role="grid"
-      aria-label="数独の盤面"
+      aria-label="ナンプレの盤面"
       key={fx.solvedKey ?? "board"}
     >
       {game.values.map((value, i) => {
