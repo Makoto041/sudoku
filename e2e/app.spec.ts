@@ -51,9 +51,9 @@ test("フリープレイを最後まで解ける", async ({ page }) => {
   const first = g.puzzle.indexOf(0);
   await cells.nth(first).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
   // メモを付けてから、間違い → 正解の順に入れる
-  await page.getByRole("button", { name: "メモ" }).click();
+  await page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ }).click();
   for (const d of [1, 2, 5]) await page.keyboard.press(`Digit${d}`);
-  await page.getByRole("button", { name: "メモ" }).click();
+  await page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ }).click();
   const wrong = (g.solution![first] % 9) + 1;
   await page.keyboard.press(`Digit${wrong}`);
   await expect(cells.nth(first)).toHaveClass(/wrong/);
@@ -87,6 +87,8 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
     Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
   );
   const g = await savedGame(page, key);
+  await expect(page.getByRole("button", { name: "ヒント" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "自動メモ" })).toHaveCount(0);
   // 解答はサーバーから受け取らず、端末で解いたものを持つ
   const solution = solve(g.puzzle)!;
   expect(g.solution).toEqual(solution);
@@ -364,4 +366,75 @@ test("引き継ぎコードで別の端末に同じプレイヤーを移せる",
   expect(player).toEqual({ id: "33333333-3333-4333-8333-333333333333", name: "引き継ぎ元" });
   await expect(pb.getByText("引き継ぎ元")).toBeVisible();
   await b.close();
+});
+
+test("ヒントは手筋の名前→説明の順に出し、置くかメモに反映できる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /ふつう/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const before = await savedGame(page, "sudoku:free");
+  await page.getByRole("button", { name: "ヒント" }).click();
+  const panel = page.locator(".hint-panel");
+  await expect(panel.locator(".hint-title")).toHaveText(
+    /シングル|ロックド|ペア|トリプル|クアッド|Wing|ソード/,
+  );
+  await expect(panel.locator(".hint-body")).toHaveCount(0);
+  await expect(page.locator(".cell.hint-focus").first()).toBeVisible();
+  await panel.getByRole("button", { name: "もっと見る" }).click();
+  await expect(panel.locator(".hint-body")).toBeVisible();
+  await expect(page.locator(".cell.hint-target").first()).toBeVisible();
+  await shot(page, "hint");
+  const action = panel.getByRole("button", { name: /置く|メモに反映/ });
+  const label = await action.textContent();
+  await action.click();
+  await expect(panel).toBeHidden();
+  await page.waitForTimeout(300);
+  const after = await savedGame(page, "sudoku:free");
+  if (label === "置く") {
+    const placed = after.values.findIndex((v, i) => v !== before.values[i]);
+    expect(placed).toBeGreaterThanOrEqual(0);
+    expect(after.values[placed]).toBe(before.solution![placed]);
+  } else {
+    expect((after as unknown as { notes: number[] }).notes.some((n) => n !== 0)).toBe(true);
+  }
+  await expect(page.locator(".tool-count")).toHaveText("1");
+});
+
+test("違う数字があると、ヒントはそのマスを指して消せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cell = g.puzzle.indexOf(0);
+  await page
+    .getByRole("gridcell")
+    .nth(cell)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${(g.solution![cell] % 9) + 1}`);
+  await page.getByRole("button", { name: "ヒント" }).click();
+  await expect(page.locator(".hint-title")).toHaveText("違う数字があります");
+  await expect(page.getByRole("gridcell").nth(cell)).toHaveClass(/hint-target/);
+  await page.locator(".hint-panel").getByRole("button", { name: "消す" }).click();
+  await expect(page.getByRole("gridcell").nth(cell)).not.toHaveClass(/filled|wrong/);
+});
+
+test("自動メモで候補をすべて書き、もう一度で消す。今日の一問には出ない", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  await page.getByRole("button", { name: "自動メモ" }).click();
+  const g = await savedGame(page, "sudoku:free");
+  const empties = g.puzzle.filter((v) => v === 0).length;
+  await expect(page.locator(".cell .notes")).toHaveCount(empties);
+  await page.getByRole("button", { name: "自動メモ" }).click();
+  await expect(page.locator(".cell .notes")).toHaveCount(0);
 });

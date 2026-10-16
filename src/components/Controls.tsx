@@ -2,7 +2,7 @@
 
 import { remainingCounts } from "@/lib/sudoku/core";
 import type { GameState } from "@/lib/game/state";
-import { Bulb, Eraser, Pencil, Undo } from "./icons";
+import { AutoNote, Bulb, Eraser, Pencil, Undo } from "./icons";
 
 type ToolProps = {
   game: GameState;
@@ -10,9 +10,10 @@ type ToolProps = {
   onErase: () => void;
   onToggleNotes: () => void;
   onHint: () => void;
+  onAutoNotes: () => void;
 };
 
-export function Tools({ game, onUndo, onErase, onToggleNotes, onHint }: ToolProps) {
+export function Tools({ game, onUndo, onErase, onToggleNotes, onHint, onAutoNotes }: ToolProps) {
   const canHint = game.mode === "free";
   return (
     <div className="tools">
@@ -36,6 +37,12 @@ export function Tools({ game, onUndo, onErase, onToggleNotes, onHint }: ToolProp
         </span>
         <span>メモ</span>
       </button>
+      {canHint && (
+        <button type="button" className="tool" onClick={onAutoNotes}>
+          <AutoNote />
+          <span>自動メモ</span>
+        </button>
+      )}
       {canHint && (
         <button type="button" className="tool" onClick={onHint}>
           <span className="tool-icon">

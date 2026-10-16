@@ -15,7 +15,8 @@ import { haptic } from "@/lib/haptics";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
 import { Result } from "./Result";
-import { ChevronLeft, Gear, Pause, Play } from "./icons";
+import { findHint, notesAfterHint, type Hint } from "@/lib/sudoku/hint";
+import { ChevronLeft, Close, Gear, Pause, Play } from "./icons";
 
 type Props = {
   initial: GameState;
@@ -34,6 +35,54 @@ export type DailyOutcome =
 
 export function Game({ initial, settings, player, onExit, onOpenSettings, onRanking, onNewFree }: Props) {
   const { game, fx, dispatch } = useGame(initial, { showMistakes: settings.showMistakes });
+  const gameRef = useRef(game);
+  gameRef.current = game;
+
+  // 手筋ヒント：1 段目は手筋の名前と注目する場所、2 段目で根拠と結果、そこで置く／メモに反映
+  const [hint, setHint] = useState<{ data: Hint; stage: 1 | 2 } | null>(null);
+  const openHint = useCallback(() => {
+    const g = gameRef.current;
+    if (g.mode !== "free" || !g.solution || g.status !== "playing") return;
+    if (hint) {
+      setHint(null);
+      sfx.tap();
+      return;
+    }
+    const data = findHint(g.puzzle, g.values, g.notes, g.solution);
+    if (!data) {
+      sfx.blocked();
+      return;
+    }
+    dispatch({ type: "hintUsed" });
+    sfx.hint(5);
+    setHint({ data, stage: data.kind === "wrong" || data.kind === "guess" ? 2 : 1 });
+  }, [dispatch, hint]);
+  // 盤面が変わったらヒントは古くなるので閉じる
+  const historyLength = game.history.length;
+  useEffect(() => setHint(null), [historyLength]);
+  const applyHint = () => {
+    if (!hint) return;
+    const h = hint.data;
+    setHint(null);
+    if (h.kind === "place" || h.kind === "guess") dispatch({ type: "hint", cell: h.cell });
+    else if (h.kind === "eliminate")
+      dispatch({ type: "setNotes", notes: notesAfterHint(game.values, game.notes, h.eliminations) });
+    else if (h.kind === "wrong") {
+      dispatch({ type: "select", cell: h.cell });
+      dispatch({ type: "erase" });
+    }
+  };
+  const hintCells = useMemo(() => {
+    if (!hint) return null;
+    const h = hint.data;
+    const pattern = "pattern" in h && hint.stage === 2 ? h.pattern : [];
+    return {
+      focus: new Set(h.focus),
+      pattern: new Set(pattern),
+      targets: new Set(hint.stage === 2 ? h.targets : []),
+    };
+  }, [hint]);
+
   const [outcome, setOutcome] = useState<DailyOutcome | null>(() => {
     if (initial.mode !== "daily" || !initial.daily) return null;
     const saved = load<SubmitResponse>(KEYS.dailyResult(initial.daily.date, initial.difficulty));
@@ -171,7 +220,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
           dispatch({ type: "undo" });
           break;
         case "h":
-          dispatch({ type: "hint" });
+          openHint();
           break;
         case " ":
           e.preventDefault();
@@ -184,7 +233,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dispatch, game.status]);
+  }, [dispatch, game.status, openHint]);
 
   const onSelect = useCallback(
     (cell: number) => {
@@ -275,6 +324,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             showMistakes={settings.showMistakes}
             highlightSame={settings.highlightSame}
             stuck={stuck}
+            hint={hintCells}
             onSelect={onSelect}
           />
           <div className="popups" aria-hidden="true">
@@ -306,6 +356,49 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
         </div>
 
         <div className="controls">
+          {hint && (
+            <div className="hint-panel" role="status">
+              <div className="hint-text">
+                <span className="hint-title">{hint.data.title}</span>
+                {hint.stage === 2 && <span className="hint-body">{hint.data.text}</span>}
+              </div>
+              <div className="hint-actions">
+                {hint.stage === 1 ? (
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => {
+                      sfx.tap();
+                      setHint({ ...hint, stage: 2 });
+                    }}
+                  >
+                    もっと見る
+                  </button>
+                ) : (
+                  <button type="button" className="btn small primary" onClick={applyHint}>
+                    {hint.data.kind === "eliminate"
+                      ? "メモに反映"
+                      : hint.data.kind === "wrong"
+                        ? "消す"
+                        : hint.data.kind === "guess"
+                          ? "1マス埋める"
+                          : "置く"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn small"
+                  aria-label="ヒントを閉じる"
+                  onClick={() => {
+                    sfx.tap();
+                    setHint(null);
+                  }}
+                >
+                  <Close size={18} />
+                </button>
+              </div>
+            </div>
+          )}
           {isStuck && (
             <div className="stuck-bar" role="alert">
               <span>どこかで間違えています</span>
@@ -322,7 +415,8 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
               dispatch({ type: "toggleNotes" });
               sfx.tap();
             }}
-            onHint={() => dispatch({ type: "hint" })}
+            onHint={openHint}
+            onAutoNotes={() => dispatch({ type: "autoNotes" })}
           />
           <NumberPad game={game} onDigit={(digit) => dispatch({ type: "input", digit })} />
         </div>

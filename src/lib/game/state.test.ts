@@ -176,3 +176,50 @@ describe("日次の間違い表示", () => {
     expect(run(s, { type: "hint" }).effects[0].kind).toBe("blocked");
   });
 });
+
+describe("自動メモと手筋ヒント", () => {
+  it("自動メモは候補をすべて書き、もう一度で全部消す。元に戻すで戻る", () => {
+    const { p, s: s0 } = freeGame();
+    const cell = p.puzzle.indexOf(0);
+    let { s } = run(s0, { type: "select", cell }, { type: "input", digit: 1, asNote: true });
+    const before = s.notes.slice();
+    const filled = run(s, { type: "autoNotes" });
+    expect(filled.effects[0]).toMatchObject({ kind: "notes", filled: true });
+    expect(filled.s.notes[cell] & (1 << p.solution[cell])).not.toBe(0);
+    expect(filled.s.notes.filter((n, i) => !p.puzzle[i] && n === 0)).toHaveLength(0);
+    const cleared = run(filled.s, { type: "autoNotes" });
+    expect(cleared.s.notes.every((n) => n === 0)).toBe(true);
+    s = run(cleared.s, { type: "undo" }, { type: "undo" }).s;
+    expect(s.notes).toEqual(before);
+  });
+
+  it("ヒントで指定したマスに正解を置き、0 点でコンボが切れる", () => {
+    const { p, s: s0 } = freeGame();
+    const cell = p.puzzle.lastIndexOf(0);
+    const { s, effects } = run(s0, { type: "hintUsed" }, { type: "hint", cell });
+    expect(s.values[cell]).toBe(p.solution[cell]);
+    // ヒントを開いたときに 1 回数え、パネルから置いても増やさない
+    expect(s.hints).toBe(1);
+    expect(effects[0]).toMatchObject({ kind: "hint", cell });
+    expect(s.score?.streak).toBe(0);
+  });
+
+  it("日次では自動メモもヒントも使えない", () => {
+    const p = generatePuzzle("daily-assist", "easy");
+    const s0 = newGame({
+      mode: "daily",
+      difficulty: "easy",
+      seed: "2026-10-16",
+      puzzle: p.puzzle,
+      solution: p.solution,
+      daily: { sessionId: "s", date: "2026-10-16", startedAt: 0, clockOffset: 0 },
+    });
+    for (const a of [
+      { type: "autoNotes" },
+      { type: "hintUsed" },
+      { type: "setNotes", notes: [] },
+    ] as Action[]) {
+      expect(run(s0, a).effects[0].kind).toBe("blocked");
+    }
+  });
+});

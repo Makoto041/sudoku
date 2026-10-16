@@ -7,6 +7,7 @@ import {
   type ScoreDelta,
   type ScoreState,
 } from "./score";
+import { candidatesOf } from "@/lib/sudoku/logic";
 import {
   PEERS,
   UNITS,
@@ -59,6 +60,8 @@ type Move = {
   prevNotes: number;
   /** 数字を置いたときに周りのメモから消した分 */
   clearedNotes: [number, number][];
+  /** 自動メモなど、メモをまとめて変えたときの元のメモ（cell は -1） */
+  bulkNotes?: number[];
 };
 
 /** 入力の結果。音・アニメーションの出し分けに使う */
@@ -83,6 +86,7 @@ export type Effect =
   /** timeBonus は解き終えたときの時間ボーナス（日次はサーバーが測り直す） */
   | { kind: "solved"; cell: number; timeBonus: number }
   | { kind: "rewind"; steps: number }
+  | { kind: "notes"; filled: boolean }
   | { kind: "blocked" };
 
 export type Action =
@@ -92,7 +96,14 @@ export type Action =
   | { type: "input"; digit: number; asNote?: boolean; t?: number }
   | { type: "erase" }
   | { type: "undo" }
-  | { type: "hint"; t?: number }
+  /** cell を指定すると、そのマスに正解を置く（手筋ヒントの「置く」） */
+  | { type: "hint"; t?: number; cell?: number }
+  /** メモをまとめて置き換える（手筋ヒントの「メモに反映」） */
+  | { type: "setNotes"; notes: number[] }
+  /** 自動メモ：候補をすべて書く。すでに候補どおりなら全部消す */
+  | { type: "autoNotes" }
+  /** ヒントを見た（回数を数え、コンボを切る） */
+  | { type: "hintUsed" }
   | { type: "toggleNotes" }
   | { type: "pause" }
   | { type: "resume" }
@@ -182,6 +193,8 @@ function place(
   digit: number,
   viaHint: boolean,
   t: number,
+  /** ヒントの回数を数えるか（手筋ヒントは開いたときに数え済み） */
+  countHint = true,
 ): [GameState, Effect[]] {
   const values = s.values.slice();
   const notes = s.notes.slice();
@@ -207,7 +220,7 @@ function place(
     notes,
     history: [...s.history, move],
     mistakes: s.mistakes + (wrong ? 1 : 0),
-    hints: s.hints + (viaHint ? 1 : 0),
+    hints: s.hints + (viaHint && countHint ? 1 : 0),
     score,
     // 日次はサーバーで計算し直すので、置いた手を残す
     moves: s.mode === "daily" && !viaHint ? [...(s.moves ?? []), [Math.round(t), cell, digit]] : s.moves,
@@ -303,11 +316,41 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       if (steps === 0) return [s, [{ kind: "blocked" }]];
       return [cur, [{ kind: "rewind", steps }]];
     }
+    case "hintUsed": {
+      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      return [{ ...s, hints: s.hints + 1, score: s.score ? { ...s.score, streak: 0 } : s.score }, []];
+    }
+    case "setNotes": {
+      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      const notes = action.notes.map((n, i) => (s.values[i] ? 0 : n));
+      const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
+      return [{ ...s, notes, history: [...s.history, move] }, [{ kind: "notes", filled: true }]];
+    }
+    case "autoNotes": {
+      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      const full = candidatesOf(s.values);
+      const isFull = s.notes.every((n, i) => s.values[i] || n === full[i]);
+      const notes = isFull ? Array<number>(81).fill(0) : full;
+      const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
+      return [{ ...s, notes, history: [...s.history, move] }, [{ kind: "notes", filled: !isFull }]];
+    }
     case "hint": {
       if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
-      const cell = pickHintCell(s);
+      const cell =
+        action.cell !== undefined &&
+        !isGiven(s, action.cell) &&
+        s.values[action.cell] !== s.solution[action.cell]
+          ? action.cell
+          : pickHintCell(s);
       if (cell === null) return [s, [{ kind: "blocked" }]];
-      const [next, effects] = place({ ...s, selected: cell }, cell, s.solution[cell], true, action.t ?? 0);
+      const [next, effects] = place(
+        { ...s, selected: cell },
+        cell,
+        s.solution[cell],
+        true,
+        action.t ?? 0,
+        action.cell === undefined,
+      );
       return [next, effects];
     }
   }
@@ -316,6 +359,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
 function undoOnce(s: GameState): GameState {
   const move = s.history[s.history.length - 1];
   if (!move) return s;
+  if (move.bulkNotes) return { ...s, notes: move.bulkNotes.slice(), history: s.history.slice(0, -1) };
   const values = s.values.slice();
   const notes = s.notes.slice();
   values[move.cell] = move.prevValue;

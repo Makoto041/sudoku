@@ -29,6 +29,34 @@ const IS_PEER: boolean[][] = Array.from({ length: 81 }, (_, i) => {
   return row;
 });
 
+/** どの手筋が、どのマスを根拠に進んだか（ヒントの説明用） */
+export type TechniqueId =
+  | "naked-single"
+  | "hidden-single"
+  | "pointing"
+  | "claiming"
+  | "naked-pair"
+  | "naked-triple"
+  | "naked-quad"
+  | "hidden-pair"
+  | "hidden-triple"
+  | "x-wing"
+  | "swordfish"
+  | "xy-wing"
+  | "xyz-wing";
+
+export type Trace = {
+  technique: TechniqueId;
+  /** 根拠になるマス */
+  pattern: number[];
+  digits: number[];
+  /** 関係するユニット（UNITS の番号）。ロックドキャンディデートは [元, 消す先] */
+  units: number[];
+};
+
+let tracer: ((t: Trace) => void) | null = null;
+const note = (t: Trace) => tracer?.(t);
+
 function init(puzzle: readonly number[]): State {
   const grid = puzzle.slice();
   const cands = Array<number>(81).fill(0);
@@ -74,11 +102,13 @@ function* combinations<T>(items: T[], size: number, start = 0, acc: T[] = []): G
 function singles(s: State): boolean {
   for (let i = 0; i < 81; i++) {
     if (!s.grid[i] && bitCount(s.cands[i]) === 1) {
+      note({ technique: "naked-single", pattern: [i], digits: [lowestDigit(s.cands[i])], units: [] });
       assign(s, i, lowestDigit(s.cands[i]));
       return true;
     }
   }
-  for (const unit of UNITS) {
+  for (let u = 0; u < 27; u++) {
+    const unit = UNITS[u];
     for (let d = 1; d <= 9; d++) {
       const bit = 1 << d;
       let spot = -1;
@@ -90,6 +120,7 @@ function singles(s: State): boolean {
         }
       }
       if (n === 1) {
+        note({ technique: "hidden-single", pattern: [spot], digits: [d], units: [u] });
         assign(s, spot, d);
         return true;
       }
@@ -110,19 +141,28 @@ function lockedCandidates(s: State): boolean {
         const r = rowOf(spots[0]);
         if (spots.every((i) => rowOf(i) === r)) {
           const others = UNITS[r].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) return true;
+          if (eliminate(s, others, bit)) {
+            note({ technique: "pointing", pattern: spots, digits: [d], units: [u, r] });
+            return true;
+          }
         }
         const c = colOf(spots[0]);
         if (spots.every((i) => colOf(i) === c)) {
           const others = UNITS[9 + c].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) return true;
+          if (eliminate(s, others, bit)) {
+            note({ technique: "pointing", pattern: spots, digits: [d], units: [u, 9 + c] });
+            return true;
+          }
         }
       } else {
         // クレーミング：行（列）内の候補が 1 ブロックに収まれば、そのブロックの他から消す
         const b = 18 + Math.floor(rowOf(spots[0]) / 3) * 3 + Math.floor(colOf(spots[0]) / 3);
         if (spots.every((i) => UNITS[b].includes(i))) {
           const others = UNITS[b].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) return true;
+          if (eliminate(s, others, bit)) {
+            note({ technique: "claiming", pattern: spots, digits: [d], units: [u, b] });
+            return true;
+          }
         }
       }
     }
@@ -131,8 +171,12 @@ function lockedCandidates(s: State): boolean {
 }
 
 /** ネイキッドサブセット：size 個のマスの候補の和が size 個なら、ユニットの他のマスから消す */
+const NAKED: Record<number, TechniqueId> = { 2: "naked-pair", 3: "naked-triple", 4: "naked-quad" };
+const HIDDEN: Record<number, TechniqueId> = { 2: "hidden-pair", 3: "hidden-triple" };
+
 function nakedSubset(s: State, size: number): boolean {
-  for (const unit of UNITS) {
+  for (let u = 0; u < 27; u++) {
+    const unit = UNITS[u];
     const open = unit.filter((i) => !s.grid[i]);
     if (open.length <= size) continue;
     const pool = open.filter((i) => bitCount(s.cands[i]) <= size);
@@ -146,8 +190,10 @@ function nakedSubset(s: State, size: number): boolean {
           open.filter((i) => !combo.includes(i)),
           mask,
         )
-      )
+      ) {
+        note({ technique: NAKED[size], pattern: combo, digits: digitsOf(mask), units: [u] });
         return true;
+      }
     }
   }
   return false;
@@ -155,7 +201,8 @@ function nakedSubset(s: State, size: number): boolean {
 
 /** ヒドゥンサブセット：size 個の数字の置き場所が size 個のマスに限られるなら、そのマスの他の候補を消す */
 function hiddenSubset(s: State, size: number): boolean {
-  for (const unit of UNITS) {
+  for (let u = 0; u < 27; u++) {
+    const unit = UNITS[u];
     const places = new Map<number, number[]>();
     for (let d = 1; d <= 9; d++) {
       const spots = unit.filter((i) => s.cands[i] & (1 << d));
@@ -174,7 +221,10 @@ function hiddenSubset(s: State, size: number): boolean {
           changed = true;
         }
       }
-      if (changed) return true;
+      if (changed) {
+        note({ technique: HIDDEN[size], pattern: [...cells], digits, units: [u] });
+        return true;
+      }
     }
   }
   return false;
@@ -203,7 +253,16 @@ function fish(s: State, size: number): boolean {
             if (!base.has(byRow ? rowOf(i) : colOf(i))) others.push(i);
           }
         }
-        if (eliminate(s, others, bit)) return true;
+        if (eliminate(s, others, bit)) {
+          const baseUnits = combo.map((l) => (byRow ? l.line : 9 + l.line));
+          note({
+            technique: size === 2 ? "x-wing" : "swordfish",
+            pattern: baseUnits.flatMap((bu) => UNITS[bu].filter((i) => s.cands[i] & bit)),
+            digits: [d],
+            units: [...baseUnits, ...[...crosses].map((c) => (byRow ? 9 + c : c))],
+          });
+          return true;
+        }
       }
     }
   }
@@ -227,7 +286,10 @@ function xyWing(s: State): boolean {
         for (let i = 0; i < 81; i++) {
           if (i !== pivot && i !== a && i !== b && IS_PEER[a][i] && IS_PEER[b][i]) targets.push(i);
         }
-        if (eliminate(s, targets, 1 << z)) return true;
+        if (eliminate(s, targets, 1 << z)) {
+          note({ technique: "xy-wing", pattern: [pivot, a, b], digits: [z], units: [] });
+          return true;
+        }
       }
     }
   }
@@ -251,7 +313,10 @@ function xyzWing(s: State): boolean {
         if (i === pivot || i === a || i === b) continue;
         if (IS_PEER[pivot][i] && IS_PEER[a][i] && IS_PEER[b][i]) targets.push(i);
       }
-      if (eliminate(s, targets, shared)) return true;
+      if (eliminate(s, targets, shared)) {
+        note({ technique: "xyz-wing", pattern: [pivot, a, b], digits: [lowestDigit(shared)], units: [] });
+        return true;
+      }
     }
   }
   return false;
@@ -355,4 +420,65 @@ export function searchEffort(puzzle: readonly number[], limit = 200_000): { node
 
   search(init(puzzle), 0);
   return { nodes, depth: deepest };
+}
+
+/** ヒントで試す順番（易しい手筋から） */
+const STEPS: ((s: State) => boolean)[] = [
+  singles,
+  lockedCandidates,
+  (s) => nakedSubset(s, 2),
+  (s) => hiddenSubset(s, 2),
+  (s) => nakedSubset(s, 3),
+  (s) => fish(s, 2),
+  (s) => hiddenSubset(s, 3),
+  (s) => nakedSubset(s, 4),
+  xyWing,
+  xyzWing,
+  (s) => fish(s, 3),
+];
+
+export type NextStep = {
+  trace: Trace;
+  /** 置けるマス */
+  placement: { cell: number; digit: number } | null;
+  /** 消せる候補 */
+  eliminations: { cell: number; digit: number }[];
+};
+
+/**
+ * 盤面（数字と候補）から、次に使える手筋を 1 つ見つける。盤面は変えない。
+ * 手筋で進めなければ null（チェーンや仮定が要る局面）
+ */
+export function findNextStep(grid: readonly number[], cands: readonly number[]): NextStep | null {
+  for (const step of STEPS) {
+    const s: State = { grid: grid.slice(), cands: cands.slice() };
+    let trace: Trace | null = null;
+    tracer = (t) => {
+      if (!trace) trace = t;
+    };
+    let progressed = false;
+    try {
+      progressed = step(s);
+    } finally {
+      tracer = null;
+    }
+    if (!progressed || !trace) continue;
+    const t: Trace = trace;
+    let placement: NextStep["placement"] = null;
+    const eliminations: NextStep["eliminations"] = [];
+    for (let i = 0; i < 81; i++) {
+      if (!grid[i] && s.grid[i]) placement = { cell: i, digit: s.grid[i] };
+      if (!s.grid[i]) {
+        const gone = cands[i] & ~s.cands[i];
+        for (const d of digitsOf(gone)) eliminations.push({ cell: i, digit: d });
+      }
+    }
+    return { trace: t, placement, eliminations };
+  }
+  return null;
+}
+
+/** 盤面の数字から、空いているマスの候補を計算する */
+export function candidatesOf(grid: readonly number[]): number[] {
+  return init(grid).cands;
 }

@@ -112,3 +112,12 @@ export const Bolt = (p: IconProps) => (
     <path d="M13 3L5 13.5h6L10 21l8-10.5h-6z" />
   </Svg>
 );
+export const AutoNote = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+    <path
+      d="M8.5 8.5h.01M12 8.5h.01M15.5 8.5h.01M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 15.5h.01M12 15.5h.01"
+      strokeWidth="2.6"
+    />
+  </Svg>
+);
