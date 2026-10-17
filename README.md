@@ -30,8 +30,8 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 | `src/lib/game/`      | ゲームの状態遷移（純粋関数）。入力・メモ・元に戻す・ヒント・クリア判定                                         |
 | `src/lib/audio.ts`   | 効果音。数字を置く音は録音（`public/sounds/clack.mp3`）を数字ごとに高さを変えて鳴らし、ほかは Web Audio で合成 |
 | `src/lib/haptics.ts` | 触覚。Android は Vibration API、iOS 18 以降の Safari は switch 型チェックボックスの触覚                        |
-| `src/lib/server/`    | ランキング API の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                                      |
-| `src/app/api/`       | Route Handlers（`/api/daily/start`, `/api/daily/submit`, `/api/leaderboard`, `/api/player`）                   |
+| `src/lib/server/`    | ランキング API と通知の購読の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                          |
+| `src/app/api/`       | Route Handlers（`/api/daily/*`, `/api/leaderboard`, `/api/player`, `/api/push`, `/api/cron/remind`）           |
 | `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける                                 |
 
 ### スコア
@@ -73,3 +73,17 @@ npm run gen:practice # 手筋の練習の局面を作り直す（practice-data.t
 Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Redis** をプロジェクトに接続します。
 接続すると `KV_REST_API_URL` / `KV_REST_API_TOKEN` が自動で設定されます（`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` でも可）。
 環境変数を追加・変更したあとは再デプロイが必要です。
+
+### リマインド通知（Web Push）
+
+- 環境変数: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`（公開鍵）、`VAPID_PRIVATE_KEY`（秘密鍵）、`VAPID_SUBJECT`（`mailto:` か `https://` で始まる連絡先）、`CRON_SECRET`（cron の認証）。1 つでも無いと、購読 API（`/api/push`）と cron は 503 を返す。
+- VAPID の鍵は `npx web-push generate-vapid-keys` で作る。鍵を変えると既存の購読は無効になる（端末が購読し直すまで届かない）。
+- cron は毎日 UTC 11:00（日本時間 20:00）に `/api/cron/remind` を呼ぶ（`vercel.json`）。Vercel が `Authorization: Bearer ${CRON_SECRET}` を付ける。今日の一問を 1 問もクリアしていないプレイヤーの購読に、1 日 1 回送る。
+- 受け付ける購読の送信先は、Apple（`push.apple.com` とそのサブドメイン）・FCM（`fcm.googleapis.com`）・Mozilla（`updates.push.services.mozilla.com`）・Windows（`notify.windows.com` とそのサブドメイン）の https だけ。
+- 購読の登録は playerId ごと。同じ endpoint を別の playerId に移すには auth の一致が必要。
+- 新規の登録（保存済みでない endpoint）は回数を制限する: 登録元の IP ごとに 1 時間 20 件、playerId ごとに 24 時間 10 件（超えたら 429）。既存の購読の更新・移動と解除は制限しない。IP は `x-forwarded-for` の最初の要素（無ければ `x-real-ip`、どちらも無ければ 1 つにまとめる）で、IPv6 は /64 ごとに数え、SHA-256 にして保存する。Vercel 以外で動かすときは、これらのヘッダーを付け直すプロキシの後ろに置く（クライアントが `x-forwarded-for` を指定できるので、偽装で回避されるうえ、他人の IP を指定してその IP の枠を使い切ることもできる）。
+- サーバーに保存するもの: 購読の endpoint・鍵（p256dh, auth）・プレイヤー ID・登録日時。最後の登録から 400 日で消える。1 人 5 件まで（超えたら古いものから消す）、全体で 20,000 件まで。
+- 送れない購読は消す: 404・410 と鍵の誤りはすぐ。ほかの失敗（名前解決・接続・状態コードなど）は 5 日続いたら消す（送れた日に数え直す。送信の期限切れと時間の上限で送らなかったものは数えない。429 と 503 は購読の故障とみなさず数えない）。失敗した日は購読ごとに保存し、最後の失敗から 3.5 日で消える。
+  - 失敗の日は、その日に同じプッシュサービス（Apple・Windows・Mozilla・FCM）へ 1 件以上送れたときだけ数える（設定の誤りや、そのサービスだけの障害・拒否で購読を失わないため）。名前解決の失敗（存在しないサブドメインなど）と、保存済みの endpoint が今の検査を通らないものは、どのサービスでも 1 件送れていれば数える。
+- 既知の限界: 購読 API には認証が無いので、多数の IP を使われると全体の上限（20,000 件）を埋められうる。利用者のいないサービス（例 `*.notify.windows.com`）の配下に作られた購読が 403 などを返し続けると、消えずに残る。完全に防ぐには Vercel の WAF・レート制限のルールなどを併用する。
+- cron の応答は件数と、失敗の種類別の件数（`failures`: `blocked`・`dns`・`timeout`・`deadline`・`http4xx`・`http5xx`・`invalid`・`other`）だけ。

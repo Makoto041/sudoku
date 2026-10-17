@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { Difficulty } from "@/lib/sudoku/core";
+import { DIFFICULTIES, type Difficulty } from "@/lib/sudoku/core";
 
 export type Session = {
   id: string;
@@ -58,7 +58,52 @@ export interface RankingStore {
   putTransfer(code: string, payload: string, ttlSec: number): Promise<boolean>;
   /** 引き継ぎコードを取り出して消す（1 回だけ使える） */
   takeTransfer(code: string): Promise<string | null>;
+  /** 通知の購読。id は endpoint の SHA-256 */
+  getPushSub(id: string): Promise<PushSub | null>;
+  /** 購読の数（Redis では、期限切れで中身が消えた購読も cron が読み飛ばすまで数に残る） */
+  countPushSubs(): Promise<number>;
+  /** 購読を保存して期限を延ばし、プレイヤーの購読一覧に更新時刻で載せる */
+  putPushSub(id: string, sub: PushSub, now: number): Promise<void>;
+  /** プレイヤーの購読 id。更新の古い順 */
+  playerPushSubs(playerId: string): Promise<string[]>;
+  /** 購読を消す。保存された購読が別のプレイヤーのものなら、このプレイヤーの一覧から外すだけ */
+  removePushSub(id: string, playerId: string): Promise<void>;
+  /**
+   * 購読を少しずつ読む。cursor は "0" から始め、"0" が返ったら終わり。
+   * 同じ購読が 2 回返ることがある。中身が期限切れで消えていた id は一覧から外す
+   */
+  scanPushSubs(
+    cursor: string,
+    count: number,
+  ): Promise<{ cursor: string; subs: { id: string; sub: PushSub }[] }>;
+  /** その日の送信済みの印を付ける。既に付いていれば false */
+  markPushSent(date: string, id: string): Promise<boolean>;
+  /** 送信済みの印を外す（送れなかった購読を、同じ日の再実行で送り直せるようにする） */
+  unmarkPushSent(date: string, id: string): Promise<void>;
+  /**
+   * cron の送信が失敗した日を記録し、続けて失敗した日数を返す。同じ日は何回記録しても 1 日。
+   * 最後の失敗から 3.5 日記録が無ければ消える（数え直し）。購読の登録・解除では変わらない
+   */
+  addPushFailure(id: string, date: string, now: number): Promise<number>;
+  /** 送信できたので、失敗の記録を消す */
+  clearPushFailure(id: string): Promise<void>;
+  /** その日の今日の一問を、どれか 1 問でもクリアしたか */
+  clearedOn(playerId: string, date: string): Promise<boolean>;
+  /**
+   * 回数制限のカウンタ（固定窓）を 1 増やし、この窓での回数を返す。窓は now を windowSec ごとに区切ったもので、
+   * キーに窓の番号を入れる（窓が変われば別のカウンタになる）。カウンタは最後に数えてから windowSec で消える
+   */
+  incrRateWindow(name: string, windowSec: number, now: number): Promise<number>;
 }
+
+/** 通知の購読。endpoint は検査して正規化したもの、鍵は base64url */
+export type PushSub = {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  playerId: string;
+  createdAt: number;
+};
 
 export type HistoryEntry = {
   date: string;
@@ -84,6 +129,33 @@ const PUZZLE_TTL_SEC = 7 * 24 * 60 * 60;
 const historyKey = (playerId: string) => `${PREFIX}:hist:${playerId}`;
 const HISTORY_TTL_SEC = 800 * 24 * 60 * 60;
 const transferKey = (code: string) => `${PREFIX}:xfer:${code}`;
+// 購読は最後の登録から 400 日で消える（アプリを開くたびに端末が登録し直して延ばす）
+const PUSH_TTL_SEC = 400 * 24 * 60 * 60;
+const PUSH_TTL_MS = PUSH_TTL_SEC * 1000;
+const pushKey = (id: string) => `${PREFIX}:push:${id}`;
+const PUSH_SUBS_KEY = `${PREFIX}:push:subs`;
+const playerPushKey = (playerId: string) => `${PREFIX}:push:p:${playerId}`;
+const pushSentKey = (date: string, id: string) => `${PREFIX}:push:sent:${date}:${id}`;
+const PUSH_SENT_TTL_SEC = 2 * 24 * 60 * 60;
+// 送信が失敗した日（YYYY-MM-DD の集合）。cron は毎日同じ時刻に動くので、日数ちょうどの期限にすると
+// 実行にかかった時間で消えたり残ったりする。半日ずらし、失敗の無い日が 2 日続いても残り、3 日続けば消える
+const pushFailKey = (id: string) => `${PREFIX}:push:fail:${id}`;
+const PUSH_FAIL_TTL_SEC = 3.5 * 24 * 60 * 60;
+const PUSH_FAIL_TTL_MS = PUSH_FAIL_TTL_SEC * 1000;
+// 回数制限のカウンタ。name は "ip:{IP の SHA-256}" など（生の IP は入れない）
+const rateKey = (name: string, windowSec: number, now: number) =>
+  `${PREFIX}:push:rl:${name}:${Math.floor(now / (windowSec * 1000))}`;
+
+function toPushSub(raw: string | null): PushSub | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<PushSub>;
+    const ok = [v.endpoint, v.p256dh, v.auth, v.playerId].every((s) => typeof s === "string");
+    return ok ? (v as PushSub) : null;
+  } catch {
+    return null;
+  }
+}
 
 function toHistory(field: string, value: string): HistoryEntry | null {
   const [date, difficulty] = field.split(":");
@@ -95,7 +167,7 @@ function toHistory(field: string, value: string): HistoryEntry | null {
   }
 }
 
-class RedisStore implements RankingStore {
+export class RedisStore implements RankingStore {
   constructor(private redis: Redis) {}
 
   async startSession(candidate: Session): Promise<Session> {
@@ -226,6 +298,98 @@ class RedisStore implements RankingStore {
   async takeTransfer(code: string) {
     return this.redis.getdel<string>(transferKey(code));
   }
+
+  async getPushSub(id: string) {
+    return toPushSub(await this.redis.get<string>(pushKey(id)));
+  }
+
+  countPushSubs() {
+    return this.redis.scard(PUSH_SUBS_KEY);
+  }
+
+  async putPushSub(id: string, sub: PushSub, now: number) {
+    const list = playerPushKey(sub.playerId);
+    const p = this.redis.pipeline();
+    p.set(pushKey(id), JSON.stringify(sub), { ex: PUSH_TTL_SEC });
+    p.sadd(PUSH_SUBS_KEY, id);
+    p.zadd(list, { score: now, member: id });
+    // 400 日更新されずに中身が消えた購読を一覧から外す
+    p.zremrangebyscore(list, "-inf", now - PUSH_TTL_MS);
+    p.expire(list, PUSH_TTL_SEC);
+    await p.exec();
+  }
+
+  async playerPushSubs(playerId: string) {
+    const ids = await this.redis.zrange<(string | number)[]>(playerPushKey(playerId), 0, -1);
+    return ids.map(String);
+  }
+
+  async removePushSub(id: string, playerId: string) {
+    const sub = await this.getPushSub(id);
+    const p = this.redis.pipeline();
+    p.zrem(playerPushKey(playerId), id);
+    if (!sub || sub.playerId === playerId) {
+      p.del(pushKey(id));
+      p.srem(PUSH_SUBS_KEY, id);
+    }
+    await p.exec();
+  }
+
+  async scanPushSubs(cursor: string, count: number) {
+    const [next, members] = await this.redis.sscan(PUSH_SUBS_KEY, cursor, { count });
+    const ids = members.map(String);
+    const subs: { id: string; sub: PushSub }[] = [];
+    if (ids.length === 0) return { cursor: String(next), subs };
+    const raw = await this.redis.mget<(string | null)[]>(...ids.map(pushKey));
+    const gone: string[] = [];
+    ids.forEach((id, i) => {
+      const sub = toPushSub(raw[i] ?? null);
+      if (sub) subs.push({ id, sub });
+      else gone.push(id);
+    });
+    if (gone.length > 0) await this.redis.srem(PUSH_SUBS_KEY, ...gone);
+    return { cursor: String(next), subs };
+  }
+
+  async markPushSent(date: string, id: string) {
+    return (await this.redis.set(pushSentKey(date, id), 1, { nx: true, ex: PUSH_SENT_TTL_SEC })) !== null;
+  }
+
+  async unmarkPushSent(date: string, id: string) {
+    await this.redis.del(pushSentKey(date, id));
+  }
+
+  async addPushFailure(id: string, date: string) {
+    // 日付の集合に足すので、同じ日の再実行や同時の実行でも 1 日のまま（読んでから書くときの競合が無い）
+    const key = pushFailKey(id);
+    const [, , days] = await this.redis
+      .pipeline()
+      .sadd(key, date)
+      .expire(key, PUSH_FAIL_TTL_SEC)
+      .scard(key)
+      .exec();
+    return Number(days);
+  }
+
+  async clearPushFailure(id: string) {
+    await this.redis.del(pushFailKey(id));
+  }
+
+  async clearedOn(playerId: string, date: string) {
+    // 履歴のフィールドは `${date}:${difficulty}`。全部読まずに、その日の 6 難易度だけを見る
+    const fields = DIFFICULTIES.map((d) => `${date}:${d}`);
+    const raw = (await this.redis.hmget(historyKey(playerId), ...fields)) as unknown;
+    const values = Array.isArray(raw) ? raw : Object.values((raw as Record<string, unknown> | null) ?? {});
+    return values.some((v) => v !== null && v !== undefined);
+  }
+
+  async incrRateWindow(name: string, windowSec: number, now: number) {
+    // キーに窓の番号が入るので、期限は使い終わったキーを消すためだけのもの。数えるたびに付け直しても窓は延びない
+    // （初回だけ付ける EXPIRE の NX は Redis 7 からなので使わない）
+    const key = rateKey(name, windowSec, now);
+    const [count] = await this.redis.pipeline().incr(key).expire(key, windowSec).exec();
+    return Number(count);
+  }
 }
 
 /** ローカル開発・テスト用。プロセスが落ちると消える */
@@ -237,6 +401,11 @@ export class MemoryStore implements RankingStore {
   private puzzles = new Map<string, string>();
   private history = new Map<string, Map<string, string>>();
   private transfers = new Map<string, string>();
+  private pushSubs = new Map<string, { sub: PushSub; expiresAt: number }>();
+  private playerPush = new Map<string, Map<string, number>>();
+  private pushSent = new Set<string>();
+  private pushFailures = new Map<string, { dates: Set<string>; expiresAt: number }>();
+  private rateWindows = new Map<string, { count: number; expiresAt: number }>();
 
   async startSession(candidate: Session) {
     const existingId = this.starts.get(startKey(candidate));
@@ -340,6 +509,99 @@ export class MemoryStore implements RankingStore {
     const v = this.transfers.get(code) ?? null;
     this.transfers.delete(code);
     return v;
+  }
+
+  async getPushSub(id: string) {
+    const v = this.pushSubs.get(id);
+    return v ? { ...v.sub } : null;
+  }
+
+  async countPushSubs() {
+    return this.pushSubs.size;
+  }
+
+  async putPushSub(id: string, sub: PushSub, now: number) {
+    this.pushSubs.set(id, { sub: { ...sub }, expiresAt: now + PUSH_TTL_MS });
+    let list = this.playerPush.get(sub.playerId);
+    if (!list) this.playerPush.set(sub.playerId, (list = new Map()));
+    list.set(id, now);
+    for (const [k, t] of list) if (t <= now - PUSH_TTL_MS) list.delete(k);
+  }
+
+  /** テスト用：購読が消える時刻 */
+  pushExpiresAt(id: string) {
+    return this.pushSubs.get(id)?.expiresAt ?? null;
+  }
+
+  async playerPushSubs(playerId: string) {
+    // Redis の ZRANGE と同じ順（時刻、同じなら id の順）
+    return [...(this.playerPush.get(playerId) ?? [])]
+      .sort(([a, ta], [b, tb]) => ta - tb || (a < b ? -1 : 1))
+      .map(([id]) => id);
+  }
+
+  async removePushSub(id: string, playerId: string) {
+    this.playerPush.get(playerId)?.delete(id);
+    const v = this.pushSubs.get(id);
+    if (!v || v.sub.playerId === playerId) this.pushSubs.delete(id);
+  }
+
+  async scanPushSubs(cursor: string, count: number) {
+    // id の順に読み、最後に返した id を次の cursor にする（途中で消しても読み飛ばさない）
+    const rest = [...this.pushSubs.keys()].sort().filter((id) => cursor === "0" || id > cursor);
+    const page = rest.slice(0, count);
+    const subs = page.map((id) => ({ id, sub: { ...this.pushSubs.get(id)!.sub } }));
+    return { cursor: rest.length > count ? page[page.length - 1] : "0", subs };
+  }
+
+  async markPushSent(date: string, id: string) {
+    const key = pushSentKey(date, id);
+    if (this.pushSent.has(key)) return false;
+    this.pushSent.add(key);
+    return true;
+  }
+
+  async unmarkPushSent(date: string, id: string) {
+    this.pushSent.delete(pushSentKey(date, id));
+  }
+
+  async addPushFailure(id: string, date: string, now: number) {
+    // Redis の期限（記録するたびに延ばす）と同じにする
+    let v = this.pushFailures.get(id);
+    if (!v || v.expiresAt <= now) this.pushFailures.set(id, (v = { dates: new Set(), expiresAt: 0 }));
+    v.dates.add(date);
+    v.expiresAt = now + PUSH_FAIL_TTL_MS;
+    return v.dates.size;
+  }
+
+  async clearPushFailure(id: string) {
+    this.pushFailures.delete(id);
+  }
+
+  /** テスト用：失敗を記録した日（期限は見ない） */
+  pushFailureDates(id: string) {
+    return [...(this.pushFailures.get(id)?.dates ?? [])].sort();
+  }
+
+  async clearedOn(playerId: string, date: string) {
+    const h = this.history.get(playerId);
+    return DIFFICULTIES.some((d) => h?.has(`${date}:${d}`) ?? false);
+  }
+
+  async incrRateWindow(name: string, windowSec: number, now: number) {
+    // Redis の期限（数えるたびに windowSec で付け直す）と同じにする。期限の過ぎたカウンタは消す
+    for (const [k, v] of this.rateWindows) if (v.expiresAt <= now) this.rateWindows.delete(k);
+    const key = rateKey(name, windowSec, now);
+    const v = this.rateWindows.get(key) ?? { count: 0, expiresAt: 0 };
+    v.count++;
+    v.expiresAt = now + windowSec * 1000;
+    this.rateWindows.set(key, v);
+    return v.count;
+  }
+
+  /** テスト用：回数制限のカウンタのキー */
+  rateWindowKeys() {
+    return [...this.rateWindows.keys()].sort();
   }
 }
 
