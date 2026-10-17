@@ -37,6 +37,11 @@ export type GameState = {
   /** マスごとのメモ（bit1〜bit9） */
   notes: number[];
   selected: number | null;
+  /**
+   * selected に足して選んだマス（selected は含まない）。2 マス以上選んでいる間、数字と消すはメモに効く。保存しない。
+   * 空配列にはしない（1 マスだけなら undefined）ので、複数選択かは真偽で判断できる
+   */
+  selection?: number[];
   notesMode: boolean;
   history: Move[];
   /** 元に戻した手（最後が次に進む手）。保存しない */
@@ -97,6 +102,10 @@ export type Effect =
 
 export type Action =
   | { type: "select"; cell: number | null }
+  /** なぞったマスを選択に足す */
+  | { type: "extendSelection"; cell: number }
+  /** 修飾キー付きクリック：選択にマスを足す・外す */
+  | { type: "toggleSelection"; cell: number }
   | { type: "move"; dr: number; dc: number }
   /**
    * t は開始からの経過 ms（スコアの速さに使う）。clearPeers は周りのメモからその数字を消すか（省略時は消す）。
@@ -155,6 +164,28 @@ export function newGame(input: {
 
 export const isGiven = (s: GameState, i: number) => s.puzzle[i] !== 0;
 
+/** 選んでいるマスすべて（基準のマスが先頭） */
+export const selectedCells = (s: GameState): number[] =>
+  s.selected === null ? [] : [s.selected, ...(s.selection ?? [])];
+
+/** 選んでいるマスを cells にする（先頭が基準のマス） */
+const withCells = (s: GameState, cells: number[]): GameState => ({
+  ...s,
+  selected: cells[0] ?? null,
+  selection: cells.length > 1 ? cells.slice(1) : undefined,
+});
+
+/** 1 マスだけ選ぶ（null なら選択を外す） */
+const pickOne = (s: GameState, cell: number | null): GameState => withCells(s, cell === null ? [] : [cell]);
+
+/** 保存する形。選択と進む手は保存しない */
+export const persisted = (g: GameState) => ({
+  ...g,
+  selected: null,
+  selection: undefined,
+  future: undefined,
+});
+
 /**
  * 解答とスコアを持っていなければ付ける（日次・古い保存データ用）。
  * スコアが無い古いデータでは、すでに正しく埋まっているマスを 0 点の得点済みとして扱う
@@ -201,6 +232,12 @@ export function isSolved(s: GameState, values: Grid = s.values): boolean {
 /** 手を積む。新しい手を打ったら、元に戻した手には進めなくなる */
 function commit(s: GameState, move: Move, patch: Partial<GameState>): GameState {
   return { ...s, ...patch, history: [...s.history, move], future: [] };
+}
+
+/** メモをまとめて変えた手を積む（点数・手の記録には触れない） */
+function commitNotes(s: GameState, notes: number[], effect: Effect): [GameState, Effect[]] {
+  const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
+  return [commit(s, move, { notes }), [effect]];
 }
 
 function place(
@@ -286,16 +323,29 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
 
   switch (action.type) {
     case "select":
-      return [{ ...s, selected: action.cell }, []];
+      return [pickOne(s, action.cell), []];
+    case "extendSelection":
+    case "toggleSelection": {
+      const { cell } = action;
+      const cells = selectedCells(s);
+      if (!cells.includes(cell)) return [withCells(s, [...cells, cell]), []];
+      // なぞったマスが選んであれば変えない。修飾キーなら外す
+      if (action.type === "extendSelection") return [s, []];
+      const rest = cells.filter((i) => i !== cell);
+      // 基準のマスを外したら、最後に足したマスを基準にする。1 マスだけなら選択が無くなる
+      return [withCells(s, cell === s.selected ? [...rest.slice(-1), ...rest.slice(0, -1)] : rest), []];
+    }
     case "move": {
       const cur = s.selected ?? 40;
       const r = (Math.floor(cur / 9) + action.dr + 9) % 9;
       const c = ((cur % 9) + action.dc + 9) % 9;
-      return [{ ...s, selected: r * 9 + c }, []];
+      return [pickOne(s, r * 9 + c), []];
     }
     case "toggleNotes":
       return [{ ...s, notesMode: !s.notesMode }, []];
     case "input": {
+      // 2 マス以上選んでいるときは、メモモードに関わらずメモとして扱う
+      if (s.selection) return noteSelection(s, action.digit);
       const cell = s.selected;
       if (cell === null || isGiven(s, cell)) return [s, [{ kind: "blocked" }]];
       const asNote = action.asNote ?? s.notesMode;
@@ -314,6 +364,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return place(s, cell, action.digit, false, action.t ?? 0, true, action.clearPeers ?? true);
     }
     case "erase": {
+      if (s.selection) return eraseSelectionNotes(s);
       const cell = s.selected;
       if (cell === null || isGiven(s, cell)) return [s, [{ kind: "blocked" }]];
       return erase(s, cell);
@@ -330,17 +381,9 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       const entry = future[future.length - 1];
       if (!entry) return [s, [{ kind: "blocked" }]];
       const { move, values, notes } = entry;
-      return [
-        {
-          ...s,
-          values,
-          notes,
-          history: [...s.history, move],
-          future: future.slice(0, -1),
-          selected: move.bulkNotes ? s.selected : move.cell,
-        },
-        [{ kind: "redo", cell: move.cell }],
-      ];
+      const next = { ...s, values, notes, history: [...s.history, move], future: future.slice(0, -1) };
+      // まとめて変えたメモの手なら選択はそのまま、1 マスの手ならそのマスを選ぶ
+      return [move.bulkNotes ? next : pickOne(next, move.cell), [{ kind: "redo", cell: move.cell }]];
     }
     case "rewind": {
       // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す
@@ -361,16 +404,14 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
     case "setNotes": {
       if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
       const notes = action.notes.map((n, i) => (s.values[i] ? 0 : n));
-      const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
-      return [commit(s, move, { notes }), [{ kind: "notes", filled: true }]];
+      return commitNotes(s, notes, { kind: "notes", filled: true });
     }
     case "autoNotes": {
       if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
       const full = candidatesOf(s.values);
       const isFull = s.notes.every((n, i) => s.values[i] || n === full[i]);
       const notes = isFull ? Array<number>(81).fill(0) : full;
-      const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
-      return [commit(s, move, { notes }), [{ kind: "notes", filled: !isFull }]];
+      return commitNotes(s, notes, { kind: "notes", filled: !isFull });
     }
     case "hint": {
       if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
@@ -382,7 +423,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
           : pickHintCell(s);
       if (cell === null) return [s, [{ kind: "blocked" }]];
       const [next, effects] = place(
-        { ...s, selected: cell },
+        pickOne(s, cell),
         cell,
         s.solution[cell],
         true,
@@ -404,7 +445,7 @@ function undoOnce(s: GameState): GameState {
   values[move.cell] = move.prevValue;
   notes[move.cell] = move.prevNotes;
   for (const [p, mask] of move.clearedNotes) notes[p] = mask;
-  return { ...s, values, notes, history: s.history.slice(0, -1), selected: move.cell };
+  return pickOne({ ...s, values, notes, history: s.history.slice(0, -1) }, move.cell);
 }
 
 /**
@@ -432,6 +473,39 @@ function erase(s: GameState, cell: number): [GameState, Effect[]] {
   values[cell] = 0;
   notes[cell] = 0;
   return [commit(s, move, { values, notes }), [{ kind: "erase", cell }]];
+}
+
+/** 選んだマスのうち、数字の入っていないもの */
+const emptySelectedCells = (s: GameState) => selectedCells(s).filter((i) => !s.values[i]);
+
+/** cells のメモを edit で書き換え、まとめて変えたメモとして 1 手に積む。cells が空なら何もしない */
+function editNotes(
+  s: GameState,
+  cells: number[],
+  edit: (mask: number) => number,
+  effect: Effect,
+): [GameState, Effect[]] {
+  if (!cells.length) return [s, [{ kind: "blocked" }]];
+  const notes = s.notes.slice();
+  for (const i of cells) notes[i] = edit(notes[i]);
+  return commitNotes(s, notes, effect);
+}
+
+/**
+ * 選んだ空きマスのメモにまとめて付け外しする。すべてにあれば全部から消し、どれかに無ければ全部に足す。
+ * 数字のあるマスは飛ばす
+ */
+function noteSelection(s: GameState, digit: number): [GameState, Effect[]] {
+  const cells = emptySelectedCells(s);
+  const bit = 1 << digit;
+  const on = cells.some((i) => !(s.notes[i] & bit));
+  return editNotes(s, cells, (m) => (on ? m | bit : m & ~bit), { kind: "note", cell: -1, digit, on });
+}
+
+/** 選んだ空きマスのメモだけを消す（数字は消さない） */
+function eraseSelectionNotes(s: GameState): [GameState, Effect[]] {
+  const cells = emptySelectedCells(s).filter((i) => s.notes[i]);
+  return editNotes(s, cells, () => 0, { kind: "erase", cell: -1 });
 }
 
 /** ヒントを出すマス：選択中のマスが空きか間違いならそこ、無ければ候補が最も少ない空きマス */

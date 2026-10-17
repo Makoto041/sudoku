@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
-import { elapsedOf, reduce, type Action, type Effect, type GameState } from "@/lib/game/state";
+import { elapsedOf, persisted, reduce, type Action, type Effect, type GameState } from "@/lib/game/state";
 import { haptic } from "@/lib/haptics";
 import { KEYS, save } from "./storage";
 
@@ -24,8 +24,6 @@ const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, pop
 export function storageKeyFor(s: GameState): string {
   return s.mode === "daily" && s.daily ? KEYS.daily(s.daily.date, s.difficulty) : KEYS.free;
 }
-
-const persisted = (g: GameState) => ({ ...g, selected: null, future: undefined });
 
 function playEffects(effects: Effect[]) {
   for (const e of effects) {
@@ -91,18 +89,20 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
   gameRef.current = game;
   const fxKey = useRef(0);
 
+  /** 入力を反映する。状態が変わったかを返す */
   const dispatch = useCallback(
-    (raw: Action) => {
+    (raw: Action): boolean => {
       // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すかの設定を付ける
       const action: Action =
         raw.type === "input" || raw.type === "hint"
           ? { ...raw, t: elapsedOf(gameRef.current), clearPeers: options.autoClearNotes }
           : raw;
       const [next, effects] = reduce(gameRef.current, action);
-      if (next === gameRef.current && effects.length === 0) return;
+      const changed = next !== gameRef.current;
+      if (!changed && effects.length === 0) return false;
       gameRef.current = next;
       setGame(next);
-      if (effects.length === 0) return;
+      if (effects.length === 0) return changed;
       playEffects(
         effects.map((e) =>
           // 「間違いをすぐ表示」がオフのときは、重複していない間違いは普通の音にする
@@ -150,6 +150,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
         if (popups.length) out.popups = [...prev.popups, ...popups].slice(-6);
         return out;
       });
+      return changed;
     },
     [options.showMistakes, options.autoClearNotes],
   );

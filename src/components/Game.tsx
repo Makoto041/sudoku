@@ -272,6 +272,19 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
     },
     [dispatch],
   );
+  // 選択が変わらなかったとき（選んであるマスをなぞったなど）は鳴らさない
+  const onToggle = useCallback(
+    (cell: number) => {
+      if (dispatch({ type: "toggleSelection", cell })) sfx.select();
+    },
+    [dispatch],
+  );
+  const onExtend = useCallback(
+    (cell: number) => {
+      if (dispatch({ type: "extendSelection", cell })) sfx.select();
+    },
+    [dispatch],
+  );
 
   // 入る数字が無いマスが出たら、どこかで間違えているので知らせる
   const stuck = useMemo(() => new Set(stuckCells(game)), [game]);
@@ -358,6 +371,8 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             stuck={stuck}
             hint={hintCells}
             onSelect={onSelect}
+            onToggle={onToggle}
+            onExtend={onExtend}
           />
           <div className="popups" aria-hidden="true">
             {fx.popups.map((p) => (
