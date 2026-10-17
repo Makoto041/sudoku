@@ -2,15 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { sfx } from "@/lib/audio";
-import { DIFFICULTIES, DIFFICULTY_LABEL } from "@/lib/sudoku/core";
+import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
 import { formatPoints } from "@/lib/game/score";
 import { formatTime } from "@/lib/game/state";
 import { loadRecords } from "@/lib/client/history";
 import { monthView, summarize, type ClearRecord } from "@/lib/client/records";
-import { bestScores } from "@/lib/client/stats";
+import { formatPlayTime, freeSummary, loadStats, totalPlayMs } from "@/lib/client/stats";
 import { ChevronLeft, ChevronRight } from "./icons";
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
+const NONE = "-";
+const time = (ms: number | null) => (ms !== null ? formatTime(ms) : NONE);
+const points = (n: number | null) => (n !== null ? formatPoints(n) : NONE);
 
 type Props = { today: string; playerId: string; onBack: () => void };
 
@@ -18,6 +21,7 @@ export function Records({ today, playerId, onBack }: Props) {
   const [records, setRecords] = useState<ClearRecord[] | null>(null);
   const [offline, setOffline] = useState(false);
   const [ym, setYm] = useState(() => ({ y: Number(today.slice(0, 4)), m: Number(today.slice(5, 7)) }));
+  const [difficulty, setDifficulty] = useState<Difficulty>("easy");
 
   useEffect(() => {
     let alive = true;
@@ -33,7 +37,9 @@ export function Records({ today, playerId, onBack }: Props) {
 
   const summary = useMemo(() => summarize(records ?? [], today), [records, today]);
   const month = useMemo(() => monthView(summary, ym.y, ym.m, today), [summary, ym, today]);
-  const free = bestScores();
+  const stats = loadStats();
+  const daily = summary.perDifficulty[difficulty];
+  const free = freeSummary(stats[difficulty]);
   const isCurrentMonth = `${ym.y}-${String(ym.m).padStart(2, "0")}` === today.slice(0, 7);
 
   const shift = (n: number) => {
@@ -109,46 +115,73 @@ export function Records({ today, playerId, onBack }: Props) {
         </div>
       </section>
 
-      <section className="card" aria-label="難易度ごとの記録">
-        <h2 className="card-title">今日の一問</h2>
+      <section className="card" aria-label="全体">
         <table className="rec-table">
-          <thead>
-            <tr>
-              <th />
-              <th>クリア</th>
-              <th>最高点</th>
-              <th>最速</th>
-            </tr>
-          </thead>
           <tbody>
-            {DIFFICULTIES.map((d) => {
-              const s = summary.perDifficulty[d];
-              return (
-                <tr key={d}>
-                  <th>{DIFFICULTY_LABEL[d]}</th>
-                  <td className="mono">{s.clears}</td>
-                  <td className="mono">{s.bestPoints !== null ? formatPoints(s.bestPoints) : "—"}</td>
-                  <td className="mono">{s.bestMs !== null ? formatTime(s.bestMs) : "—"}</td>
-                </tr>
-              );
-            })}
+            <Row label="合計プレイ時間" value={formatPlayTime(totalPlayMs(stats, summary.perDifficulty))} />
           </tbody>
         </table>
       </section>
 
-      <section className="card" aria-label="フリープレイの最高点">
+      <div className="diff-tabs" role="tablist" aria-label="難易度">
+        {DIFFICULTIES.map((d) => (
+          <button
+            key={d}
+            type="button"
+            role="tab"
+            aria-selected={difficulty === d}
+            className={difficulty === d ? "is-active" : ""}
+            onClick={(e) => {
+              sfx.tap();
+              setDifficulty(d);
+              // 横にはみ出していたら見える位置まで寄せる（開いたときは動かさない）
+              e.currentTarget.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" });
+            }}
+          >
+            {DIFFICULTY_LABEL[d]}
+          </button>
+        ))}
+      </div>
+
+      <section className="card" aria-label="今日の一問">
+        <h2 className="card-title">今日の一問</h2>
+        <table className="rec-table">
+          <tbody>
+            <Row label="クリア数" value={String(daily.clears)} />
+            <Row label="平均時間" value={time(daily.avgMs)} />
+            <Row label="最速" value={time(daily.bestMs)} />
+            <Row label="最高点" value={points(daily.bestPoints)} />
+            <Row label="平均点" value={points(daily.avgPoints)} />
+          </tbody>
+        </table>
+      </section>
+
+      <section className="card" aria-label="フリープレイ">
         <h2 className="card-title">フリープレイ</h2>
         <table className="rec-table">
           <tbody>
-            {DIFFICULTIES.map((d) => (
-              <tr key={d}>
-                <th>{DIFFICULTY_LABEL[d]}</th>
-                <td className="mono">{free[d] != null ? `${formatPoints(free[d]!)}点` : "—"}</td>
-              </tr>
-            ))}
+            <Row label="始めた数" value={free.started !== null ? String(free.started) : NONE} />
+            <Row label="クリア数" value={String(free.clears)} />
+            <Row
+              label="クリア率"
+              value={free.clearRate !== null ? `${Math.round(free.clearRate * 100)}%` : NONE}
+            />
+            <Row label="平均時間" value={time(free.avgMs)} />
+            <Row label="最速" value={time(free.bestMs)} />
+            <Row label="ノーミス最速" value={time(free.cleanBestMs)} />
+            <Row label="最高点" value={points(free.bestPoints)} />
           </tbody>
         </table>
       </section>
     </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <tr>
+      <th scope="row">{label}</th>
+      <td className="mono">{value}</td>
+    </tr>
   );
 }

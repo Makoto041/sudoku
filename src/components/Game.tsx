@@ -23,6 +23,8 @@ type Props = {
   initial: GameState;
   settings: Settings;
   player: Player;
+  /** フリープレイの問題を作っている */
+  generating: boolean;
   onExit: () => void;
   onOpenSettings: () => void;
   onRanking: (game: GameState) => void;
@@ -34,7 +36,16 @@ export type DailyOutcome =
   | { state: "done"; result: SubmitResponse }
   | { state: "error"; message: string; retry: boolean };
 
-export function Game({ initial, settings, player, onExit, onOpenSettings, onRanking, onNewFree }: Props) {
+export function Game({
+  initial,
+  settings,
+  player,
+  generating,
+  onExit,
+  onOpenSettings,
+  onRanking,
+  onNewFree,
+}: Props) {
   const { game, fx, dispatch } = useGame(initial, {
     showMistakes: settings.showMistakes,
     autoClearNotes: settings.autoClearNotes,
@@ -498,6 +509,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
           game={game}
           outcome={outcome}
           freeClear={freeClear}
+          generating={generating}
           onRetrySubmit={() => void submit(game)}
           onRanking={() => onRanking(game)}
           onHome={onExit}

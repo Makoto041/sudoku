@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { formatPoints } from "@/lib/game/score";
+import { formatTime } from "@/lib/game/state";
 import { addDays, mergeRecords, monthView, summarize, type ClearRecord } from "./records";
+import { MAX_MS, MAX_POINTS } from "./stats";
 
 const r = (
   date: string,
@@ -35,7 +38,7 @@ describe("連続日数", () => {
 });
 
 describe("難易度ごとの集計と重複", () => {
-  it("回数・最高点・最速タイム", () => {
+  it("回数・最高点・最速タイム・平均・合計時間", () => {
     const s = summarize(
       [
         r("2026-10-14", "hard", 300, 90_000),
@@ -44,9 +47,100 @@ describe("難易度ごとの集計と重複", () => {
       ],
       "2026-10-15",
     );
-    expect(s.perDifficulty.hard).toEqual({ clears: 2, bestPoints: 500, bestMs: 90_000 });
+    expect(s.perDifficulty.hard).toEqual({
+      clears: 2,
+      bestPoints: 500,
+      bestMs: 90_000,
+      totalMs: 210_000,
+      avgMs: 105_000,
+      avgPoints: 400,
+    });
     expect(s.perDifficulty.easy.bestPoints).toBeNull();
-    expect(s.perDifficulty.master.clears).toBe(0);
+    expect(s.perDifficulty.master).toEqual({
+      clears: 0,
+      bestPoints: null,
+      bestMs: null,
+      totalMs: 0,
+      avgMs: null,
+      avgPoints: null,
+    });
+  });
+
+  it("平均点は点数のある記録（スコア制になってから）だけで出し、平均時間はすべての記録で出す", () => {
+    const s = summarize(
+      [
+        r("2026-10-13", "easy", null, 300_000),
+        r("2026-10-14", "easy", 101, 60_000),
+        r("2026-10-15", "easy", 200, 90_000),
+      ],
+      "2026-10-15",
+    ).perDifficulty.easy;
+    expect(s).toMatchObject({ clears: 3, totalMs: 450_000, avgMs: 150_000, avgPoints: 151 });
+    expect(summarize([r("2026-10-15", "easy", null)], "2026-10-15").perDifficulty.easy.avgPoints).toBeNull();
+  });
+
+  it("時間が数でない記録（端末の保存データが壊れていた）は、時間の集計に入れない", () => {
+    const s = summarize(
+      [
+        r("2026-10-13", "easy", 100, "60000" as unknown as number),
+        r("2026-10-14", "easy", 200, null as unknown as number),
+        r("2026-10-15", "easy", 300, 90_000),
+      ],
+      "2026-10-15",
+    );
+    expect(s.perDifficulty.easy).toEqual({
+      clears: 3,
+      bestPoints: 300,
+      bestMs: 90_000,
+      totalMs: 90_000,
+      avgMs: 90_000,
+      avgPoints: 200,
+    });
+    expect(s.streak).toBe(3);
+  });
+
+  it("点数や時間が数でないか 0〜上限の外の記録は、その集計から除く（クリア数と連続日数には数える）", () => {
+    const bad = (x: unknown) => x as number;
+    const s = summarize(
+      [
+        // 0 と上限は入れる
+        r("2026-10-06", "easy", 0, 0),
+        r("2026-10-07", "easy", MAX_POINTS, MAX_MS),
+        r("2026-10-08", "easy", bad("100"), 1e308),
+        r("2026-10-09", "easy", bad({ toLocaleString: 0 }), -5000),
+        r("2026-10-10", "easy", -1, MAX_MS + 1),
+        r("2026-10-11", "easy", MAX_POINTS + 1, Number.NaN),
+        r("2026-10-12", "easy", Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY),
+        r("2026-10-13", "easy", Number.NaN, -1),
+        r("2026-10-13", "hard", bad({ toLocaleString: 0 }), 1e308),
+      ],
+      "2026-10-13",
+    );
+    expect(s.perDifficulty.easy).toEqual({
+      clears: 8,
+      bestPoints: MAX_POINTS,
+      bestMs: 0,
+      totalMs: MAX_MS,
+      avgMs: MAX_MS / 2,
+      avgPoints: MAX_POINTS / 2,
+    });
+    expect(s.perDifficulty.hard).toEqual({
+      clears: 1,
+      bestPoints: null,
+      bestMs: null,
+      totalMs: 0,
+      avgMs: null,
+      avgPoints: null,
+    });
+    expect(s.streak).toBe(8);
+    // 記録画面の表示が壊れない
+    const e = s.perDifficulty.easy;
+    expect([
+      formatTime(e.avgMs!),
+      formatTime(e.bestMs!),
+      formatPoints(e.bestPoints!),
+      formatPoints(e.avgPoints!),
+    ]).toEqual(["438000:00:00", "00:00", "1,000,000", "500,000"]);
   });
 
   it("サーバーと端末の両方にある記録は 1 つにまとめ、点数のある方を残す", () => {

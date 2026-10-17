@@ -10,7 +10,7 @@ import { api, describeError, type SubmitResponse } from "@/lib/client/api";
 import { adoptPlayer, getPlayer, setPlayerName, type Player } from "@/lib/client/player";
 import { loadRecords, localRecords } from "@/lib/client/history";
 import { mergeRecords, summarize, type ClearRecord } from "@/lib/client/records";
-import { mergeStats } from "@/lib/client/stats";
+import { loadStats, mergeStats, recordFreeStart } from "@/lib/client/stats";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { Game } from "./Game";
@@ -218,28 +218,40 @@ export function App() {
   );
 
   const [generating, setGenerating] = useState<Difficulty | null>(null);
+  // 問題を作っている間は新しく始めない。続けて押されると、先に作った問題を途中の問題として開始数を二重に数える
+  // （state はボタンを描き直すまで反映されないので ref で止める）
+  const generatingRef = useRef(false);
   const startFree = useCallback(
     (difficulty: Difficulty) => {
+      if (generatingRef.current) return;
+      generatingRef.current = true;
       setSheet(null);
       sfx.tap();
       // 難しい問題は作るのに時間がかかるので、読み込み表示を描いてから作る
       setGenerating(difficulty);
       setTimeout(async () => {
-        // 極は候補をたくさん作って選ぶので、少しずつ作って画面を止めない（端末では候補を少なめに）
-        const p =
-          difficulty === "extreme"
-            ? await generateExtremeAsync(freeSeed(), 24)
-            : generatePuzzle(freeSeed(), difficulty);
-        const game = newGame({
-          mode: "free",
-          difficulty,
-          seed: p.seed,
-          puzzle: p.puzzle,
-          solution: p.solution,
-        });
-        save(KEYS.free, game);
-        setGenerating(null);
-        openGame(game);
+        try {
+          // 極は候補をたくさん作って選ぶので、少しずつ作って画面を止めない（端末では候補を少なめに）
+          const p =
+            difficulty === "extreme"
+              ? await generateExtremeAsync(freeSeed(), 24)
+              : generatePuzzle(freeSeed(), difficulty);
+          const game = newGame({
+            mode: "free",
+            difficulty,
+            seed: p.seed,
+            puzzle: p.puzzle,
+            solution: p.solution,
+          });
+          // 途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない）
+          const prev = loadGame(KEYS.free);
+          recordFreeStart(difficulty, prev && prev.status !== "solved" ? prev : null);
+          save(KEYS.free, game);
+          openGame(game);
+        } finally {
+          generatingRef.current = false;
+          setGenerating(null);
+        }
       }, 30);
     },
     [openGame],
@@ -328,6 +340,7 @@ export function App() {
           initial={view.game}
           settings={settings}
           player={player}
+          generating={generating !== null}
           onExit={goHome}
           onOpenSettings={() => {
             sfx.tap();
@@ -361,7 +374,8 @@ export function App() {
           onChange={updateSettings}
           onRename={() => setSheet({ kind: "name", difficulty: null })}
           onCreateTransfer={() =>
-            api.transfer({ playerId: player.id, name: player.name, stats: load(KEYS.stats) })
+            // 旧版や手で書き換えた余計な項目を送ると、サーバーの上限を超えて発行できないことがある
+            api.transfer({ playerId: player.id, name: player.name, stats: loadStats() })
           }
           onClaim={async (code: string) => {
             const res = await api.claim(code);

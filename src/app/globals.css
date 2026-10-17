@@ -2079,12 +2079,6 @@ p {
   font-weight: 600;
 }
 
-.rec-table thead th {
-  font-size: 12px;
-  color: var(--ink-2);
-  font-weight: 600;
-}
-
 .rec-table tr:last-child th,
 .rec-table tr:last-child td {
   border-bottom: 0;

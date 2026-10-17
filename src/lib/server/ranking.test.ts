@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseGrid, serializeGrid } from "@/lib/sudoku/core";
+import { DIFFICULTIES, parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import { generateDaily } from "@/lib/sudoku/generator";
 import { solve } from "@/lib/sudoku/solver";
 import {
+  MAX_STATS_BYTES,
   MIN_PLAUSIBLE_MS,
+  NAME_MAX,
   RankingError,
   getLeaderboard,
   renamePlayer,
@@ -291,5 +293,38 @@ describe("記録と引き継ぎ", () => {
   it("大きすぎる記録は受け付けない", async () => {
     const store = new MemoryStore();
     await expectStatus(createTransfer(store, { playerId: ALICE, stats: "x".repeat(5000) }), 400);
+  });
+
+  it("開始数などの新しい項目を含む記録も往復でき、6 難易度ぶんでも上限のバイト数に収まる", async () => {
+    const store = new MemoryStore();
+    // 端末の記録の数は 0 以上で、端末が切り詰める上限（1e21 よりずっと小さい）の付近までにしかならない。
+    // そうした数を JSON にしたときにいちばん長くなる形（有効数字 17 桁の小数、24 文字）で項目をすべて埋めた最悪の記録
+    const longest = 0.0000012345678901234567;
+    expect(JSON.stringify(longest)).toHaveLength(24);
+    const keys = "played bestMs cleanBestMs bestPoints started trackedClears totalMs abandonedMs".split(" ");
+    const entry = Object.fromEntries(keys.map((k) => [k, longest]));
+    const stats = Object.fromEntries(DIFFICULTIES.map((d) => [d, entry]));
+    const name = "𠮷".repeat(NAME_MAX);
+    const payload = JSON.stringify({ playerId: ALICE, name, stats });
+    expect(new TextEncoder().encode(payload).length).toBeLessThan(MAX_STATS_BYTES);
+    const { code } = await createTransfer(store, { playerId: ALICE, name, stats }, T0);
+    const res = await claimTransfer(store, { code });
+    expect(res.stats).toEqual(stats);
+  });
+
+  it("記録の中身はサーバーでは解釈せずにそのまま渡す（検証は受け取った端末でする）", async () => {
+    const store = new MemoryStore();
+    const stats = JSON.parse(
+      `{"easy": {"played": "x", "started": -1, "trackedClears": 1e999, "totalMs": 60000, "future": {"a": 1}},
+        "__proto__": {"played": 1}, "foo": [1, 2], "hard": null}`,
+    );
+    const { code } = await createTransfer(store, { playerId: ALICE, stats }, T0);
+    const res = await claimTransfer(store, { code });
+    expect(res.stats).toEqual(JSON.parse(JSON.stringify(stats)));
+    // 記録が無い・オブジェクトでない場合も壊れない
+    for (const s of [undefined, null, 42, "x", [1, 2]]) {
+      const created = await createTransfer(store, { playerId: ALICE, stats: s }, T0);
+      await expect(claimTransfer(store, { code: created.code })).resolves.toMatchObject({ playerId: ALICE });
+    }
   });
 });

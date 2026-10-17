@@ -13,6 +13,8 @@ type Props = {
   game: GameState;
   outcome: DailyOutcome | null;
   freeClear: FreeClear | null;
+  /** 次の問題を作っている */
+  generating: boolean;
   onRetrySubmit: () => void;
   onRanking: () => void;
   onHome: () => void;
@@ -24,6 +26,7 @@ export function Result({
   game,
   outcome,
   freeClear,
+  generating,
   onRetrySubmit,
   onRanking,
   onHome,
@@ -135,7 +138,8 @@ export function Result({
               <Trophy size={20} /> ランキングを見る
             </button>
           ) : (
-            <button type="button" className="btn primary" onClick={onNewFree}>
+            <button type="button" className="btn primary" onClick={onNewFree} disabled={generating}>
+              {generating && <span className="spinner" aria-hidden="true" />}
               次の問題へ
             </button>
           )}
