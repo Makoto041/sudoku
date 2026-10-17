@@ -5,7 +5,7 @@ import { sfx } from "@/lib/audio";
 import type { Difficulty } from "@/lib/sudoku/core";
 import { ApiError, describeError } from "@/lib/client/api";
 import type { Settings } from "@/lib/client/settings";
-import { Close } from "./icons";
+import { ChevronRight, Close } from "./icons";
 
 /** 各難易度で必要になる手筋（問題の作り方と同じ基準） */
 const LEVEL_TECHNIQUES: [string, string][] = [
@@ -15,6 +15,18 @@ const LEVEL_TECHNIQUES: [string, string][] = [
   ["エキスパート", "XY-Wing・XYZ-Wing・ソードフィッシュ"],
   ["鬼", "チェーンや仮定"],
   ["極", "何段も重ねた仮定"],
+];
+
+/** 遊び方の操作（ボタンの名前と、すること） */
+const HOWTO_CONTROLS: [string, string][] = [
+  ["数字", "マスを選んで数字を押す"],
+  ["メモ", "ON の間は、数字を候補として書く"],
+  ["消す", "選んだマスの数字やメモを消す。色が ON の間は色を外す"],
+  ["戻す・進む", "1 手ずつ取り消す・やり直す"],
+  ["複数選択", "盤面をなぞって選ぶ。数字はメモとしてまとめて入る。消すはメモだけ"],
+  ["色", "ON の間は、選んだマスに色を付ける"],
+  ["ヒント", "次に使える手筋を示す（今日の一問を除く）"],
+  ["自動メモ", "候補をすべて書く（フリープレイ）"],
 ];
 
 function Sheet({
@@ -94,6 +106,7 @@ export function SettingsSheet({
   onRename,
   onCreateTransfer,
   onClaim,
+  onHowto,
   onClose,
 }: {
   settings: Settings;
@@ -102,6 +115,8 @@ export function SettingsSheet({
   onRename: () => void;
   onCreateTransfer: () => Promise<{ code: string; expiresAt: number }>;
   onClaim: (code: string) => Promise<void>;
+  /** 設定を閉じて遊び方を開く */
+  onHowto: () => void;
   onClose: () => void;
 }) {
   const set = (patch: Partial<Settings>) => onChange({ ...settings, ...patch });
@@ -162,9 +177,66 @@ export function SettingsSheet({
         </button>
       </div>
       <Transfer onCreate={onCreateTransfer} onClaim={onClaim} />
-      <div className="levels">
-        <span className="toggle-label">難易度と手筋</span>
-        <dl className="levels-list">
+      <button type="button" className="settings-link" onClick={onHowto}>
+        <span className="toggle-label">遊び方</span>
+        <ChevronRight size={18} className="row-chevron" />
+      </button>
+    </Sheet>
+  );
+}
+
+/** 遊び方。onPractice があれば、ルールの後に練習を開くボタンを出す */
+export function HowtoSheet({ onPractice, onClose }: { onPractice?: () => void; onClose: () => void }) {
+  return (
+    <Sheet label="遊び方" onClose={onClose}>
+      <h2 className="sheet-title">遊び方</h2>
+      <section className="howto-section">
+        <h3 className="toggle-heading">ルール</h3>
+        <ul className="howto-list">
+          <li>9×9 のマスに 1〜9 の数字を入れる</li>
+          <li>各行・各列・各ブロック（3×3）に、同じ数字を入れない</li>
+          <li>最初から入っている数字は変えられない</li>
+        </ul>
+        {onPractice && (
+          <button type="button" className="btn small howto-try" onClick={onPractice}>
+            練習してみる
+          </button>
+        )}
+      </section>
+      <section className="howto-section">
+        <h3 className="toggle-heading">操作</h3>
+        <dl className="howto-defs">
+          {HOWTO_CONTROLS.map(([label, text]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{text}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      <section className="howto-section">
+        <h3 className="toggle-heading">点数</h3>
+        <ul className="howto-list">
+          <li>正しい数字を置くと加点。続けて正解するとコンボで増える</li>
+          <li>間違えると減点し、コンボが切れる</li>
+          <li>行・列・ブロックが埋まるとボーナス</li>
+          <li>速く解き終えるほど時間ボーナスが多い</li>
+          <li>ヒントを使うとコンボが切れる。ヒントで埋めたマスは 0 点</li>
+        </ul>
+      </section>
+      <section className="howto-section">
+        <h3 className="toggle-heading">今日の一問</h3>
+        <ul className="howto-list">
+          <li>難易度ごとに 1 日 1 問。全員が同じ問題</li>
+          <li>日本時間 0 時に切り替わる</li>
+          <li>一時停止はできない</li>
+          <li>ヒントと自動メモは使えない</li>
+          <li>ランキングに載るのは最初のクリアだけ</li>
+        </ul>
+      </section>
+      <section className="howto-section">
+        <h3 className="toggle-heading">難易度と手筋</h3>
+        <dl className="howto-defs">
           {LEVEL_TECHNIQUES.map(([label, techniques]) => (
             <div key={label}>
               <dt>{label}</dt>
@@ -172,35 +244,38 @@ export function SettingsSheet({
             </div>
           ))}
         </dl>
-      </div>
-      <dl className="keys muted small">
-        <dt>1–9</dt>
-        <dd>入力</dd>
-        <dt>Shift + 1–9</dt>
-        <dd>メモ</dd>
-        <dt>ドラッグ</dt>
-        <dd>複数選択（数字はメモ、消すはメモだけ）</dd>
-        <dt>Shift / Ctrl / Cmd + クリック</dt>
-        <dd>選択にマスを足す・外す</dd>
-        <dt>矢印 / WASD</dt>
-        <dd>移動</dd>
-        <dt>N</dt>
-        <dd>メモ切替</dd>
-        <dt>C</dt>
-        <dd>色切替（1–9 で色を選ぶ）</dd>
-        <dt>Backspace</dt>
-        <dd>消す</dd>
-        <dt>Z</dt>
-        <dd>戻す</dd>
-        <dt>Shift + Z</dt>
-        <dd>進む</dd>
-        <dt>H</dt>
-        <dd>ヒント（今日の一問を除く）</dd>
-        <dt>Space</dt>
-        <dd>一時停止（フリープレイ）</dd>
-        <dt>Esc</dt>
-        <dd>選択を外す</dd>
-      </dl>
+      </section>
+      <section className="howto-section howto-keys">
+        <h3 className="toggle-heading">キーボード</h3>
+        <dl className="keys muted small">
+          <dt>1–9</dt>
+          <dd>入力</dd>
+          <dt>Shift + 1–9</dt>
+          <dd>メモ</dd>
+          <dt>ドラッグ</dt>
+          <dd>複数選択（数字はメモ、消すはメモだけ）</dd>
+          <dt>Shift / Ctrl / Cmd + クリック</dt>
+          <dd>選択にマスを足す・外す</dd>
+          <dt>矢印 / WASD</dt>
+          <dd>移動</dd>
+          <dt>N</dt>
+          <dd>メモ切替</dd>
+          <dt>C</dt>
+          <dd>色切替（1–9 で色を選ぶ）</dd>
+          <dt>Backspace</dt>
+          <dd>消す</dd>
+          <dt>Z</dt>
+          <dd>戻す</dd>
+          <dt>Shift + Z</dt>
+          <dd>進む</dd>
+          <dt>H</dt>
+          <dd>ヒント（今日の一問を除く）</dd>
+          <dt>Space</dt>
+          <dd>一時停止（フリープレイ）</dd>
+          <dt>Esc</dt>
+          <dd>選択を外す</dd>
+        </dl>
+      </section>
     </Sheet>
   );
 }

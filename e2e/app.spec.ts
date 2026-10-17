@@ -1691,3 +1691,171 @@ test("手筋の練習：消す手筋を手で解く。正解の数字を消す�
   await page.waitForTimeout(300);
   await shot(page, "practice-dark");
 });
+
+/** ホームのヘッダーの「遊び方」（初回の案内にも同じ名前のリンクがある） */
+const howtoButton = (page: Page) => page.getByRole("banner").getByRole("button", { name: "遊び方" });
+/** ホームの初回の案内（iPhone ではホーム画面への追加の案内も note なので、文言で絞る） */
+const howtoHint = (page: Page) => page.getByRole("note").filter({ hasText: "ルールと操作は" });
+
+test("遊び方：ホームの入口で開き、Esc で閉じる。ルール・今日の一問の決まり・難易度と手筋・キー一覧がある", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const howto = page.getByRole("dialog", { name: "遊び方" });
+  await howtoButton(page).click();
+  await expect(howto).toBeVisible();
+  await expect(howto.getByRole("heading", { name: "ルール", exact: true })).toBeVisible();
+  await expect(howto).toContainText("同じ数字を入れない");
+  await expect(howto.getByRole("heading", { name: "今日の一問", exact: true })).toBeVisible();
+  for (const text of [
+    "難易度ごとに 1 日 1 問",
+    "一時停止はできない",
+    "ヒントと自動メモは使えない",
+    "最初のクリアだけ",
+  ])
+    await expect(howto).toContainText(text);
+  // 設定から移した難易度と手筋・キー一覧（キー一覧はマウスのある端末だけに出す）
+  await expect(howto.getByRole("heading", { name: "難易度と手筋" })).toBeVisible();
+  const levels = howto.locator("section", {
+    has: page.getByRole("heading", { name: "難易度と手筋", exact: true }),
+  });
+  await expect(levels.locator("dt")).toHaveText([
+    "かんたん",
+    "ふつう",
+    "むずかしい",
+    "エキスパート",
+    "鬼",
+    "極",
+  ]);
+  const keys = howto.locator(".keys");
+  await expect(keys).toContainText("Shift + Z");
+  await expect(keys).toContainText("ヒント（今日の一問を除く）");
+  // 見出しと一覧は同じ条件で出し入れする（条件の判定は環境で変わり得るので、ページで測る）
+  const fine = await page.evaluate(() => matchMedia("(hover: hover) and (pointer: fine)").matches);
+  for (const el of [keys, howto.getByRole("heading", { name: "キーボード" })])
+    await (fine ? expect(el).toBeVisible() : expect(el).toBeHidden());
+  if (SHOTS) {
+    // シートが止まってから、上と下を撮る
+    await howto.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+    await shot(page, "howto");
+    await howto
+      .locator(".sheet")
+      .evaluate((el) => el.scrollTo({ top: el.scrollHeight, behavior: "instant" }));
+    await shot(page, "howto-bottom");
+  }
+
+  await page.keyboard.press("Escape");
+  await expect(howto).toBeHidden();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+});
+
+test("設定シートから遊び方へ移る。設定シートに難易度と手筋・キー一覧は無い。ゲーム中は「練習してみる」を出さない", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const settings = page.getByRole("dialog", { name: "設定" });
+  const howto = page.getByRole("dialog", { name: "遊び方" });
+  await page.getByRole("button", { name: "設定" }).click();
+  await expect(settings).toBeVisible();
+  await expect(settings).not.toContainText("難易度と手筋");
+  await expect(settings).not.toContainText("Shift + Z");
+  // 難易度と手筋・キー一覧はどちらも定義リスト
+  await expect(settings.locator("dl")).toHaveCount(0);
+  await settings.getByRole("button", { name: "遊び方" }).click();
+  await expect(settings).toBeHidden();
+  await expect(howto).toBeVisible();
+  await expect(howto.getByRole("button", { name: "練習してみる" })).toBeVisible();
+  await howto.getByRole("button", { name: "閉じる" }).click();
+  await expect(howto).toBeHidden();
+
+  // ゲームの設定からも開ける。戻る操作で一覧を通らなくなるので、練習へは移らない
+  await page.locator(".free-easy").click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  await page.getByRole("button", { name: "設定" }).click();
+  await settings.getByRole("button", { name: "遊び方" }).click();
+  await expect(howto).toBeVisible();
+  await expect(howto.getByRole("button", { name: "練習してみる" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(howto).toBeHidden();
+  await expect(board).toBeVisible();
+});
+
+test("遊び方の「練習してみる」でネイキッドシングルの練習が開く。ブラウザの戻るで一覧、もう一度でホーム", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const howto = page.getByRole("dialog", { name: "遊び方" });
+  const single = practiceItem("naked-single");
+  // 1 回目は局面のデータを読み込んでから、2 回目は読み込み済みのデータで開く
+  for (let round = 0; round < 2; round++) {
+    await howtoButton(page).click();
+    await howto.getByRole("button", { name: "練習してみる" }).click();
+    await expect(howto).toBeHidden();
+    await expect(page.getByRole("heading", { name: single.name })).toBeVisible();
+    await expect(page.locator(".bar-kicker")).toHaveText(`手筋の練習 · 1/${single.positions.length}`);
+    await page.goBack();
+    await expect(page.locator(".practice-row")).toHaveCount(PRACTICE.length);
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  }
+});
+
+test("初回の案内：閉じると、再読み込みしても出ない", async ({ page }) => {
+  await page.goto("/");
+  const hint = howtoHint(page);
+  await expect(hint).toBeVisible();
+  await shot(page, "howto-hint");
+  // 出しただけでは保存しない
+  expect(await page.evaluate(() => localStorage.getItem("sudoku:howto"))).toBeNull();
+  await hint.getByRole("button", { name: "閉じる" }).click();
+  await expect(hint).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await expect(hint).toHaveCount(0);
+});
+
+test("初回の案内：案内の「遊び方」やヘッダーから遊び方を開いても、それ以降は出さない", async ({ page }) => {
+  await page.goto("/");
+  const hint = howtoHint(page);
+  const howto = page.getByRole("dialog", { name: "遊び方" });
+  await hint.getByRole("button", { name: "遊び方" }).click();
+  await expect(howto).toBeVisible();
+  await expect(hint).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(howto).toBeHidden();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await expect(hint).toHaveCount(0);
+
+  // 案内が出ている状態から、ヘッダーで開いても消える
+  await page.evaluate(() => localStorage.removeItem("sudoku:howto"));
+  await page.reload();
+  await expect(hint).toBeVisible();
+  await howtoButton(page).click();
+  await expect(howto).toBeVisible();
+  await expect(hint).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await expect(hint).toHaveCount(0);
+});
+
+test("ホーム：幅 320px でも見出しが 1 行に収まり、ヘッダーのアイコンが画面からはみ出さない", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto("/");
+  const title = page.getByRole("heading", { name: "ナンプレ" });
+  await expect(title).toBeVisible();
+  // 文字の矩形の上端がそろっていれば 1 行（1 行の高さはフォントで変わるので、高さでは測らない）
+  const tops = await title.evaluate((h) => {
+    const range = document.createRange();
+    range.selectNodeContents(h);
+    return [...range.getClientRects()].map((r) => r.top);
+  });
+  expect(tops.length).toBeGreaterThan(0);
+  expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(10);
+  const settings = await page.getByRole("banner").getByRole("button", { name: "設定" }).boundingBox();
+  expect(settings!.x + settings!.width).toBeLessThanOrEqual(320);
+});

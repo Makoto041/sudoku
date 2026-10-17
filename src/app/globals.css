@@ -333,6 +333,8 @@ p {
   font-size: 26px;
   font-weight: 750;
   letter-spacing: 0.04em;
+  /* 幅 320px ではアイコン 3 つと並べると折り返すので、1 行に保つ */
+  white-space: nowrap;
 }
 
 .card {
@@ -547,16 +549,20 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
-.install-hint {
+/* ホームの 1 行の案内（ホーム画面への追加・遊び方）。色と余白はそれぞれのクラスで決める */
+.hint-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 12px 10px 12px 16px;
   border-radius: 16px;
+  font-size: 13.5px;
+}
+
+.install-hint {
+  padding: 12px 10px 12px 16px;
   background: var(--ink);
   color: var(--bg);
-  font-size: 13.5px;
   line-height: 1.5;
   animation: rise 0.35s cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }
@@ -1556,7 +1562,7 @@ p {
 }
 
 .keys {
-  display: none;
+  display: grid;
   grid-template-columns: auto 1fr;
   gap: 4px 14px;
   margin: 4px 0 0;
@@ -1570,13 +1576,6 @@ p {
 
 .keys dd {
   margin: 0;
-}
-
-/* キーボード操作の一覧はマウスのある端末だけに出す */
-@media (hover: hover) and (pointer: fine) {
-  .keys {
-    display: grid;
-  }
 }
 
 .name-form {
@@ -2134,7 +2133,20 @@ p {
   text-transform: uppercase;
 }
 
-.levels {
+.settings-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+
+/* ---------- 遊び方 ---------- */
+
+.howto-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2142,24 +2154,62 @@ p {
   border-top: 1px solid var(--line);
 }
 
-.levels-list {
+/* キーボード操作の一覧はマウスのある端末だけに出す */
+.howto-keys {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .howto-keys {
+    display: flex;
+  }
+}
+
+.howto-list {
+  margin: 0;
+  padding-left: 1.2em;
+  display: grid;
+  gap: 4px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.howto-try {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.howto-hint {
+  padding: 4px 4px 4px 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.howto-hint-link {
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.howto-defs {
   margin: 0;
   display: grid;
   gap: 6px;
 }
 
-.levels-list div {
+.howto-defs div {
   display: grid;
   grid-template-columns: 6.5em 1fr;
   gap: 8px;
   font-size: 13px;
 }
 
-.levels-list dt {
+.howto-defs dt {
   font-weight: 700;
 }
 
-.levels-list dd {
+.howto-defs dd {
   margin: 0;
   color: var(--ink-2);
 }

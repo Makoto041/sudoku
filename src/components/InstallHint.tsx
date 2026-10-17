@@ -19,7 +19,7 @@ export function InstallHint() {
   }, []);
   if (!show) return null;
   return (
-    <div className="install-hint" role="note">
+    <div className="hint-bar install-hint" role="note">
       <span className="install-step">
         <Share size={15} /> →「ホーム画面に追加」でアプリになります
       </span>
