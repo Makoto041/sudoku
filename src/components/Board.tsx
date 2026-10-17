@@ -10,6 +10,9 @@ type Props = {
   fx: Fx;
   showMistakes: boolean;
   highlightSame: boolean;
+  highlightPeers: boolean;
+  /** 揃ったときと解き終えたときに光らせる */
+  unitFx: boolean;
   /** 行き詰まったマス（入る数字が無い） */
   stuck: ReadonlySet<number>;
   /** 手筋ヒントで照らすマス */
@@ -19,15 +22,27 @@ type Props = {
 
 const NOTE_DIGITS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
-export function Board({ game, fx, showMistakes, highlightSame, stuck, hint, onSelect }: Props) {
+export function Board({
+  game,
+  fx,
+  showMistakes,
+  highlightSame,
+  highlightPeers,
+  unitFx,
+  stuck,
+  hint,
+  onSelect,
+}: Props) {
   const sel = game.selected;
   const selValue = sel !== null ? game.values[sel] : 0;
   const conflicts = useMemo(() => findConflicts(game.values), [game.values]);
   const hidden = game.status === "paused";
+  // 解き終えたときの波。光らせない設定なら出さない
+  const wave = game.status === "solved" && unitFx;
 
   return (
     <div
-      className={`board${hidden ? " is-hidden" : ""}${game.status === "solved" ? " is-solved" : ""}`}
+      className={`board${hidden ? " is-hidden" : ""}${wave ? " is-solved" : ""}`}
       role="grid"
       aria-label="ナンプレの盤面"
       key={fx.solvedKey ?? "board"}
@@ -51,10 +66,14 @@ export function Board({ game, fx, showMistakes, highlightSame, stuck, hint, onSe
           else if (hint.focus.has(i)) classes.push("hint-focus");
         }
         if (sel === i) classes.push("selected");
-        else if (sel !== null && (rowOf(sel) === r || colOf(sel) === c || boxOf(sel) === boxOf(i)))
+        else if (
+          highlightPeers &&
+          sel !== null &&
+          (rowOf(sel) === r || colOf(sel) === c || boxOf(sel) === boxOf(i))
+        )
           classes.push("peer");
         if (highlightSame && selValue && value === selValue && sel !== i) classes.push("same");
-        const flashOrder = fx.flash?.cells.get(i);
+        const flashOrder = unitFx ? fx.flash?.cells.get(i) : undefined;
         const pop = fx.pop?.cell === i;
         const shake = fx.shake?.cell === i;
         return (

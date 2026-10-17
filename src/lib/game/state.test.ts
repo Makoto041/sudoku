@@ -27,23 +27,35 @@ function run(s: GameState, ...actions: Action[]) {
   return { s, effects };
 }
 
+// 空きマス cell と、同じ行の空きマス peer の両方に、cell の正解をメモしておく（cell を選んだ状態で返す）
+function withNotes() {
+  const { p, s: s0 } = freeGame();
+  const cell = p.puzzle.indexOf(0);
+  const digit = p.solution[cell];
+  const peer = p.puzzle.findIndex(
+    (v, i) => v === 0 && i !== cell && Math.floor(i / 9) === Math.floor(cell / 9),
+  );
+  const { s } = run(
+    s0,
+    { type: "select", cell: peer },
+    { type: "input", digit, asNote: true },
+    { type: "select", cell },
+    { type: "input", digit, asNote: true },
+  );
+  return { p, s, cell, digit, peer };
+}
+
 describe("game reducer", () => {
   it("正しい数字を置くと周りのメモが消え、元に戻すと復元する", () => {
-    const { p, s: s0 } = freeGame();
-    const cell = p.puzzle.indexOf(0);
-    const digit = p.solution[cell];
-    const peer = p.puzzle.findIndex(
-      (v, i) => v === 0 && i !== cell && Math.floor(i / 9) === Math.floor(cell / 9),
-    );
-    let { s } = run(s0, { type: "select", cell: peer }, { type: "input", digit, asNote: true });
+    const { s, cell, digit, peer } = withNotes();
     expect(s.notes[peer]).toBe(1 << digit);
-    const placed = run(s, { type: "select", cell }, { type: "input", digit });
+    const placed = run(s, { type: "input", digit });
     expect(placed.s.values[cell]).toBe(digit);
     expect(placed.s.notes[peer]).toBe(0);
     expect(placed.effects[0]).toMatchObject({ kind: "place", wrong: false });
-    s = run(placed.s, { type: "undo" }).s;
-    expect(s.values[cell]).toBe(0);
-    expect(s.notes[peer]).toBe(1 << digit);
+    const undone = run(placed.s, { type: "undo" }).s;
+    expect(undone.values[cell]).toBe(0);
+    expect(undone.notes).toEqual(s.notes);
   });
 
   it("間違いはミスとして数え、ヒントは正解を置く", () => {
@@ -102,6 +114,47 @@ describe("game reducer", () => {
   it("時間の表示", () => {
     expect(formatTime(65_000)).toBe("01:05");
     expect(formatTime(3_725_000)).toBe("1:02:05");
+  });
+});
+
+describe("周りのメモの自動消去（設定）", () => {
+  it("オフでは周りのメモを残し、点数はオンと同じ。元に戻すと置く前の盤面とメモに戻る", () => {
+    const { s, cell, digit, peer } = withNotes();
+    const on = run(s, { type: "input", digit, t: 1000 });
+    // 省略時はオンと同じ
+    expect(run(s, { type: "input", digit, t: 1000, clearPeers: true }).s).toEqual(on.s);
+    const off = run(s, { type: "input", digit, t: 1000, clearPeers: false });
+    expect(on.s.notes[peer]).toBe(0);
+    expect(off.s.notes[peer]).toBe(1 << digit);
+    expect(off.s.values[cell]).toBe(digit);
+    // 置いたマス自身のメモは消す
+    expect(off.s.notes[cell]).toBe(0);
+    expect(off.s.score).toEqual(on.s.score);
+    expect(off.effects).toEqual(on.effects);
+    const undone = run(off.s, { type: "undo" }).s;
+    expect(undone.values).toEqual(s.values);
+    expect(undone.notes).toEqual(s.notes);
+    expect(undone.history).toHaveLength(s.history.length);
+  });
+
+  it("オフでもメモを書いてから解き切ると、メモは残らない", () => {
+    const { p, s: s0 } = freeGame();
+    let { s } = run(s0, { type: "autoNotes" });
+    for (let i = 0; i < 81; i++) {
+      if (p.puzzle[i]) continue;
+      s = run(s, { type: "select", cell: i }, { type: "input", digit: p.solution[i], clearPeers: false }).s;
+    }
+    expect(s.status).toBe("solved");
+    expect(s.notes.every((n) => n === 0)).toBe(true);
+  });
+
+  it("ヒントで置くときもオフなら周りのメモを残す", () => {
+    const { s, cell, digit, peer } = withNotes();
+    const off = run(s, { type: "hintUsed" }, { type: "hint", cell, clearPeers: false }).s;
+    const on = run(s, { type: "hintUsed" }, { type: "hint", cell }).s;
+    expect(off.values[cell]).toBe(digit);
+    expect(off.notes[peer]).toBe(1 << digit);
+    expect(on.notes[peer]).toBe(0);
   });
 });
 

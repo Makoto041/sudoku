@@ -124,8 +124,9 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.addInitScript(() =>
     localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
   );
-  // 設定シートは上寄せで縦に長いので、シートの下にボタンが見える高さにする
-  await page.setViewportSize({ width: 393, height: 1100 });
+  // 設定シートは上寄せで縦に長く、ホームの下端より長い。画面の高さで切れてスクロールする高さにし、
+  // シートの下に残る背景の下にボタンが来るようにする
+  await page.setViewportSize({ width: 393, height: 700 });
   await page.goto("/");
   let started = false;
   page.on("request", (r) => {
@@ -139,9 +140,9 @@ test("シートの背景をタップしても、下のボタンが押されな�
   const target = await page.evaluate((bottom) => {
     for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
       const r = el.getBoundingClientRect();
-      if (r.top > bottom + 4 && r.bottom < window.innerHeight) {
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      }
+      const top = Math.max(r.top, bottom + 4);
+      const end = Math.min(r.bottom, window.innerHeight);
+      if (end - top > 8) return { x: r.left + r.width / 2, y: (top + end) / 2 };
     }
     return null;
   }, sheetBottom);
@@ -437,4 +438,70 @@ test("自動メモで候補をすべて書き、もう一度で消す。今日�
   await expect(page.locator(".cell .notes")).toHaveCount(empties);
   await page.getByRole("button", { name: "自動メモ" }).click();
   await expect(page.locator(".cell .notes")).toHaveCount(0);
+});
+
+test("設定で行・列・ブロックの強調と残りの数を消せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cells = page.getByRole("gridcell");
+  // 空きの最も少ない数字を使い切り、薄い表示が出る状態にする
+  const empties = (d: number) => g.puzzle.flatMap((v, i) => (!v && g.solution![i] === d ? [i] : []));
+  const digit = [1, 2, 3, 4, 5, 6, 7, 8, 9].sort((a, b) => empties(a).length - empties(b).length)[0];
+  for (const i of empties(digit)) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${digit}`);
+  }
+  await cells.nth(g.puzzle.indexOf(0)).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await expect(page.locator(".cell.peer")).toHaveCount(20);
+  await expect(page.locator(".pad-key.is-done").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /残り/ })).toHaveCount(9);
+
+  await page.getByRole("button", { name: "設定" }).click();
+  const sheet = page.getByRole("dialog", { name: "設定" });
+  await sheet.getByRole("checkbox", { name: "行・列・ブロックを強調" }).uncheck();
+  await sheet.getByRole("checkbox", { name: "残りの数を表示" }).uncheck();
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(sheet).toBeHidden();
+
+  await expect(page.locator(".cell.selected")).toHaveCount(1);
+  await expect(page.locator(".cell.peer")).toHaveCount(0);
+  await expect(page.locator(".pad-key.is-done")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /残り/ })).toHaveCount(0);
+  await expect(page.locator(".pad-left")).toHaveText(Array(9).fill(""));
+});
+
+test("「ヒントの前に確認」をオンにすると、ヒントを開く前に確認する", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "設定" }).click();
+  const settings = page.getByRole("dialog", { name: "設定" });
+  await settings.getByRole("checkbox", { name: "ヒントの前に確認" }).check();
+  await settings.getByRole("button", { name: "閉じる" }).click();
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+
+  await page.getByRole("button", { name: "ヒント" }).click();
+  const confirm = page.getByRole("dialog", { name: "ヒントを見ますか？" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("コンボが切れます");
+  await expect(page.locator(".hint-panel")).toHaveCount(0);
+  await confirm.getByRole("button", { name: "やめる" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.locator(".hint-panel")).toHaveCount(0);
+  await expect(page.locator(".tool-count")).toHaveCount(0);
+
+  // H キーも同じく確認してから開く
+  await page.keyboard.press("h");
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "見る" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.locator(".hint-panel")).toBeVisible();
+  await expect(page.locator(".tool-count")).toHaveText("1");
 });

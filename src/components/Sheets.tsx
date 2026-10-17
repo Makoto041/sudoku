@@ -109,8 +109,10 @@ export function SettingsSheet({
     <Sheet label="設定" onClose={onClose} top>
       <h2 className="sheet-title">設定</h2>
       <div className="toggle-list">
+        <h3 className="toggle-heading">音と振動</h3>
         <Toggle label="効果音" checked={settings.sound} onChange={(v) => set({ sound: v })} />
         <Toggle label="振動" checked={settings.haptics} onChange={(v) => set({ haptics: v })} />
+        <h3 className="toggle-heading">表示</h3>
         <Toggle
           label="間違いをすぐ表示"
           checked={settings.showMistakes}
@@ -120,6 +122,34 @@ export function SettingsSheet({
           label="同じ数字を強調"
           checked={settings.highlightSame}
           onChange={(v) => set({ highlightSame: v })}
+        />
+        <Toggle
+          label="行・列・ブロックを強調"
+          checked={settings.highlightPeers}
+          onChange={(v) => set({ highlightPeers: v })}
+        />
+        <Toggle
+          label="残りの数を表示"
+          checked={settings.showRemaining}
+          onChange={(v) => set({ showRemaining: v })}
+        />
+        <Toggle
+          label="揃ったら光らせる"
+          hint="解き終えたときも含む"
+          checked={settings.unitFx}
+          onChange={(v) => set({ unitFx: v })}
+        />
+        <h3 className="toggle-heading">入力</h3>
+        <Toggle
+          label="周りのメモを自動で消す"
+          hint="置いた数字を、同じ行・列・ブロックのメモから消す"
+          checked={settings.autoClearNotes}
+          onChange={(v) => set({ autoClearNotes: v })}
+        />
+        <Toggle
+          label="ヒントの前に確認"
+          checked={settings.confirmHint}
+          onChange={(v) => set({ confirmHint: v })}
         />
       </div>
       <div className="name-row">
@@ -148,7 +178,7 @@ export function SettingsSheet({
         <dd>入力</dd>
         <dt>Shift + 1–9</dt>
         <dd>メモ</dd>
-        <dt>矢印</dt>
+        <dt>矢印 / WASD</dt>
         <dd>移動</dd>
         <dt>N</dt>
         <dd>メモ切替</dd>
@@ -156,6 +186,12 @@ export function SettingsSheet({
         <dd>消す</dd>
         <dt>Z</dt>
         <dd>元に戻す</dd>
+        <dt>H</dt>
+        <dd>ヒント（フリープレイ）</dd>
+        <dt>Space</dt>
+        <dd>一時停止（フリープレイ）</dd>
+        <dt>Esc</dt>
+        <dd>選択を外す</dd>
       </dl>
     </Sheet>
   );

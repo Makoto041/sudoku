@@ -81,7 +81,7 @@ function playEffects(effects: Effect[]) {
  * ゲームの状態と入力。入力ごとに音・触覚・アニメーションを出し、localStorage に保存する。
  * フリープレイの時計はここで進め、画面が隠れたら自動で一時停止する。
  */
-export function useGame(initial: GameState, options: { showMistakes: boolean }) {
+export function useGame(initial: GameState, options: { showMistakes: boolean; autoClearNotes: boolean }) {
   const [game, setGame] = useState(initial);
   const [fx, setFx] = useState<Fx>(EMPTY_FX);
   const gameRef = useRef(game);
@@ -90,9 +90,11 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
 
   const dispatch = useCallback(
     (raw: Action) => {
-      // 置く操作には経過時間を付ける（スコアの速さに使う）
+      // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すかの設定を付ける
       const action: Action =
-        raw.type === "input" || raw.type === "hint" ? { ...raw, t: elapsedOf(gameRef.current) } : raw;
+        raw.type === "input" || raw.type === "hint"
+          ? { ...raw, t: elapsedOf(gameRef.current), clearPeers: options.autoClearNotes }
+          : raw;
       const [next, effects] = reduce(gameRef.current, action);
       if (next === gameRef.current && effects.length === 0) return;
       gameRef.current = next;
@@ -146,7 +148,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean }) 
         return out;
       });
     },
-    [options.showMistakes],
+    [options.showMistakes, options.autoClearNotes],
   );
 
   // フリープレイの時計
