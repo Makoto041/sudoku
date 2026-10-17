@@ -70,8 +70,10 @@ type PadProps = {
 
 export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
   const remaining = remainingCounts(game.values);
+  // 2 マス以上選んでいる間はメモとして入るので、メモの見た目にする
+  const asNotes = game.notesMode || !!game.selection;
   return (
-    <div className={`pad${game.notesMode ? " is-notes" : ""}`}>
+    <div className={`pad${asNotes ? " is-notes" : ""}`}>
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => {
         const left = Math.max(0, remaining[d]);
         const done = showRemaining && left === 0;

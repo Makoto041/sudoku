@@ -178,6 +178,10 @@ export function SettingsSheet({
         <dd>入力</dd>
         <dt>Shift + 1–9</dt>
         <dd>メモ</dd>
+        <dt>ドラッグ</dt>
+        <dd>複数選択（数字はメモ、消すはメモだけ）</dd>
+        <dt>Shift / Ctrl / Cmd + クリック</dt>
+        <dd>選択にマスを足す・外す</dd>
         <dt>矢印 / WASD</dt>
         <dd>移動</dd>
         <dt>N</dt>

@@ -10,7 +10,9 @@ import {
   isGiven,
   isSolved,
   newGame,
+  persisted,
   reduce,
+  selectedCells,
   stuckCells,
   withSolution,
   type Action,
@@ -418,6 +420,8 @@ describe("進む（元に戻した手のやり直し）", () => {
     const keeps: Action[][] = [
       [{ type: "select", cell: peer }],
       [{ type: "select", cell: null }],
+      [{ type: "extendSelection", cell: peer }],
+      [{ type: "toggleSelection", cell: peer }],
       [{ type: "move", dr: 1, dc: 0 }],
       [{ type: "toggleNotes" }],
       [{ type: "hintUsed" }],
@@ -436,6 +440,10 @@ describe("進む（元に戻した手のやり直し）", () => {
       [{ type: "autoNotes" }],
       [{ type: "setNotes", notes: Array(81).fill(0) }],
       [{ type: "hint", cell }],
+      [
+        { type: "toggleSelection", cell: peer },
+        { type: "input", digit: 1 },
+      ],
     ];
     for (const actions of clears) {
       const s = run(undone, ...actions).s;
@@ -553,4 +561,196 @@ describe("進む（元に戻した手のやり直し）", () => {
       expect(redos).toBeGreaterThan(100);
     },
   );
+});
+
+describe("複数選択とメモの一括入力", () => {
+  /**
+   * 空きマス a・b・c と、正解を置いた空きマス d、ヒントのマス given を選ぶ（a が基準）。
+   * a と、選ばない空きマス e にはメモ 4 を付けておく
+   */
+  function picked(s0: GameState, solution: number[]) {
+    const [a, b, c, d, e] = s0.puzzle.flatMap((v, i) => (v ? [] : [i]));
+    const given = s0.puzzle.findIndex((v) => v !== 0);
+    const { s } = run(
+      s0,
+      { type: "select", cell: d },
+      { type: "input", digit: solution[d], t: 1000 },
+      { type: "select", cell: e },
+      { type: "input", digit: 4, asNote: true },
+      { type: "select", cell: a },
+      { type: "input", digit: 4, asNote: true },
+      { type: "extendSelection", cell: b },
+      { type: "extendSelection", cell: c },
+      { type: "toggleSelection", cell: d },
+      { type: "toggleSelection", cell: given },
+    );
+    return { s, a, b, c, d, e, given };
+  }
+  const notesOf = (s: GameState, cells: number[]) => cells.map((i) => s.notes[i]);
+
+  it("なぞる・修飾キーで選択に足し、選択・移動・Esc で 1 マスに戻る", () => {
+    const { s: s0 } = freeGame();
+    let s = run(
+      s0,
+      { type: "select", cell: 0 },
+      { type: "extendSelection", cell: 1 },
+      { type: "extendSelection", cell: 2 },
+    ).s;
+    expect([s.selected, s.selection]).toEqual([0, [1, 2]]);
+    // 選んであるマスをなぞっても変わらない
+    expect(run(s, { type: "extendSelection", cell: 1 }).s).toBe(s);
+    expect(run(s, { type: "extendSelection", cell: 0 }).s).toBe(s);
+    // 修飾キーは、選んでいなければ足し、選んでいれば外す
+    s = run(s, { type: "toggleSelection", cell: 10 }, { type: "toggleSelection", cell: 1 }).s;
+    expect(selectedCells(s)).toEqual([0, 2, 10]);
+    // 基準のマスを外すと、最後に足したマスが基準になる
+    s = run(s, { type: "toggleSelection", cell: 0 }).s;
+    expect([s.selected, s.selection]).toEqual([10, [2]]);
+    s = run(s, { type: "toggleSelection", cell: 2 }).s;
+    expect([s.selected, s.selection]).toEqual([10, undefined]);
+    expect(run(s, { type: "toggleSelection", cell: 10 }).s.selected).toBe(null);
+    // 何も選んでいなければ、そのマスを選ぶ
+    expect(selectedCells(run(s0, { type: "toggleSelection", cell: 5 }).s)).toEqual([5]);
+    expect(selectedCells(run(s0, { type: "extendSelection", cell: 5 }).s)).toEqual([5]);
+
+    const many = run(s0, { type: "select", cell: 0 }, { type: "extendSelection", cell: 1 }).s;
+    expect(run(many, { type: "select", cell: 1 }).s).toMatchObject({ selected: 1, selection: undefined });
+    expect(run(many, { type: "move", dr: 1, dc: 0 }).s).toMatchObject({ selected: 9, selection: undefined });
+    // Esc は選択を外す
+    expect(run(many, { type: "select", cell: null }).s).toMatchObject({
+      selected: null,
+      selection: undefined,
+    });
+  });
+
+  it.each([
+    ["オフ", false],
+    ["オン", true],
+  ] as const)(
+    "数字は、選んだ空きマスすべてにあれば消し、どこかに無ければ全部に足す（メモモード%s）",
+    (_, notesMode) => {
+      const { p, s: s0 } = freeGame();
+      const { s: base, a, b, c, d, e, given } = picked(s0, p.solution);
+      const s = notesMode ? run(base, { type: "toggleNotes" }).s : base;
+      expect(notesOf(s, [a, b, c, e])).toEqual([1 << 4, 0, 0, 1 << 4]);
+
+      const added = run(s, { type: "input", digit: 4 });
+      expect(added.effects).toEqual([{ kind: "note", cell: -1, digit: 4, on: true }]);
+      expect(notesOf(added.s, [a, b, c, e])).toEqual([1 << 4, 1 << 4, 1 << 4, 1 << 4]);
+      // 数字のあるマスとヒントのマスは飛ばし、数字も置かない
+      expect(added.s.values).toEqual(s.values);
+      expect(notesOf(added.s, [d, given])).toEqual([0, 0]);
+      expect(added.s.history).toHaveLength(s.history.length + 1);
+      expect(added.s.history.at(-1)!.bulkNotes).toEqual(s.notes);
+
+      const removed = run(added.s, { type: "input", digit: 4 });
+      expect(removed.effects).toEqual([{ kind: "note", cell: -1, digit: 4, on: false }]);
+      // 選んでいないマスのメモは残る
+      expect(notesOf(removed.s, [a, b, c, e])).toEqual([0, 0, 0, 1 << 4]);
+      // Shift+数字（asNote）でも同じ
+      expect(run(removed.s, { type: "input", digit: 4, asNote: true }).s.notes).toEqual(added.s.notes);
+      // 選択は動かない
+      expect(selectedCells(removed.s)).toEqual(selectedCells(s));
+    },
+  );
+
+  it("選んだマスに空きが無ければ何もしない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s: base, d, given } = picked(s0, p.solution);
+    const s = run(base, { type: "select", cell: d }, { type: "toggleSelection", cell: given }).s;
+    for (const a of [{ type: "input", digit: 5 }, { type: "erase" }] as Action[]) {
+      const out = run(s, a);
+      expect(out.s).toBe(s);
+      expect(out.effects).toEqual([{ kind: "blocked" }]);
+    }
+  });
+
+  it("消すは選んだ空きマスのメモだけを消し、数字は消さない。戻す・進むで選択は動かない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s: base, a, b, c, d, e } = picked(s0, p.solution);
+    const s = run(base, { type: "input", digit: 6 }).s;
+    expect(notesOf(s, [a, b, c])).toEqual([(1 << 4) | (1 << 6), 1 << 6, 1 << 6]);
+    const erased = run(s, { type: "erase" });
+    expect(erased.effects).toEqual([{ kind: "erase", cell: -1 }]);
+    expect(notesOf(erased.s, [a, b, c, e])).toEqual([0, 0, 0, 1 << 4]);
+    expect(erased.s.values).toEqual(s.values);
+    expect(erased.s.values[d]).toBe(p.solution[d]);
+    // 消すメモが無ければ何もしない
+    expect(run(erased.s, { type: "erase" }).effects).toEqual([{ kind: "blocked" }]);
+
+    const undone = run(erased.s, { type: "undo" });
+    expect(undone.effects).toEqual([{ kind: "undo", cell: -1 }]);
+    expect(undone.s.notes).toEqual(s.notes);
+    expect([undone.s.selected, undone.s.selection]).toEqual([s.selected, s.selection]);
+    const redone = run(undone.s, { type: "redo" });
+    expect(redone.effects).toEqual([{ kind: "redo", cell: -1 }]);
+    expect(redone.s.notes).toEqual(erased.s.notes);
+    expect([redone.s.selected, redone.s.selection]).toEqual([s.selected, s.selection]);
+    // 2 つ戻すと、まとめて付けたメモ 6 の前に戻る
+    expect(run(redone.s, { type: "undo" }, { type: "undo" }).s.notes).toEqual(base.notes);
+  });
+
+  it("1 マスの手を戻す・進む、ヒントで置くと、選択はそのマスだけになる", () => {
+    const { p, s: s0 } = freeGame();
+    const { s, a, d } = picked(s0, p.solution);
+    // 最後の 1 マスの手は a のメモ 4
+    const undone = run(s, { type: "undo" }).s;
+    expect([undone.selected, undone.selection]).toEqual([a, undefined]);
+    const again = run(undone, { type: "extendSelection", cell: d }, { type: "redo" }).s;
+    expect([again.selected, again.selection]).toEqual([a, undefined]);
+    const hinted = run(s, { type: "hint", cell: s.puzzle.lastIndexOf(0) }).s;
+    expect([hinted.selected, hinted.selection]).toEqual([s.puzzle.lastIndexOf(0), undefined]);
+  });
+
+  it("一時停止中は選択もメモも変えない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s, b } = picked(s0, p.solution);
+    const paused = run(s, { type: "pause" }).s;
+    for (const a of [
+      { type: "input", digit: 7 },
+      { type: "erase" },
+      { type: "extendSelection", cell: b + 9 },
+      { type: "toggleSelection", cell: b },
+    ] as Action[]) {
+      expect(reduce(paused, a)).toEqual([paused, []]);
+    }
+  });
+
+  it("日次でも使え、手の記録・点数・ミスは変わらない", () => {
+    const p = generatePuzzle("daily-multi", "easy");
+    const s0 = withSolution(
+      newGame({
+        mode: "daily",
+        difficulty: "easy",
+        seed: "2026-10-17",
+        puzzle: p.puzzle,
+        solution: null,
+        daily: { sessionId: "s", date: "2026-10-17", startedAt: 0, clockOffset: 0 },
+      }),
+    );
+    const { s, a, b, d } = picked(s0, p.solution);
+    expect(s.moves).toEqual([[1000, d, p.solution[d]]]);
+    const after = run(
+      s,
+      { type: "input", digit: 2 },
+      { type: "input", digit: 3 },
+      { type: "erase" },
+      { type: "input", digit: 5 },
+    );
+    expect(notesOf(after.s, [a, b])).toEqual([1 << 5, 1 << 5]);
+    expect(after.s.history).toHaveLength(s.history.length + 4);
+    expect(after.s.moves).toEqual(s.moves);
+    expect(after.s.score).toEqual(s.score);
+    expect(after.s.mistakes).toBe(s.mistakes);
+  });
+
+  it("保存するときは選択を落とす", () => {
+    const { p, s: s0 } = freeGame();
+    const { s } = picked(s0, p.solution);
+    expect(s.selection?.length).toBeGreaterThan(0);
+    const saved = JSON.parse(JSON.stringify(persisted(run(s, { type: "input", digit: 8 }).s)));
+    expect(saved).not.toHaveProperty("selection");
+    expect(saved).not.toHaveProperty("future");
+    expect(saved.selected).toBe(null);
+  });
 });

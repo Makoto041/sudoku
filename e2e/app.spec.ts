@@ -21,6 +21,7 @@ type Saved = {
   puzzle: number[];
   solution: number[] | null;
   values: number[];
+  notes: number[];
   history: unknown[];
   moves?: unknown[];
 };
@@ -617,4 +618,206 @@ test("今日の一問でも進むが使え、手の記録は増えず、進む�
   await expect(redo).toBeDisabled();
   await expect.poll(async () => (await savedGame(page, key)).values[cell]).toBe(solution[cell]);
   expect((await savedGame(page, key)).moves).toHaveLength(1);
+});
+
+test("Shift・Ctrl・Cmd+クリックで複数のマスを選ぶと、数字はメモとしてまとめて入り、消すはメモだけ消す", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const [a, b, c, d] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const given = g.puzzle.findIndex((v) => v !== 0);
+  const cells = page.getByRole("gridcell");
+  const press = async (i: number, init: Record<string, unknown> = {}) => {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "mouse", button: 0, ...init });
+    await cells.nth(i).dispatchEvent("pointerup", { pointerType: "mouse", button: 0, ...init });
+  };
+  const placed = new RegExp(` ${g.solution![d]}$`);
+  const pad = page.locator(".pad");
+  // d には数字を置いておく
+  await press(d);
+  await page.keyboard.press(`Digit${g.solution![d]}`);
+  await expect(cells.nth(d)).toHaveAttribute("aria-label", placed);
+  await expect(pad).not.toHaveClass(/is-notes/);
+
+  await press(a);
+  await press(b, { shiftKey: true });
+  await press(c, { ctrlKey: true });
+  await press(d, { metaKey: true });
+  await press(given, { shiftKey: true });
+  await expect(cells.nth(a)).toHaveClass(/selected/);
+  for (const i of [b, c, d, given]) await expect(cells.nth(i)).toHaveClass(/multi/);
+  // メモが OFF のままでも、数字パッドはメモの見た目になる
+  await expect(page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(pad).toHaveClass(/is-notes/);
+
+  // 選んだ空きマスすべてに付け、もう一度で全部から外す。数字のあるマスはそのまま
+  await page.keyboard.press("Digit3");
+  for (const i of [a, b, c]) await expect(cells.nth(i).locator(".notes .on")).toHaveText(["3"]);
+  await expect(cells.nth(d)).toHaveAttribute("aria-label", placed);
+  await expect(cells.nth(given)).toHaveAttribute("aria-label", new RegExp(` ${g.puzzle[given]}$`));
+  await page.keyboard.press("Digit3");
+  for (const i of [a, b, c]) await expect(cells.nth(i).locator(".notes")).toHaveCount(0);
+
+  await page.keyboard.press("Digit3");
+  await page.locator(".pad-key").nth(4).click();
+  for (const i of [a, b, c]) await expect(cells.nth(i).locator(".notes .on")).toHaveText(["3", "5"]);
+  await shot(page, "multi-notes");
+  // 消すはメモだけを消し、数字は残す
+  await page.getByRole("button", { name: "消す", exact: true }).click();
+  for (const i of [a, b, c]) await expect(cells.nth(i).locator(".notes")).toHaveCount(0);
+  await expect(cells.nth(d)).toHaveAttribute("aria-label", placed);
+  await page.getByRole("button", { name: "戻す", exact: true }).click();
+  for (const i of [a, b, c]) await expect(cells.nth(i).locator(".notes .on")).toHaveText(["3", "5"]);
+  // メモは保存し、選択は保存しない
+  const both = (1 << 3) | (1 << 5);
+  await expect.poll(async () => (await savedGame(page, "sudoku:free")).notes[b]).toBe(both);
+  expect(await savedGame(page, "sudoku:free")).not.toHaveProperty("selection");
+
+  // Esc で選択を外す
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".cell.multi")).toHaveCount(0);
+  await expect(page.locator(".cell.selected")).toHaveCount(0);
+  await expect(pad).not.toHaveClass(/is-notes/);
+});
+
+/**
+ * 盤面のマスにポインタイベントを送る関数を作る。start のマスに、at のマスの中の横位置 x（左端 0〜右端 1。既定は中央）・
+ * 縦は中央の座標で送る。タッチでは押したマスにポインタが捕まり、動かしてもイベントは最初のマスに届くので、それに合わせる。
+ * 位置は送る直前に測る
+ */
+function boardPointer(page: Page, pointerType: "mouse" | "touch") {
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  return (
+    type: string,
+    start: number,
+    at: number,
+    init: { x?: number; buttons?: number; pointerType?: "mouse" | "touch" } = {},
+  ) =>
+    board.evaluate(
+      (el, { type, start, at, x, buttons, pointerType }) => {
+        const all = el.querySelectorAll("[data-i]");
+        const r = all[at].getBoundingClientRect();
+        all[start].dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            pointerId: 7,
+            pointerType,
+            isPrimary: true,
+            button: type === "pointermove" ? -1 : 0,
+            buttons,
+            clientX: r.left + r.width * x,
+            clientY: r.top + r.height / 2,
+          }),
+        );
+      },
+      {
+        type,
+        start,
+        at,
+        x: init.x ?? 0.5,
+        buttons: init.buttons ?? (type === "pointerdown" || type === "pointermove" ? 1 : 0),
+        pointerType: init.pointerType ?? pointerType,
+      },
+    );
+}
+
+test("盤面をなぞって複数のマスを選べる。離すか取り消されたら、それ以上は足さない", async ({ page }, info) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cells = page.getByRole("gridcell");
+  const pointer = boardPointer(page, info.project.use.hasTouch ? "touch" : "mouse");
+
+  // 空きマスが 2 つ以上ある行を、左端から右端までなぞる
+  const row = [0, 1, 2, 3, 4, 5, 6, 7, 8].find(
+    (r) => g.puzzle.slice(r * 9, r * 9 + 9).filter((v) => !v).length >= 2,
+  )!;
+  const path = Array.from({ length: 9 }, (_, c) => row * 9 + c);
+  const others = g.puzzle.flatMap((v, i) => (v || Math.floor(i / 9) === row ? [] : [i]));
+  await pointer("pointerdown", path[0], path[0]);
+  for (const i of path.slice(1)) await pointer("pointermove", path[0], i);
+  await pointer("pointerup", path[0], path[8]);
+  await expect(cells.nth(path[0])).toHaveClass(/selected/);
+  await expect(page.locator(".cell.multi")).toHaveCount(8);
+  for (const i of path.slice(1)) await expect(cells.nth(i)).toHaveClass(/multi/);
+  // 離したあとに動かしても足さない（次の数字が入らないことで確かめる）
+  await pointer("pointermove", path[0], others[0]);
+  await page.keyboard.press("Digit7");
+  for (const i of path.filter((i) => !g.puzzle[i])) {
+    await expect(cells.nth(i).locator(".notes .on")).toHaveText(["7"]);
+  }
+  await expect(cells.nth(others[0]).locator(".notes")).toHaveCount(0);
+  await expect(page.locator(".cell.multi")).toHaveCount(8);
+
+  // 取り消し（pointercancel）でも終わる
+  const [p, q, x] = others.slice(1);
+  await pointer("pointerdown", p, p);
+  await pointer("pointermove", p, q);
+  await pointer("pointercancel", p, q);
+  await pointer("pointermove", p, x);
+  await page.keyboard.press("Digit8");
+  for (const i of [p, q]) await expect(cells.nth(i).locator(".notes .on")).toHaveText(["8"]);
+  await expect(cells.nth(x).locator(".notes")).toHaveCount(0);
+  await expect(page.locator(".cell.multi")).toHaveCount(1);
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".cell.multi")).toHaveCount(0);
+});
+
+test("指のぶれ程度なら、隣のマスに掛かってもなぞったことにしない。マウスのボタンが離れていたら終える", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cells = page.getByRole("gridcell");
+  const pointer = boardPointer(page, info.project.use.hasTouch ? "touch" : "mouse");
+  // 右隣のある空きマス
+  const [a, e] = g.puzzle.flatMap((v, i) => (v || i % 9 === 8 ? [] : [i]));
+  const placed = (i: number) => new RegExp(` ${g.solution![i]}$`);
+
+  // 押した点からマス幅の 4 割だけ動かし、右隣のマスとの境目をまたぐ。選択は増えず、数字は値として入る
+  await pointer("pointerdown", a, a, { x: 0.8 });
+  await pointer("pointermove", a, a + 1, { x: 0.2 });
+  await pointer("pointerup", a, a + 1, { x: 0.2 });
+  await page.keyboard.press(`Digit${g.solution![a]}`);
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", placed(a));
+  await expect(page.locator(".cell.multi")).toHaveCount(0);
+
+  // マス幅の半分より動けば、なぞったことになる
+  await pointer("pointerdown", a, a, { x: 0.8 });
+  await pointer("pointermove", a, a + 1, { x: 0.2 });
+  await pointer("pointermove", a, a + 1, { x: 0.5 });
+  await pointer("pointerup", a, a + 1, { x: 0.5 });
+  await expect(cells.nth(a + 1)).toHaveClass(/multi/);
+  await expect(page.locator(".cell.multi")).toHaveCount(1);
+  await page.keyboard.press("Escape");
+
+  // マウスのボタンが離れていれば、pointerup が届かなくてもそれ以上は足さない
+  await pointer("pointerdown", e, e, { pointerType: "mouse" });
+  await pointer("pointermove", e, e + 1, { pointerType: "mouse", buttons: 0 });
+  await pointer("pointermove", e, e + 1, { pointerType: "mouse" });
+  await page.keyboard.press(`Digit${g.solution![e]}`);
+  await expect(cells.nth(e)).toHaveAttribute("aria-label", placed(e));
+  await expect(page.locator(".cell.multi")).toHaveCount(0);
 });
