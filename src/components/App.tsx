@@ -16,6 +16,7 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/l
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { howtoSeen, markHowtoSeen } from "@/lib/client/howto";
 import { updateAchievements } from "@/lib/client/achievements";
+import { refreshPush } from "@/lib/client/push";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -166,6 +167,12 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mounted, today, refresh, historyTick, view.name],
   );
+
+  // 毎日の通知を有効にしている端末は、開いたときに購読を登録し直す（期限を延ばす）。
+  // 引き継ぎでプレイヤーが変わったときも、購読を新しいプレイヤーに移す
+  useEffect(() => {
+    if (mounted && player.id) void refreshPush(player.id);
+  }, [mounted, player.id]);
 
   const free = useMemo(
     () => (mounted ? loadGame(KEYS.free) : null),
@@ -490,6 +497,7 @@ export function App() {
       {sheet?.kind === "settings" && (
         <SettingsSheet
           settings={settings}
+          playerId={player.id}
           playerName={player.name}
           onChange={updateSettings}
           onRename={() => setSheet({ kind: "name", difficulty: null })}

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import type { Difficulty } from "@/lib/sudoku/core";
 import { ApiError, describeError } from "@/lib/client/api";
+import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
 import type { Settings } from "@/lib/client/settings";
 import { ChevronRight, Close } from "./icons";
 
@@ -73,15 +74,17 @@ function Toggle({
   label,
   hint,
   checked,
+  disabled,
   onChange,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="toggle-row">
+    <label className={`toggle-row${disabled ? " is-disabled" : ""}`}>
       <span>
         <span className="toggle-label">{label}</span>
         {hint && <span className="toggle-hint">{hint}</span>}
@@ -90,6 +93,7 @@ function Toggle({
         type="checkbox"
         className="toggle"
         checked={checked}
+        disabled={disabled}
         onChange={(e) => {
           onChange(e.target.checked);
           sfx.tap();
@@ -99,8 +103,68 @@ function Toggle({
   );
 }
 
+/** 毎日の通知の注記。届く条件は src/lib/server/push.ts の sendReminders と vercel.json の cron に合わせる */
+const REMINDER_NOTES: Record<Exclude<PushState, "unavailable">, string> = {
+  on: "今日の一問を 1 問もクリアしていない日の 20 時（日本時間）",
+  off: "今日の一問を 1 問もクリアしていない日の 20 時（日本時間）",
+  "needs-install": "ホーム画面に追加したアプリで設定できます",
+  unsupported: "この端末では使えません",
+  denied: "通知が許可されていません",
+};
+
+const REMINDER_ERRORS: Record<PushError, string> = {
+  "rate-limited": "しばらくしてからもう一度試してください",
+  offline: "オフラインです",
+  failed: "設定できませんでした",
+};
+
+/**
+ * 毎日の通知のトグル。状態を読み終えるまでと、サーバーに通知の設定が無いときは何も出さない。
+ * 閉じる前に始めた操作がまだ終わっていなければ、loadPushState がそれを待つので、終わるまで出さない（押せない）
+ */
+function Reminder({ playerId }: { playerId: string }) {
+  const [state, setState] = useState<PushState | null>(null);
+  /** 操作中の切り替え先（操作中はトグルを押せなくする） */
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void loadPushState().then((s) => {
+      if (alive) setState(s);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (state === null || state === "unavailable") return null;
+
+  // 有効にするときは、許可を求めるためにタップの処理の中で enablePush を呼ぶ（await の前に呼ぶ）
+  const change = async (on: boolean) => {
+    setPending(on);
+    setError(null);
+    const res = await (on ? enablePush(playerId) : disablePush(playerId));
+    setState(res.state);
+    setError(res.error ? REMINDER_ERRORS[res.error] : null);
+    setPending(null);
+  };
+  return (
+    <>
+      <h3 className="toggle-heading">通知</h3>
+      <Toggle
+        label="毎日の通知"
+        hint={REMINDER_NOTES[state]}
+        checked={pending ?? state === "on"}
+        disabled={pending !== null || (state !== "on" && state !== "off")}
+        onChange={(v) => void change(v)}
+      />
+      {error && <p className="error-text">{error}</p>}
+    </>
+  );
+}
+
 export function SettingsSheet({
   settings,
+  playerId,
   playerName,
   onChange,
   onRename,
@@ -110,6 +174,7 @@ export function SettingsSheet({
   onClose,
 }: {
   settings: Settings;
+  playerId: string;
   playerName: string | null;
   onChange: (s: Settings) => void;
   onRename: () => void;
@@ -166,6 +231,7 @@ export function SettingsSheet({
           checked={settings.confirmHint}
           onChange={(v) => set({ confirmHint: v })}
         />
+        <Reminder playerId={playerId} />
       </div>
       <div className="name-row">
         <span>

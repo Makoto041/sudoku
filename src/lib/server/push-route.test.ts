@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const sendNotification = vi.hoisted(() => vi.fn(async () => ({ statusCode: 201, body: "", headers: {} })));
 vi.mock("web-push", () => ({ default: { sendNotification } }));
 
-import { DELETE, POST } from "@/app/api/push/route";
+import { DELETE, GET, POST, dynamic } from "@/app/api/push/route";
 import { GET as cron } from "@/app/api/cron/remind/route";
 import { clientIp, handle } from "./http";
 import { FAILURE_KINDS } from "./push";
@@ -94,6 +94,27 @@ describe("通知の API", () => {
     vi.stubEnv("VAPID_SUBJECT", ENV.VAPID_SUBJECT);
     expect((await read(await cron(cronReq("Bearer ")))).status).toBe(503);
     expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("GET は公開鍵だけを返す。環境変数が 1 つでも無ければ 503。どちらもキャッシュさせない", async () => {
+    expect(dynamic).toBe("force-dynamic");
+    const none = await GET();
+    expect(none.headers.get("cache-control")).toBe("no-store");
+    expect(await read(none)).toEqual({ status: 503, body: { error: "push unavailable" } });
+    // 公開鍵があっても、ほかの 3 つのどれかが無ければ 503（購読 API と同じ条件）
+    for (const missing of ["VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "CRON_SECRET"]) {
+      setEnv();
+      vi.stubEnv(missing, "");
+      expect([missing, await read(await GET())]).toEqual([
+        missing,
+        { status: 503, body: { error: "push unavailable" } },
+      ]);
+    }
+    setEnv();
+    const ok = await GET();
+    expect(ok.headers.get("cache-control")).toBe("no-store");
+    // read() で、秘密鍵と cron のシークレットを含めないことも確かめる
+    expect(await read(ok)).toEqual({ status: 200, body: { publicKey: ENV.NEXT_PUBLIC_VAPID_PUBLIC_KEY } });
   });
 
   it("不正な入力は 400・413 で、応答に endpoint・鍵・プレイヤー ID を含めない", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { iosNeedsInstall } from "@/lib/client/device";
 import { KEYS, load, save } from "@/lib/client/storage";
 import { Close, Share } from "./icons";
 
@@ -8,14 +9,7 @@ import { Close, Share } from "./icons";
 export function InstallHint() {
   const [show, setShow] = useState(false);
   useEffect(() => {
-    const ua = navigator.userAgent;
-    const ios =
-      /iP(hone|ad|od)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      (navigator as unknown as { standalone?: boolean }).standalone === true;
-    const inApp = /CriOS|FxiOS|EdgiOS|Line\//.test(ua);
-    if (ios && !standalone && !inApp && !load<boolean>(KEYS.installHint)) setShow(true);
+    if (iosNeedsInstall() && !load<boolean>(KEYS.installHint)) setShow(true);
   }, []);
   if (!show) return null;
   return (
