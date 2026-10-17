@@ -47,6 +47,12 @@ export const Undo = (p: IconProps) => (
     <path d="M4 9h10.5a5.5 5.5 0 010 11H11" />
   </Svg>
 );
+export const Redo = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M15 14l5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 000 11H13" />
+  </Svg>
+);
 export const Eraser = (p: IconProps) => (
   <Svg {...p}>
     <path d="M7 21h13" />
