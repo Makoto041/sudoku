@@ -6,6 +6,8 @@ import { DIFFICULTY_LABEL } from "@/lib/sudoku/core";
 import { formatPoints } from "@/lib/game/score";
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { FreeClear } from "@/lib/client/stats";
+import type { Achievement } from "@/lib/client/achievements";
+import { AchievementLine } from "./AchievementLine";
 import type { DailyOutcome } from "./Game";
 import { Close, Refresh, Share, Trophy } from "./icons";
 
@@ -13,6 +15,8 @@ type Props = {
   game: GameState;
   outcome: DailyOutcome | null;
   freeClear: FreeClear | null;
+  /** このクリアで新しく解除した実績 */
+  fresh: Achievement[];
   /** 次の問題を作っている */
   generating: boolean;
   onRetrySubmit: () => void;
@@ -26,6 +30,7 @@ export function Result({
   game,
   outcome,
   freeClear,
+  fresh,
   generating,
   onRetrySubmit,
   onRanking,
@@ -108,6 +113,8 @@ export function Result({
             </div>
           )
         )}
+
+        <AchievementLine fresh={fresh} />
 
         <dl className="result-stats">
           <div>

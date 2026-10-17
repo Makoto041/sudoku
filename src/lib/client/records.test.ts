@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { formatPoints } from "@/lib/game/score";
 import { formatTime } from "@/lib/game/state";
-import { addDays, mergeRecords, monthView, summarize, type ClearRecord } from "./records";
+import {
+  addDays,
+  isDateKey,
+  mergeRecords,
+  monthView,
+  summarize,
+  validRecords,
+  type ClearRecord,
+} from "./records";
 import { MAX_MS, MAX_POINTS } from "./stats";
 
 const r = (
@@ -168,5 +176,65 @@ describe("カレンダー", () => {
   it("その日にクリアした難易度の数を持つ", () => {
     const s = summarize([r("2026-10-02", "easy"), r("2026-10-02", "hard")], "2026-10-02");
     expect(monthView(s, 2026, 10, "2026-10-02").days[1].count).toBe(2);
+  });
+
+  it("年が 4 桁に満たなくても 4 桁にそろえた日付で月を作る（V8 は「1-01-01」を日付として読めず落ちる）", () => {
+    const today = "2026-10-17";
+    const m = monthView(summarize([r("0001-01-01", "easy")], today), 1, 1, today);
+    expect(m.days).toHaveLength(31);
+    expect(m.days[0]).toMatchObject({ date: "0001-01-01", count: 1 });
+    expect(monthView(summarize([], today), 999, 5, today).days[0].date).toBe("0999-05-01");
+  });
+});
+
+describe("記録の検証", () => {
+  it("日付は 2000〜2999 年の実在する日だけを「2026-10-17」の形で受け付ける", () => {
+    for (const ok of ["2000-01-01", "2026-10-17", "2028-02-29", "2999-12-31"])
+      expect(isDateKey(ok), ok).toBe(true);
+    for (const ng of [
+      "1999-12-31",
+      "3000-01-01",
+      "0001-01-01",
+      "0999-05-01",
+      "9999-12-31",
+      // 実在しない日
+      "2026-02-30",
+      "2027-02-29",
+      "2026-13-01",
+      "2026-00-10",
+      // 形が違う
+      "2026-1-01",
+      "2026/10/01",
+      " 2026-10-01",
+      "+002026-10-01",
+      "",
+      20261001,
+      null,
+      undefined,
+    ])
+      expect(isDateKey(ng), String(ng)).toBe(false);
+  });
+
+  it("日付や難易度が正しくない記録を捨てる（summarize が日付の計算で落ちない）", () => {
+    const raw = [
+      { date: "0x", difficulty: "easy" },
+      { date: "2026-02-30", difficulty: "easy" },
+      { date: "0001-01-01", difficulty: "easy" },
+      { date: "0999-05-01", difficulty: "easy" },
+      { date: "9999-12-31", difficulty: "easy" },
+      { date: 20261001, difficulty: "easy" },
+      { date: "2026-10-01", difficulty: "nope" },
+      null,
+      "x",
+      [],
+      r("2026-10-02", "easy"),
+      r("2026-10-03", "hard"),
+    ];
+    // そのままだと日付の計算で例外になる
+    expect(() => summarize([raw[0], r("2026-10-02", "easy")] as ClearRecord[], "2026-10-17")).toThrow(
+      RangeError,
+    );
+    expect(validRecords(raw)).toEqual([r("2026-10-02", "easy"), r("2026-10-03", "hard")]);
+    for (const x of [null, "x", 42, { 0: r("2026-10-02", "easy") }]) expect(validRecords(x)).toEqual([]);
   });
 });

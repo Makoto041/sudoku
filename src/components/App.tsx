@@ -8,13 +8,14 @@ import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/g
 import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
 import { adoptPlayer, getPlayer, setPlayerName, type Player } from "@/lib/client/player";
-import { loadRecords, localRecords } from "@/lib/client/history";
-import { mergeRecords, summarize, type ClearRecord } from "@/lib/client/records";
+import { deviceRecords, loadRecords } from "@/lib/client/history";
+import { summarize } from "@/lib/client/records";
 import { loadStats, mergeStats, recordFreeStart } from "@/lib/client/stats";
 import { firstUnsolved, loadPracticeProgress, markPracticeSolved } from "@/lib/client/practiceProgress";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { howtoSeen, markHowtoSeen } from "@/lib/client/howto";
+import { updateAchievements } from "@/lib/client/achievements";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -75,6 +76,9 @@ export function App() {
     setSettings(loadSettings());
     setPlayer(getPlayer());
     setHowtoHint(!howtoSeen());
+    // 実績の最初の判定。更新前からの達成は通知せずに保存し、次のクリアから新しく解除したものだけを出す
+    // （ホームを描く前に済ませ、最初のクリアが初めての判定にならないようにする）
+    updateAchievements(serverToday(), null, false);
     setMounted(true);
     // 日付が変わったときのために、画面に戻るたびに今日を確認する
     const onVisible = () => {
@@ -158,10 +162,7 @@ export function App() {
     void loadRecords(player.id).then(() => setHistoryTick((n) => n + 1));
   }, [mounted, player.id, refresh]);
   const streak = useMemo(
-    () =>
-      mounted
-        ? summarize(mergeRecords(load<ClearRecord[]>(KEYS.historyCache) ?? [], localRecords()), today).streak
-        : 0,
+    () => (mounted ? summarize(deviceRecords(), today).streak : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mounted, today, refresh, historyTick, view.name],
   );
@@ -314,6 +315,16 @@ export function App() {
   };
   const practiceItem = view.name === "practice" ? practice?.find((i) => i.key === view.key) : undefined;
 
+  // 実績の判定。notify はクリア・正解したときの判定で、新しく解除したものを fresh で返す
+  const judge = useCallback(
+    (notify: boolean) => updateAchievements(today, practice, notify),
+    [today, practice],
+  );
+  // 実績：クリア以外で記録が変わったとき（サーバーの履歴を取り直した・練習のデータを読んだ）は、通知せずに保存する
+  useEffect(() => {
+    if (mounted) judge(false);
+  }, [mounted, historyTick, judge]);
+
   // 遊び方の「練習してみる」：一覧を開き、局面のデータが揃ったら最初の項目（ネイキッドシングル）を開く。
   // 一覧の描画後に開くので、履歴は ホーム → 一覧 → 局面 になる（戻ると一覧、もう一度でホーム）。
   // 揃う前に一覧から離れたら開かない。読み込みに失敗しても、一覧の再試行で揃えばそのまま開く
@@ -416,6 +427,7 @@ export function App() {
           initial={view.game}
           settings={settings}
           player={player}
+          onCleared={() => judge(true).fresh}
           generating={generating !== null}
           onExit={goHome}
           onOpenSettings={() => {
@@ -455,7 +467,10 @@ export function App() {
               setView({ ...view, index: view.index + 1 });
             } else backToPracticeList();
           }}
-          onSolved={(id) => markPracticeSolved(practice, view.key, id)}
+          onSolved={(id) => {
+            markPracticeSolved(practice, view.key, id);
+            return judge(true).fresh;
+          }}
           onOpenSettings={() => {
             sfx.tap();
             setSheet({ kind: "settings" });
@@ -486,6 +501,8 @@ export function App() {
             const res = await api.claim(code);
             const next = adoptPlayer(res.playerId, res.name);
             if (res.stats && typeof res.stats === "object") mergeStats(res.stats);
+            // 引き継いだ記録での達成は、クリアしたときに出さないよう先に保存する
+            judge(false);
             setPlayer(next);
             setRefresh((n) => n + 1);
             void loadRecords(next.id);

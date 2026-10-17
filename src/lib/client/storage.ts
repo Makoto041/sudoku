@@ -58,4 +58,6 @@ export const KEYS = {
   practice: "sudoku:practice",
   /** ホームの遊び方の案内を閉じたか（端末内だけ。引き継ぎには含めない） */
   howto: "sudoku:howto",
+  /** 実績を解除した日（端末内だけ。引き継ぎ先では記録から判定し直す） */
+  achievements: "sudoku:achievements",
 };

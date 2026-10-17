@@ -12,6 +12,7 @@ import { useGame } from "@/lib/client/useGame";
 import { useGameKeys } from "@/lib/client/useGameKeys";
 import { useStuckAlert } from "@/lib/client/useStuckAlert";
 import { recordFreeClear, type FreeClear } from "@/lib/client/stats";
+import type { Achievement } from "@/lib/client/achievements";
 import { formatPoints } from "@/lib/game/score";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
@@ -25,6 +26,8 @@ type Props = {
   initial: GameState;
   settings: Settings;
   player: Player;
+  /** クリアを端末に記録した後に呼ぶ。実績を判定して、新しく解除したものを返す */
+  onCleared: () => Achievement[];
   /** フリープレイの問題を作っている */
   generating: boolean;
   onExit: () => void;
@@ -42,6 +45,7 @@ export function Game({
   initial,
   settings,
   player,
+  onCleared,
   generating,
   onExit,
   onOpenSettings,
@@ -107,6 +111,18 @@ export function Game({
     return saved ? { state: "done", result: saved } : null;
   });
   const [freeClear, setFreeClear] = useState<FreeClear | null>(null);
+  // クリアして新しく解除した実績。端末の記録を更新した直後に判定する（解除は保存するので、同じ実績は 2 回出ない）
+  const [fresh, setFresh] = useState<Achievement[]>([]);
+  const checkAchievements = useCallback(() => {
+    let newlyUnlocked: Achievement[] = [];
+    try {
+      newlyUnlocked = onCleared();
+    } catch {
+      // 実績はおまけなので、判定が例外を投げても（想定していない保存データなど）実績を出さないだけにして、
+      // 送信の成功・フリープレイの記録・結果の表示は続ける。ここで止まった実績は次の判定で解除される
+    }
+    if (newlyUnlocked.length) setFresh((a) => [...a, ...newlyUnlocked]);
+  }, [onCleared]);
   const [showResult, setShowResult] = useState(initial.status === "solved");
   const [dismissed, setDismissed] = useState(false);
 
@@ -123,6 +139,7 @@ export function Game({
           moves: g.moves ?? [],
         });
         save(KEYS.dailyResult(g.daily.date, g.difficulty), result);
+        checkAchievements();
         setOutcome({ state: "done", result });
         sfx.ranked();
       } catch (err) {
@@ -146,6 +163,7 @@ export function Game({
               total: board.total,
             };
             save(KEYS.dailyResult(g.daily.date, g.difficulty), result);
+            checkAchievements();
             setOutcome({ state: "done", result });
             return;
           }
@@ -154,7 +172,7 @@ export function Game({
         setOutcome({ state: "error", message: describeError(err), retry });
       }
     },
-    [player],
+    [player, checkAchievements],
   );
 
   // クリアしたら記録する。日次はサーバーに送って順位を受け取る。練習は記録しない
@@ -163,11 +181,13 @@ export function Game({
     if (game.status !== "solved" || handled.current) return;
     handled.current = true;
     if (game.mode === "daily") void submit(game);
-    else if (game.mode === "free")
+    else if (game.mode === "free") {
       setFreeClear(
         recordFreeClear(game.difficulty, game.elapsedMs, game.score?.points ?? 0, game.mistakes, game.hints),
       );
-  }, [game, submit]);
+      checkAchievements();
+    }
+  }, [game, submit, checkAchievements]);
 
   // 盤面のアニメーションを見せてから結果を出す
   const solved = game.status === "solved";
@@ -373,6 +393,7 @@ export function Game({
           game={game}
           outcome={outcome}
           freeClear={freeClear}
+          fresh={fresh}
           generating={generating}
           onRetrySubmit={() => void submit(game)}
           onRanking={() => onRanking(game)}
