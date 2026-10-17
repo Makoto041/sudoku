@@ -124,8 +124,7 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.addInitScript(() =>
     localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
   );
-  // 設定シートは上寄せで縦に長く、ホームの下端より長い。画面の高さで切れてスクロールする高さにし、
-  // シートの下に残る背景の下にボタンが来るようにする
+  // 設定シートは上寄せで縦に長い。画面の高さ（92dvh）で切れ、その下に背景が帯状に残る高さにする
   await page.setViewportSize({ width: 393, height: 700 });
   await page.goto("/");
   let started = false;
@@ -135,21 +134,55 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.getByRole("button", { name: "設定" }).click();
   const sheet = page.getByRole("dialog", { name: "設定" });
   await expect(sheet).toBeVisible();
-  // シートの下に見えている背景のうち、その下にボタンがある位置を叩く
-  const sheetBottom = await sheet.locator(".sheet").evaluate((el) => el.getBoundingClientRect().bottom);
-  const target = await page.evaluate((bottom) => {
-    for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
-      const r = el.getBoundingClientRect();
-      const top = Math.max(r.top, bottom + 4);
-      const end = Math.min(r.bottom, window.innerHeight);
-      if (end - top > 8) return { x: r.left + r.width / 2, y: (top + end) / 2 };
-    }
-    return null;
-  }, sheetBottom);
-  expect(target).not.toBeNull();
+  // シートは上から下りてくる。動いている途中に測ったり叩いたりすると位置がずれるので、止まるのを待つ
+  await sheet.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  // 背景の帯の中央にボタンが来るよう、下のページをスクロールする。ボタンの位置はフォントで変わるので、
+  // ページの下端まで送っても届かないときは、画面を低くして帯を上げてから測り直す
+  let target: { x: number; y: number; band: number } | null = null;
+  for (let height = 700; !target && height >= 480; height -= 20) {
+    await page.setViewportSize({ width: 393, height });
+    target = await sheet.locator(".sheet").evaluate((sheetEl) => {
+      const top = sheetEl.getBoundingClientRect().bottom;
+      const y = (top + window.innerHeight) / 2;
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
+        const r = el.getBoundingClientRect();
+        const scroll = window.scrollY + r.top + r.height / 2 - y;
+        if (scroll < 0 || scroll > max) continue;
+        window.scrollTo({ top: scroll, behavior: "instant" });
+        const after = el.getBoundingClientRect();
+        return { x: after.left + after.width / 2, y, band: window.innerHeight - top };
+      }
+      return null;
+    });
+  }
+  expect(target, "背景の帯に重ねられるボタンがない").not.toBeNull();
+  expect(target!.band, "シートの下に背景がほとんど残っていない").toBeGreaterThan(24);
+  // 叩く位置のいちばん上が背景そのもので、その下にボタンがあること
+  const stack = await page.evaluate(({ x, y }) => {
+    const [front, ...behind] = document.elementsFromPoint(x, y);
+    return {
+      backdrop: front.matches(".sheet-backdrop"),
+      button: behind.some((el) => el.matches(".daily-row, .free-btn")),
+    };
+  }, target!);
+  expect(stack).toEqual({ backdrop: true, button: true });
+  // 下のボタンに click が届いたかを記録する（鬼・極は盤面が出るまで時間がかかり、盤面の有無では分からない）
+  await page.evaluate(() => {
+    const w = window as unknown as { pressed: boolean };
+    w.pressed = false;
+    window.addEventListener(
+      "click",
+      (e) => {
+        if ((e.target as Element).closest(".daily-row, .free-btn")) w.pressed = true;
+      },
+      true,
+    );
+  });
   await page.touchscreen.tap(target!.x, target!.y);
   await expect(sheet).toBeHidden();
   await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as unknown as { pressed: boolean }).pressed)).toBe(false);
   expect(started).toBe(false);
   await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
   await expect(page.getByRole("grid")).toHaveCount(0);
