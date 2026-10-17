@@ -1677,6 +1677,23 @@ p {
   color: var(--gold);
 }
 
+/* 新しく解除した実績の 1 行（結果と練習の正解の欄）。名前が続くので折り返す */
+.ach-line {
+  white-space: normal;
+}
+
+.result .ach-line {
+  max-width: 100%;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.practice-result .ach-line {
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .result-stats {
   display: flex;
   gap: 28px;
@@ -2087,6 +2104,81 @@ p {
   border-bottom: 0;
 }
 
+/* 実績。名前と条件は折り返す（.screen は 1 行に保つ設定なので戻す） */
+.ach-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ach-count {
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.ach-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ach {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ach:last-child {
+  border-bottom: 0;
+}
+
+/* 未達成は枠だけ、達成済みは印 */
+.ach-mark {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--line);
+}
+
+.ach.is-done .ach-mark {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.ach-name {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink-2);
+  white-space: normal;
+}
+
+.ach.is-done .ach-name {
+  color: var(--ink);
+}
+
+/* 条件は日付の下まで使う */
+.ach-desc {
+  grid-column: 2 / -1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  white-space: normal;
+}
+
+.ach-date {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
 /* ---------- 引き継ぎ ---------- */
 
 .transfer {
@@ -2332,4 +2424,11 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.practice-result-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }

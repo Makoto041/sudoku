@@ -8,12 +8,16 @@ import { formatTime } from "@/lib/game/state";
 import { loadRecords } from "@/lib/client/history";
 import { monthView, summarize, type ClearRecord } from "@/lib/client/records";
 import { formatPlayTime, freeSummary, loadStats, totalPlayMs } from "@/lib/client/stats";
-import { ChevronLeft, ChevronRight } from "./icons";
+import { ACHIEVEMENTS, loadUnlocked, updateAchievements, type Unlocked } from "@/lib/client/achievements";
+import { loadPractice, type PracticeItem } from "@/lib/sudoku/practice";
+import { Check, ChevronLeft, ChevronRight } from "./icons";
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
 const NONE = "-";
 const time = (ms: number | null) => (ms !== null ? formatTime(ms) : NONE);
 const points = (n: number | null) => (n !== null ? formatPoints(n) : NONE);
+/** 「2026/10/17」 */
+const slashDate = (date: string) => date.split("-").map(Number).join("/");
 
 type Props = { today: string; playerId: string; onBack: () => void };
 
@@ -22,6 +26,9 @@ export function Records({ today, playerId, onBack }: Props) {
   const [offline, setOffline] = useState(false);
   const [ym, setYm] = useState(() => ({ y: Number(today.slice(0, 4)), m: Number(today.slice(5, 7)) }));
   const [difficulty, setDifficulty] = useState<Difficulty>("easy");
+  // 実績。練習の実績を判定するため、局面のデータも読む（読めなければ練習の実績は保存済みの分だけ）
+  const [practice, setPractice] = useState<PracticeItem[] | null>(null);
+  const [unlocked, setUnlocked] = useState<Unlocked>(() => loadUnlocked() ?? {});
 
   useEffect(() => {
     let alive = true;
@@ -30,10 +37,23 @@ export function Records({ today, playerId, onBack }: Props) {
       setRecords(r.records);
       setOffline(r.offline);
     });
+    loadPractice().then(
+      (items) => {
+        if (alive) setPractice(items);
+      },
+      () => {},
+    );
     return () => {
       alive = false;
     };
   }, [playerId]);
+
+  // 履歴を取り直したら（端末に保存される）判定する。ここで見つかった達成は通知しない
+  useEffect(() => {
+    if (records) setUnlocked(updateAchievements(today, practice, false).unlocked);
+  }, [records, practice, today]);
+  // 保存は知っている実績だけ（sanitizeUnlocked と unlock）なので、数はキーの数
+  const unlockedCount = Object.keys(unlocked).length;
 
   const summary = useMemo(() => summarize(records ?? [], today), [records, today]);
   const month = useMemo(() => monthView(summary, ym.y, ym.m, today), [summary, ym, today]);
@@ -172,6 +192,35 @@ export function Records({ today, playerId, onBack }: Props) {
             <Row label="最高点" value={points(free.bestPoints)} />
           </tbody>
         </table>
+      </section>
+
+      <section className="card" aria-label="実績">
+        <div className="ach-head">
+          <h2 className="card-title">実績</h2>
+          <span className="ach-count mono">
+            {unlockedCount} / {ACHIEVEMENTS.length}
+          </span>
+        </div>
+        <ul className="ach-list">
+          {ACHIEVEMENTS.map((a) => {
+            const date = unlocked[a.id];
+            const done = date !== undefined;
+            return (
+              <li key={a.id} className={`ach${done ? " is-done" : ""}`}>
+                <span
+                  className="ach-mark"
+                  role={done ? "img" : undefined}
+                  aria-label={done ? "達成済み" : undefined}
+                >
+                  {done && <Check size={14} />}
+                </span>
+                <span className="ach-name">{a.name}</span>
+                {date && <span className="ach-date mono">{slashDate(date)}</span>}
+                <span className="ach-desc">{a.desc}</span>
+              </li>
+            );
+          })}
+        </ul>
       </section>
     </div>
   );

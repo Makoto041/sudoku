@@ -1859,3 +1859,279 @@ test("ホーム：幅 320px でも見出しが 1 行に収まり、ヘッダー�
   const settings = await page.getByRole("banner").getByRole("button", { name: "設定" }).boundingBox();
   expect(settings!.x + settings!.width).toBeLessThanOrEqual(320);
 });
+
+/** 記録画面の実績のカードと、名前が name の実績の行 */
+const achievementCard = (page: Page) => page.getByRole("region", { name: "実績", exact: true });
+const achievementItem = (page: Page, name: string) =>
+  achievementCard(page)
+    .getByRole("listitem")
+    .filter({ has: page.getByText(name, { exact: true }) });
+const doneMark = (item: Locator) => item.getByRole("img", { name: "達成済み" });
+/** 記録画面の実績のカードに「n / 全体の数」と出ている */
+const expectAchievementCount = (page: Page, n: number) =>
+  expect(achievementCard(page).getByText(new RegExp(`^${n} / \\d+$`))).toBeVisible();
+
+/** 要素の右端が幅 width の画面に収まっている */
+async function expectWithin(locator: Locator, width: number) {
+  const box = await locator.boundingBox();
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+}
+
+/**
+ * 記録の日付を読めなくして、実績の判定だけが例外を投げるようにする（日付の計算で RangeError になる）。
+ * 起動時の判定は通してから、クリアの直前に呼ぶ。ホームの連続日数も同じ計算を使うので、戻る前に restore する
+ */
+async function breakDateParsing(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __parse: typeof Date.parse };
+    w.__parse = Date.parse;
+    Date.parse = () => Number.NaN;
+  });
+  return () =>
+    page.evaluate(() => {
+      Date.parse = (window as unknown as { __parse: typeof Date.parse }).__parse;
+    });
+}
+
+test("実績：今日の一問を解くと結果に「実績: 初めてのクリア」が出て、記録画面で達成済みになる。再読み込みしても二重に出ない", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  // 記録画面に実績のカードがあり、まだ何も解除していない
+  await page.getByRole("button", { name: "記録" }).click();
+  const card = achievementCard(page);
+  await expect(card.getByRole("heading", { name: "実績" })).toBeVisible();
+  await expectAchievementCount(page, 0);
+  const first = achievementItem(page, "初めてのクリア");
+  await expect(first).toContainText("今日の一問を1問クリア");
+  await expect(doneMark(first)).toHaveCount(0);
+  await page.getByRole("button", { name: "戻る", exact: true }).click();
+
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`実績${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  const last = await fill(page, g.puzzle, solution, true);
+  // サーバーは 15 秒未満のクリアを受け付けない
+  await page.waitForTimeout(15_500);
+  await page
+    .getByRole("gridcell")
+    .nth(last)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[last]}`);
+  const result = page.getByRole("dialog", { name: "クリア" });
+  // 端末に結果を保存した時点で判定する
+  await expect(result.getByText("実績: 初めてのクリア", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await shot(page, "result-achievement");
+
+  await result.getByRole("button", { name: "ホーム", exact: true }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expectAchievementCount(page, 1);
+  await expect(doneMark(first)).toBeVisible();
+  await expect(first).toContainText(/\d{4}\/\d{1,2}\/\d{1,2}/);
+  await expect(doneMark(achievementItem(page, "3日連続"))).toHaveCount(0);
+  await shot(page, "records-achievements");
+
+  // 再読み込みして解いた問題を開き直しても、実績は達成済みのままで、結果に二度は出さない
+  await page.reload();
+  await page.locator(".daily-row").first().click();
+  await expect(result.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  await expect(result.getByText(/^実績:/)).toHaveCount(0);
+  await result.getByRole("button", { name: "ホーム", exact: true }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expectAchievementCount(page, 1);
+  await expect(doneMark(first)).toBeVisible();
+});
+
+test("実績：フリープレイの合計 100 問目をヒントもミスもなしで解くと 2 つ解除する。壊れた保存データでも落ちず、幅 320px でもはみ出さない", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.addInitScript(() => {
+    // 再読み込みでは入れ直さない
+    if (localStorage.getItem("sudoku:stats")) return;
+    localStorage.setItem(
+      "sudoku:stats",
+      JSON.stringify({ easy: { played: 99, bestMs: 60_000, cleanBestMs: null, bestPoints: 100 }, junk: 1 }),
+    );
+    // 知らない実績や日付でない値は捨てる
+    localStorage.setItem(
+      "sudoku:achievements",
+      JSON.stringify({ "daily-first": 123, "free-all": "2026-02-30", unknown: "2026-10-01" }),
+    );
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "記録" }).click();
+  const card = achievementCard(page);
+  await expectAchievementCount(page, 0);
+  await page.getByRole("button", { name: "戻る", exact: true }).click();
+
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  await fill(page, g.puzzle, g.solution!);
+  const result = page.getByRole("dialog", { name: "クリア" });
+  const line = result.getByText("実績: ノーミスクリア、100問クリア", { exact: true });
+  await expect(line).toBeVisible();
+  await expectWithin(line, 320);
+  await shot(page, "result-achievement-320");
+
+  await result.getByRole("button", { name: "ホーム", exact: true }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expectAchievementCount(page, 2);
+  for (const name of ["ノーミスクリア", "100問クリア"])
+    await expect(doneMark(achievementItem(page, name))).toBeVisible();
+  for (const name of ["初めてのクリア", "全難易度クリア"])
+    await expect(doneMark(achievementItem(page, name))).toHaveCount(0);
+  // カードの中身が横にはみ出さない
+  await card.scrollIntoViewIfNeeded();
+  await expectWithin(card, 320);
+  expect(await card.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shot(page, "records-achievements-320");
+  const saved = JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:achievements")))!);
+  expect(Object.keys(saved).sort()).toEqual(["free-100", "free-clean"]);
+
+  // 再読み込みしても達成済みのまま
+  await page.reload();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expectAchievementCount(page, 2);
+});
+
+test("実績：手筋の練習で最後に残った手筋を解くと、正解の欄に「実績: 全手筋の練習」を 1 回だけ出す", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const single = practiceItem("naked-single");
+  // ネイキッドシングル以外は 1 局面ずつ解いてある
+  const progress = Object.fromEntries(
+    PRACTICE.filter((item) => item !== single).map((item) => [item.key, [item.positions[0].id]]),
+  );
+  await page.addInitScript((p) => {
+    if (!localStorage.getItem("sudoku:practice")) localStorage.setItem("sudoku:practice", p);
+  }, JSON.stringify(progress));
+  await page.goto("/");
+  await openPracticeList(page);
+  await openPracticeItem(page, single);
+  const result = page.locator(".practice-result");
+  const solveShown = async () => {
+    const move = answerOf(await practicePosition(page, single)).placement!;
+    await page
+      .getByRole("gridcell")
+      .nth(move.cell)
+      .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${move.digit}`);
+    await expect(result).toContainText("正解");
+  };
+  await solveShown();
+  const line = result.getByText("実績: 全手筋の練習", { exact: true });
+  await expect(line).toBeVisible();
+  await expectWithin(line, 320);
+  await shot(page, "practice-achievement-320");
+
+  // 次の局面を解いても、もう出さない
+  await result.getByRole("button", { name: "次へ" }).click();
+  await solveShown();
+  await nextFrames(page);
+  await expect(result.getByText(/^実績:/)).toHaveCount(0);
+});
+
+test("実績：端末の結果に日付でない記録や年が 1000 未満の記録が混じっていても、ホームと記録画面が落ちない。前からの達成は日付なしで解除済みにする", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    // 年が 4 桁にそろっていない日付は Chromium で読めず、起動時の判定で落ちていた（WebKit は読める）
+    for (const date of ["2026-10-01", "0x", "0001-01-01", "0999-05-01"]) {
+      localStorage.setItem(
+        `sudoku:result:${date}:easy`,
+        JSON.stringify({ date, difficulty: "easy", timeMs: 60_000, points: 100, rank: 1, total: 1 }),
+      );
+    }
+  });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "今日の一問", "クリア数")).toHaveText("1");
+  const first = achievementItem(page, "初めてのクリア");
+  await expect(doneMark(first)).toBeVisible();
+  await expect(first).not.toContainText(/\d{4}\//);
+  await expectAchievementCount(page, 1);
+});
+
+test("実績：判定が例外を投げても、フリープレイのクリアを記録して結果を出す", async ({ page }) => {
+  // 起動時に裏で取る履歴は、届くとホームの連続日数を計算し直す（判定と違って例外を受けない）ので、届いてから日付を壊す
+  const history = page.waitForResponse((r) => r.url().includes("/api/player/history"));
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const last = await fill(page, g.puzzle, g.solution!, true);
+  await history;
+  await nextFrames(page);
+  const restore = await breakDateParsing(page);
+  await page
+    .getByRole("gridcell")
+    .nth(last)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![last]}`);
+  const result = page.getByRole("dialog", { name: "クリア" });
+  await expect(result.getByText("自己ベスト更新")).toBeVisible();
+  await expect(result.getByText(/^実績:/)).toHaveCount(0);
+  const stats = JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats")))!);
+  expect(stats.easy.played).toBe(1);
+  await restore();
+  await result.getByRole("button", { name: "ホーム", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+});
+
+test("実績：判定が例外を投げても、今日の一問の送信は成功として順位を出す（再送信にしない）", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`判定${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  const last = await fill(page, g.puzzle, solution, true);
+  // サーバーは 15 秒未満のクリアを受け付けない
+  await page.waitForTimeout(15_500);
+  let submits = 0;
+  page.on("request", (r) => {
+    if (r.url().includes("/api/daily/submit")) submits++;
+  });
+  const restore = await breakDateParsing(page);
+  await page
+    .getByRole("gridcell")
+    .nth(last)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[last]}`);
+  const result = page.getByRole("dialog", { name: "クリア" });
+  await expect(result.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  await expect(result.getByRole("button", { name: /再送信/ })).toHaveCount(0);
+  await expect(result.getByText(/^実績:/)).toHaveCount(0);
+  const saved = await page.evaluate(() =>
+    Object.keys(localStorage).filter((k) => k.startsWith("sudoku:result:")),
+  );
+  expect(saved).toHaveLength(1);
+  // クリアの処理は 1 回だけ（描き直しで判定の関数が変わっても送り直さない）
+  await nextFrames(page);
+  expect(submits).toBe(1);
+  await restore();
+});

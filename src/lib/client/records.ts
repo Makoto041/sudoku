@@ -1,6 +1,7 @@
-import { DIFFICULTIES, type Difficulty } from "@/lib/sudoku/core";
+import { DIFFICULTIES, isDifficulty, type Difficulty } from "@/lib/sudoku/core";
 // stats.ts からこのファイルへの import は型だけなので、循環しない
 import { MAX_MS, MAX_POINTS } from "./stats";
+import { isPlainObject } from "./storage";
 
 /** 今日の一問を 1 問クリアした記録 */
 export type ClearRecord = { date: string; difficulty: Difficulty; points: number | null; timeMs: number };
@@ -29,6 +30,32 @@ const DAY_MS = 86_400_000;
 const toMs = (date: string) => Date.parse(`${date}T00:00:00Z`);
 const toDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 export const addDays = (date: string, n: number) => toDate(toMs(date) + n * DAY_MS);
+
+/**
+ * 記録と解除の日付として受け付ける年。記録はサーバーの日付（2026 年から）で付くので、それより前と遠い先は書き換えか壊れた値。
+ * 年が 4 桁でないと日付の計算が壊れる（V8 は「1-01-01」を読めず、10000 年は toISOString の形が変わる）
+ */
+const MIN_YEAR = 2000;
+const MAX_YEAR = 2999;
+
+/** 「2026-10-17」の形で、受け付ける年の実在する日付か（2 月 30 日などは日付の計算で別の日になるので外す） */
+export function isDateKey(x: unknown): x is string {
+  if (typeof x !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(x)) return false;
+  const year = Number(x.slice(0, 4));
+  const ms = toMs(x);
+  return year >= MIN_YEAR && year <= MAX_YEAR && Number.isFinite(ms) && toDate(ms) === x;
+}
+
+/**
+ * 保存データや受け取った履歴の記録のうち、日付と難易度が正しいものだけを残す。
+ * summarize は日付を計算するので、日付でない値が入っていると例外になる
+ */
+export function validRecords(raw: unknown): ClearRecord[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (r): r is ClearRecord => isPlainObject(r) && isDateKey(r.date) && isDifficulty(r.difficulty),
+  );
+}
 
 /** 有限で 0〜max の数か（フリープレイの記録と同じ範囲） */
 const inRange = (x: unknown, max: number): x is number =>
@@ -122,7 +149,8 @@ export type MonthView = {
 };
 
 export function monthView(summary: RecordSummary, year: number, month: number, today: string): MonthView {
-  const first = `${year}-${String(month).padStart(2, "0")}-01`;
+  // 年は 4 桁にそろえる（「1-01-01」は V8 が日付として読めず、日付の計算で落ちる）
+  const first = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
   const days: MonthView["days"] = [];
   for (let d = first; d.startsWith(first.slice(0, 7)); d = addDays(d, 1)) {
     days.push({

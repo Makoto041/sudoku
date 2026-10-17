@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { newGame, type Action } from "@/lib/game/state";
+import type { Achievement } from "@/lib/client/achievements";
 import type { Settings } from "@/lib/client/settings";
 import { useGame } from "@/lib/client/useGame";
 import { useGameKeys } from "@/lib/client/useGameKeys";
@@ -13,6 +14,7 @@ import { answerOf, checkPractice, startNotes, type PracticeItem } from "@/lib/su
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
 import { HintPanel, applyHint, firstStage, hintHighlight } from "./HintPanel";
+import { AchievementLine } from "./AchievementLine";
 import { Check, ChevronLeft, Gear } from "./icons";
 
 type Props = {
@@ -22,7 +24,8 @@ type Props = {
   onBack: () => void;
   /** 次の局面へ。最後の局面なら一覧に戻る */
   onNext: () => void;
-  onSolved: (id: string) => void;
+  /** 正解したときに呼ぶ。新しく解除した実績を返す */
+  onSolved: (id: string) => Achievement[];
   onOpenSettings: () => void;
 };
 
@@ -62,9 +65,12 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
   // 正解したら盤面を変えない
   const act = useCallback((action: Action) => !solvedRef.current && dispatch(action), [dispatch]);
 
+  // この正解で新しく解除した実績（すべての手筋を解いたとき）
+  const [fresh, setFresh] = useState<Achievement[]>([]);
   useEffect(() => {
     if (!solved) return;
-    onSolved(position.id);
+    const newlyUnlocked = onSolved(position.id);
+    if (newlyUnlocked.length) setFresh(newlyUnlocked);
     sfx.ranked();
     haptic("medium");
     // 正解は取り消さないので、正解になったときに 1 回だけ記録する
@@ -176,9 +182,12 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
         <div className="controls">
           {solved ? (
             <div className="practice-result" role="status">
-              <span className="practice-result-label">
-                <Check size={20} />
-                正解
+              <span className="practice-result-main">
+                <span className="practice-result-label">
+                  <Check size={20} />
+                  正解
+                </span>
+                <AchievementLine fresh={fresh} />
               </span>
               <button type="button" className="btn small primary" onClick={onNext}>
                 {last ? "一覧に戻る" : "次へ"}
