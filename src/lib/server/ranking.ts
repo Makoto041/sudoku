@@ -256,7 +256,7 @@ export async function getHistory(store: RankingStore, input: { playerId?: unknow
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 8;
 const TRANSFER_TTL_SEC = 24 * 60 * 60;
-const MAX_STATS_BYTES = 4096;
+export const MAX_STATS_BYTES = 4096;
 
 function newCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(CODE_LENGTH));

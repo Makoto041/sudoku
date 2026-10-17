@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { solve } from "../src/lib/sudoku/solver";
 
 // ページ内で例外が出たら失敗にする（効果音や触覚の処理も含む）
@@ -44,7 +44,16 @@ async function fill(page: Page, puzzle: number[], solution: number[], leaveLast 
   return empties[empties.length - 1];
 }
 
-test("フリープレイを最後まで解ける", async ({ page }) => {
+/** 記録画面のカード（card）の表で、見出しが label の行の値 */
+function metric(page: Page, card: string, label: string) {
+  return page
+    .getByRole("region", { name: card, exact: true })
+    .getByRole("row")
+    .filter({ has: page.getByRole("rowheader", { name: label, exact: true }) })
+    .getByRole("cell");
+}
+
+test("フリープレイを最後まで解け、記録画面の始めた数・クリア数・クリア率が増える", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
   await shot(page, "home");
@@ -76,6 +85,153 @@ test("フリープレイを最後まで解ける", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
   await page.waitForTimeout(700);
   await shot(page, "result-free");
+
+  await page.getByRole("button", { name: "ホーム", exact: true }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
+  await expect(metric(page, "フリープレイ", "クリア数")).toHaveText("1");
+  await expect(metric(page, "フリープレイ", "クリア率")).toHaveText("100%");
+  await expect(metric(page, "フリープレイ", "平均時間")).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(metric(page, "フリープレイ", "最速")).toHaveText(/^\d{2}:\d{2}$/);
+  // 途中で間違えたので、ノーミス最速は無い
+  await expect(metric(page, "フリープレイ", "ノーミス最速")).toHaveText("-");
+});
+
+test("途中のフリープレイを上書きして始めると、開始数と途中でやめた時間を記録する", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const first = g.puzzle.indexOf(0);
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![first]}`);
+  // 1 秒以上たってからホームに戻り、別の難易度を新しく始める
+  await expect(page.getByLabel("経過時間")).not.toHaveText("00:00");
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await page.locator(".free-hard").click();
+  await page.getByRole("button", { name: "新しく始める" }).click();
+  await expect(page.locator(".bar-main")).toHaveText("むずかしい", { timeout: 10_000 });
+
+  const stats = JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats")))!);
+  expect(stats.easy.started).toBe(1);
+  expect(stats.easy.abandonedMs).toBeGreaterThanOrEqual(1000);
+  expect(stats.hard.started).toBe(1);
+  expect(stats.hard.abandonedMs).toBeUndefined();
+
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
+  await expect(metric(page, "フリープレイ", "クリア数")).toHaveText("0");
+  await expect(metric(page, "フリープレイ", "クリア率")).toHaveText("0%");
+});
+
+test("問題を作っている間に「次の問題へ」や難易度を続けて押しても、始めた数は 1 つしか増えない", async ({
+  page,
+}) => {
+  // ボタンが押せなくなるのは描き直した後なので、その前に 2 回押す
+  const pressTwice = (button: Locator) =>
+    button.evaluate((b: HTMLElement) => {
+      b.click();
+      b.click();
+    });
+  const started = async () =>
+    JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats")))!).easy.started;
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  const freeEasy = page.getByRole("button", { name: /かんたん/ }).last();
+
+  await page.goto("/");
+  await freeEasy.click();
+  await expect(board).toBeVisible();
+  expect(await started()).toBe(1);
+  const g = await savedGame(page, "sudoku:free");
+  await fill(page, g.puzzle, g.solution!);
+  const result = page.getByRole("dialog", { name: "クリア" });
+  await pressTwice(result.getByRole("button", { name: "次の問題へ" }));
+  await expect(result).toBeHidden();
+  await expect(board).toBeVisible();
+  // 記録画面まで行く間に、2 回目の問題作りが走っていれば終わる
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("2");
+  expect(await started()).toBe(2);
+
+  // ホームの難易度のボタンも同じ（途中の問題はまだ 1 手も進めていないので、確認なしで始まる）
+  await page.getByRole("button", { name: "戻る", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await pressTwice(freeEasy);
+  await expect(board).toBeVisible();
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("3");
+  expect(await started()).toBe(3);
+});
+
+test("記録画面で難易度を切り替えると、その難易度の記録が出る", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "sudoku:stats",
+      JSON.stringify({
+        easy: {
+          played: 3,
+          bestMs: 95_000,
+          cleanBestMs: 100_000,
+          bestPoints: 4321,
+          started: 4,
+          trackedClears: 2,
+          totalMs: 250_000,
+          abandonedMs: 50_000,
+        },
+        // 開始数を数える前のクリアだけ
+        hard: { played: 2, bestMs: 400_000, cleanBestMs: null, bestPoints: 9000 },
+      }),
+    );
+    for (const [date, timeMs, points] of [
+      ["2026-10-01", 600_000, 5000],
+      ["2026-10-02", 1_200_000, 7001],
+    ] as const) {
+      localStorage.setItem(
+        `sudoku:result:${date}:hard`,
+        JSON.stringify({ date, difficulty: "hard", timeMs, points, rank: 1, total: 1 }),
+      );
+    }
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "記録" }).click();
+  const free = (label: string) => metric(page, "フリープレイ", label);
+  const daily = (label: string) => metric(page, "今日の一問", label);
+
+  await expect(page.getByRole("tab", { name: "かんたん" })).toHaveAttribute("aria-selected", "true");
+  await expect(free("始めた数")).toHaveText("4");
+  await expect(free("クリア数")).toHaveText("3");
+  await expect(free("クリア率")).toHaveText("50%");
+  await expect(free("平均時間")).toHaveText("02:05");
+  await expect(free("最速")).toHaveText("01:35");
+  await expect(free("ノーミス最速")).toHaveText("01:40");
+  await expect(free("最高点")).toHaveText("4,321");
+  await expect(daily("クリア数")).toHaveText("0");
+  await expect(daily("平均時間")).toHaveText("-");
+  // フリープレイ 250 秒 + 50 秒、今日の一問 10 分 + 20 分
+  await expect(metric(page, "全体", "合計プレイ時間")).toHaveText("35分");
+  await shot(page, "records-stats");
+
+  await page.getByRole("tab", { name: "むずかしい" }).click();
+  await expect(page.getByRole("tab", { name: "むずかしい" })).toHaveAttribute("aria-selected", "true");
+  await expect(free("始めた数")).toHaveText("-");
+  await expect(free("クリア数")).toHaveText("2");
+  await expect(free("クリア率")).toHaveText("-");
+  await expect(free("平均時間")).toHaveText("-");
+  await expect(free("最速")).toHaveText("06:40");
+  await expect(free("ノーミス最速")).toHaveText("-");
+  await expect(free("最高点")).toHaveText("9,000");
+  await expect(daily("クリア数")).toHaveText("2");
+  await expect(daily("平均時間")).toHaveText("15:00");
+  await expect(daily("最速")).toHaveText("10:00");
+  await expect(daily("最高点")).toHaveText("7,001");
+  await expect(daily("平均点")).toHaveText("6,001");
+  await expect(metric(page, "全体", "合計プレイ時間")).toHaveText("35分");
 });
 
 test("今日の一問を解くとランキングに載る", async ({ page }) => {
@@ -376,19 +532,32 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
   await page.getByRole("button", { name: "記録" }).click();
   await expect(page.locator(".streak-num")).toHaveText("1");
   await expect(page.locator(".cal-day.is-played")).toHaveCount(1);
-  await expect(page.locator(".rec-table tbody tr").first().locator("td").first()).toHaveText("1");
+  await expect(metric(page, "今日の一問", "クリア数")).toHaveText("1");
   await shot(page, "records");
 });
 
-test("引き継ぎコードで別の端末に同じプレイヤーを移せる", async ({ browser }) => {
+test("引き継ぎコードで別の端末に同じプレイヤーとフリープレイの記録を移せる", async ({ browser }) => {
+  const stats = {
+    easy: {
+      played: 2,
+      bestMs: 95_000,
+      cleanBestMs: null,
+      bestPoints: 1200,
+      started: 3,
+      trackedClears: 2,
+      totalMs: 200_000,
+      abandonedMs: 30_000,
+    },
+  };
   const a = await browser.newContext();
   const pa = await a.newPage();
-  await pa.addInitScript(() =>
+  await pa.addInitScript((s) => {
     localStorage.setItem(
       "sudoku:player",
       JSON.stringify({ id: "33333333-3333-4333-8333-333333333333", name: "引き継ぎ元" }),
-    ),
-  );
+    );
+    localStorage.setItem("sudoku:stats", s);
+  }, JSON.stringify(stats));
   await pa.goto("/");
   await pa.getByRole("button", { name: "設定" }).click();
   await pa.getByRole("button", { name: "コードを発行" }).click();
@@ -407,7 +576,55 @@ test("引き継ぎコードで別の端末に同じプレイヤーを移せる",
   const player = JSON.parse((await pb.evaluate(() => localStorage.getItem("sudoku:player")))!);
   expect(player).toEqual({ id: "33333333-3333-4333-8333-333333333333", name: "引き継ぎ元" });
   await expect(pb.getByText("引き継ぎ元")).toBeVisible();
+  expect(JSON.parse((await pb.evaluate(() => localStorage.getItem("sudoku:stats")))!)).toEqual(stats);
   await b.close();
+});
+
+test("記録の保存データに余計な項目が残る端末でも、検証した記録だけを送って引き継ぎコードを発行できる", async ({
+  page,
+}) => {
+  // 旧版や手で書き換えた保存データ。そのまま送るとサーバーの上限（4096 バイト）を超える
+  const dirty = {
+    easy: {
+      played: 2.9,
+      bestMs: 95_000.5,
+      cleanBestMs: "x",
+      bestPoints: 1200.4,
+      started: 3.5,
+      trackedClears: 2,
+      totalMs: 200_000,
+      old: "x".repeat(5000),
+    },
+    junk: { played: 9 },
+  };
+  expect(JSON.stringify(dirty).length).toBeGreaterThan(4096);
+  await page.addInitScript((s) => {
+    localStorage.setItem(
+      "sudoku:player",
+      JSON.stringify({ id: "44444444-4444-4444-8444-444444444444", name: "汚れた端末" }),
+    );
+    localStorage.setItem("sudoku:stats", s);
+  }, JSON.stringify(dirty));
+  await page.goto("/");
+  await page.getByRole("button", { name: "設定" }).click();
+  const [res] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === "/api/player/transfer"),
+    page.getByRole("button", { name: "コードを発行" }).click(),
+  ]);
+  // 知らない項目と難易度でないキーを捨て、回数は整数、最高点は四捨五入、時間はそのまま
+  expect(res.request().postDataJSON().stats).toEqual({
+    easy: {
+      played: 2,
+      bestMs: 95_000.5,
+      cleanBestMs: null,
+      bestPoints: 1200,
+      started: 3,
+      trackedClears: 2,
+      totalMs: 200_000,
+    },
+  });
+  expect(res.status()).toBe(200);
+  await expect(page.locator(".transfer-code .code")).toHaveText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
 });
 
 test("ヒントは手筋の名前→説明の順に出し、置くかメモに反映できる", async ({ page }) => {
