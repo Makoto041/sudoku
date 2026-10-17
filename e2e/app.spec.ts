@@ -24,6 +24,7 @@ type Saved = {
   notes: number[];
   history: unknown[];
   moves?: unknown[];
+  colors?: number[];
 };
 
 async function savedGame(page: Page, key: string): Promise<Saved> {
@@ -820,4 +821,298 @@ test("指のぶれ程度なら、隣のマスに掛かってもなぞったこ�
   await page.keyboard.press(`Digit${g.solution![e]}`);
   await expect(cells.nth(e)).toHaveAttribute("aria-label", placed(e));
   await expect(page.locator(".cell.multi")).toHaveCount(0);
+});
+
+test("色を ON にすると数字パッドが色に変わり、選んだマスに色を付け外しする。消す・戻す・C キー・再読み込み", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const [a, b] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const given = g.puzzle.findIndex((v) => v !== 0);
+  const cells = page.getByRole("gridcell");
+  const press = async (i: number, init: Record<string, unknown> = {}) => {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "mouse", button: 0, ...init });
+    await cells.nth(i).dispatchEvent("pointerup", { pointerType: "mouse", button: 0, ...init });
+  };
+  const mark = (i: number) => cells.nth(i).locator(".mark");
+  const pad = page.locator(".pad");
+  const colorTool = page.getByRole("button", { name: /^(ON|OFF) ?色$/ });
+  const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
+
+  await press(a);
+  await colorTool.click();
+  await expect(colorTool).toHaveAttribute("aria-pressed", "true");
+  await expect(pad).toHaveClass(/is-colors/);
+  await expect(pad.locator(".swatch")).toHaveCount(9);
+  await expect(pad.locator(".pad-digit")).toHaveCount(0);
+  await page.getByRole("button", { name: "色3", exact: true }).click();
+  await expect(mark(a)).toHaveAttribute("data-color", "3");
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", /空き 色3$/);
+
+  // 複数選択では、最初から入っているマスも含めて全部に付け、全部が同じ色ならもう一度で外す。数字キーでも選べる
+  await press(b, { shiftKey: true });
+  await press(given, { shiftKey: true });
+  await page.keyboard.press("Digit5");
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveAttribute("data-color", "5");
+  await expect(cells.nth(given)).toHaveAttribute("aria-label", new RegExp(` ${g.puzzle[given]} 色5$`));
+  await page.keyboard.press("Digit5");
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveCount(0);
+  await page.keyboard.press("Digit5");
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveAttribute("data-color", "5");
+  await shot(page, "colors");
+
+  // 消すは色だけを外し、戻すで戻る
+  await page.getByRole("button", { name: "消す", exact: true }).click();
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveCount(0);
+  await expect(cells.nth(given)).toHaveAttribute("aria-label", new RegExp(` ${g.puzzle[given]}$`));
+  await page.getByRole("button", { name: "戻す", exact: true }).click();
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveAttribute("data-color", "5");
+
+  // メモとは同時にオンにならない。C キーで切り替える
+  await notesTool.click();
+  await expect(notesTool).toHaveAttribute("aria-pressed", "true");
+  await expect(colorTool).toHaveAttribute("aria-pressed", "false");
+  await expect(pad).not.toHaveClass(/is-colors/);
+  await page.keyboard.press("c");
+  await expect(colorTool).toHaveAttribute("aria-pressed", "true");
+  await expect(notesTool).toHaveAttribute("aria-pressed", "false");
+  await page.keyboard.press("c");
+  await expect(colorTool).toHaveAttribute("aria-pressed", "false");
+  // 色モードを外すと、複数選択中なので数字はメモに戻る
+  await expect(pad).not.toHaveClass(/is-colors/);
+  await expect(pad).toHaveClass(/is-notes/);
+
+  // 色は保存し、開き直しても残る
+  await expect.poll(async () => (await savedGame(page, "sudoku:free")).colors?.[given]).toBe(5);
+  await page.reload();
+  await page.getByRole("button", { name: /続きから/ }).click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  for (const i of [a, b, given]) await expect(mark(i)).toHaveAttribute("data-color", "5");
+});
+
+test("今日の一問でも色が使え、手の記録は増えない", async ({ page }, info) => {
+  await page.goto("/");
+  await page.locator(".daily-row").nth(1).click();
+  await page.getByPlaceholder("ニックネーム").fill(`色${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const cell = g.puzzle.indexOf(0);
+  const given = g.puzzle.findIndex((v) => v !== 0);
+  const cells = page.getByRole("gridcell");
+  await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press("c");
+  await page.keyboard.press("Digit4");
+  await cells.nth(given).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press("Digit7");
+  await expect(cells.nth(cell).locator(".mark")).toHaveAttribute("data-color", "4");
+  await expect(cells.nth(given).locator(".mark")).toHaveAttribute("data-color", "7");
+  await expect.poll(async () => (await savedGame(page, key)).colors?.[given]).toBe(7);
+  const saved = await savedGame(page, key);
+  expect(saved.moves).toEqual([]);
+  expect(saved.values).toEqual(g.values);
+});
+
+test("色を付けたマスでも、間違い・手筋ヒント・複数選択の基準のマスが分かるよう、色の上に印を描く", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cells = page.getByRole("gridcell");
+  const press = async (i: number, init: Record<string, unknown> = {}) => {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "mouse", button: 0, ...init });
+    await cells.nth(i).dispatchEvent("pointerup", { pointerType: "mouse", button: 0, ...init });
+  };
+  const mark = (i: number) => cells.nth(i).locator(".mark");
+  const panel = page.locator(".hint-panel");
+  // 色は今の配色で計算した値どうしで比べる（書き方がブラウザごとに違うので、固定の値は使わない）
+  const resolve = (value: string) =>
+    page.evaluate((v) => {
+      const el = document.createElement("span");
+      el.style.color = v;
+      document.body.append(el);
+      const color = getComputedStyle(el).color;
+      el.remove();
+      return color;
+    }, value);
+  const styleOf = (i: number, pseudo: "::before" | "::after" | null = null) =>
+    mark(i).evaluate((el, pseudo) => {
+      const cs = getComputedStyle(el, pseudo);
+      return {
+        boxShadow: cs.boxShadow,
+        background: cs.backgroundColor,
+        clipPath: cs.clipPath,
+        width: cs.width,
+        borderStyle: cs.borderTopStyle,
+        borderColor: cs.borderTopColor,
+      };
+    }, pseudo);
+  /** box-shadow（inset 0 0 0 Npx）の太さ */
+  const ringWidth = (shadow: string) => Number(/([\d.]+)px inset/.exec(shadow)?.[1] ?? 0);
+  const digitOf = (i: number) =>
+    cells
+      .nth(i)
+      .locator(".digit")
+      .evaluate((el) => ({
+        color: getComputedStyle(el).color,
+        weight: Number(getComputedStyle(el).fontWeight),
+      }));
+
+  // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない
+  await page.keyboard.press("h");
+  await expect(page.locator(".cell.hint-focus").first()).toBeVisible();
+  const focus = Number(await page.locator(".cell.hint-focus").first().getAttribute("data-i"));
+  await press(focus);
+  await page.keyboard.press("c");
+  await page.keyboard.press("Digit2");
+  await expect(mark(focus)).toHaveAttribute("data-color", "2");
+  await expect(panel).toBeVisible();
+  await expect(cells.nth(focus)).toHaveClass(/hint-focus/);
+  const gold = await resolve("var(--gold-on-mark)");
+  expect(await styleOf(focus, "::before")).toMatchObject({ borderStyle: "dotted", borderColor: gold });
+
+  // 置く・消すの対象のマスは、色の上でも実線の枠（点線・破線の枠ではない）
+  await panel.getByRole("button", { name: "もっと見る" }).click();
+  await expect(page.locator(".cell.hint-target").first()).toBeVisible();
+  const target = Number(await page.locator(".cell.hint-target").first().getAttribute("data-i"));
+  await press(target);
+  await page.keyboard.press("Digit3");
+  await expect(mark(target)).toHaveAttribute("data-color", "3");
+  await expect(panel).toBeVisible();
+  const ring = (await styleOf(target)).boxShadow;
+  expect(ring).toContain(gold);
+  expect(ringWidth(ring)).toBeGreaterThan(0);
+  expect((await styleOf(target, "::before")).borderStyle).toBe("none");
+  await shot(page, "colors-hint");
+  await page.getByRole("button", { name: "ヒントを閉じる" }).click();
+
+  // 間違えた数字のマスは、色で赤い背景が隠れても、角の三角と濃く太い数字で分かる
+  const [a, b] = g.puzzle.flatMap((v, i) => (v || i === focus || i === target ? [] : [i]));
+  await page.keyboard.press("c");
+  for (const i of [a, b]) {
+    await press(i);
+    await page.keyboard.press(`Digit${(g.solution![i] % 9) + 1}`);
+  }
+  await page.keyboard.press("c");
+  for (const [i, color] of [
+    [a, 6],
+    [b, 9],
+  ]) {
+    await press(i);
+    await page.keyboard.press(`Digit${color}`);
+    await expect(mark(i)).toHaveAttribute("data-color", String(color));
+  }
+  const danger = await resolve("var(--danger-on-mark)");
+  expect(danger).not.toBe(await resolve("var(--danger)"));
+  for (const i of [a, b]) {
+    await expect(cells.nth(i)).toHaveClass(/wrong/);
+    const flag = await styleOf(i, "::after");
+    expect(flag.background).toBe(danger);
+    expect(flag.clipPath).not.toBe("none");
+    expect(parseFloat(flag.width)).toBeGreaterThan((await cells.nth(i).boundingBox())!.width * 0.2);
+    expect(await digitOf(i)).toEqual({ color: danger, weight: 700 });
+  }
+
+  // 複数選択では、基準のマスの枠を他の選択マスより太くする。基準のマスに色が無くても同じ
+  // （色の無い基準のマスは、行き詰まりにならない最初から入っているマスで確かめる）
+  const plain = g.puzzle.findIndex((v, i) => v !== 0 && i !== focus);
+  await press(plain);
+  await press(a, { shiftKey: true });
+  await expect(cells.nth(a)).toHaveClass(/multi/);
+  const plainBase = await cells.nth(plain).evaluate((el) => getComputedStyle(el).boxShadow);
+  expect(ringWidth(plainBase)).toBeGreaterThan(ringWidth((await styleOf(a)).boxShadow));
+  await press(a);
+  await press(b, { shiftKey: true });
+  await press(plain, { shiftKey: true });
+  await expect(cells.nth(plain)).toHaveClass(/multi/);
+  await expect(cells.nth(a)).toHaveClass(/selected/);
+  expect(ringWidth((await styleOf(a)).boxShadow)).toBeGreaterThan(ringWidth((await styleOf(b)).boxShadow));
+  expect(ringWidth((await styleOf(b)).boxShadow)).toBeGreaterThan(0);
+  await shot(page, "colors-marks");
+
+  // ダークでも、間違いの印と数字は色の上で読める色に変わる
+  await page.emulateMedia({ colorScheme: "dark" });
+  const darkDanger = await resolve("var(--danger-on-mark)");
+  expect(darkDanger).not.toBe(danger);
+  expect((await styleOf(a, "::after")).background).toBe(darkDanger);
+  expect((await digitOf(a)).color).toBe(darkDanger);
+  // マスの背景の切り替え（transition）が終わってから撮る
+  await page.waitForTimeout(300);
+  await shot(page, "colors-marks-dark");
+});
+
+test("フリープレイの 7 つ並びでも、メモ・色の ON/OFF のバッジが隣のボタンに掛からない", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  await expect(page.locator(".tools.is-dense .tool")).toHaveCount(7);
+  const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
+  // 掛かった部分を叩くと隣ではなくバッジのボタンが反応するので、ボタンの左右からはみ出さないこと。
+  // 位置は文字の幅で変わるので、固定の座標ではなく実際の矩形どうしで比べる。
+  // 横向きでは上へも 4px ほどはみ出すが、そこにボタンは無いので見ない
+  const measure = () =>
+    page.evaluate(() => {
+      const tools = [...document.querySelectorAll(".tools .tool")];
+      const rects = tools.map((t) => t.getBoundingClientRect());
+      const problems: string[] = [];
+      let badges = 0;
+      tools.forEach((tool, i) => {
+        const badge = tool.querySelector(".tool-badge");
+        if (!badge) return;
+        badges++;
+        const b = badge.getBoundingClientRect();
+        const own = rects[i];
+        if (b.left < own.left - 0.5 || b.right > own.right + 0.5) {
+          const [l, r] = [own.left - b.left, b.right - own.right].map((v) => v.toFixed(1));
+          problems.push(`${tool.textContent}: ボタンの外へはみ出す（左 ${l}px・右 ${r}px）`);
+        }
+        rects.forEach((other, j) => {
+          const w = Math.min(b.right, other.right) - Math.max(b.left, other.left);
+          const h = Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top);
+          if (j !== i && w > 0.5 && h > 0)
+            problems.push(`${tool.textContent} → ${tools[j].textContent}: ${w.toFixed(1)}px`);
+        });
+      });
+      return { badges, problems };
+    });
+
+  for (const size of [
+    page.viewportSize()!,
+    { width: 300, height: 640 },
+    { width: 320, height: 568 },
+    { width: 393, height: 852 },
+    { width: 568, height: 320 },
+    { width: 844, height: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.waitForFunction((width) => window.innerWidth === width, size.width);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    // 「OFF」がいちばん幅を取る。メモを ON にすると色のバッジは OFF のまま残る
+    for (const on of [false, true]) {
+      if ((await notesTool.getAttribute("aria-pressed")) !== String(on)) await notesTool.click();
+      await expect(notesTool).toHaveAttribute("aria-pressed", String(on));
+      expect(await measure(), `${size.width}x${size.height} メモ${on ? "ON" : "OFF"}`).toEqual({
+        badges: 2,
+        problems: [],
+      });
+    }
+    await shot(page, `tools-${size.width}x${size.height}`);
+  }
 });

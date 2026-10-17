@@ -43,6 +43,13 @@ export type GameState = {
    */
   selection?: number[];
   notesMode: boolean;
+  /**
+   * マスの色（0 は色なし、1〜9 は色の番号）。解く過程の目印で、点数・手の記録には関わらず、サーバーにも送らない。
+   * 古い保存データには無い
+   */
+  colors?: number[];
+  /** 色モード。数字と消すが選んだマスの色に効く。メモモードとは同時にオンにならない */
+  colorMode?: boolean;
   history: Move[];
   /** 元に戻した手（最後が次に進む手）。保存しない */
   future?: Undone[];
@@ -69,10 +76,12 @@ type Move = {
   clearedNotes: [number, number][];
   /** 自動メモなど、メモをまとめて変えたときの元のメモ（cell は -1） */
   bulkNotes?: number[];
+  /** 色を変えたときの元の色（cell は -1） */
+  bulkColors?: number[];
 };
 
-/** 元に戻した手と、戻す前の盤面とメモ。元に戻すは最後の手から順なので、戻す前の盤面はその手を打った直後と同じ */
-type Undone = { move: Move; values: Grid; notes: number[] };
+/** 元に戻した手と、戻す前の盤面とメモと色。元に戻すは最後の手から順なので、戻す前の盤面はその手を打った直後と同じ */
+type Undone = { move: Move; values: Grid; notes: number[]; colors?: number[] };
 
 /** 入力の結果。音・アニメーションの出し分けに使う */
 export type Effect =
@@ -90,6 +99,8 @@ export type Effect =
       bonus: number;
     }
   | { kind: "note"; cell: number; digit: number; on: boolean }
+  /** 選んだマスに色を付けた（on）か外した */
+  | { kind: "color"; color: number; on: boolean }
   | { kind: "erase"; cell: number }
   | { kind: "undo"; cell: number }
   | { kind: "redo"; cell: number }
@@ -112,7 +123,8 @@ export type Action =
    * どちらも dispatch 側で付ける
    */
   | { type: "input"; digit: number; asNote?: boolean; t?: number; clearPeers?: boolean }
-  | { type: "erase" }
+  /** colors は色を外すか（省略時は色モードに従う）。手筋ヒントの「消す」は数字を消すので false を付ける */
+  | { type: "erase"; colors?: boolean }
   | { type: "undo" }
   /** 元に戻した手をやり直す */
   | { type: "redo" }
@@ -125,6 +137,7 @@ export type Action =
   /** ヒントを見た（回数を数え、コンボを切る） */
   | { type: "hintUsed" }
   | { type: "toggleNotes" }
+  | { type: "toggleColors" }
   | { type: "pause" }
   | { type: "resume" }
   | { type: "rewind" }
@@ -150,6 +163,8 @@ export function newGame(input: {
     notes: Array(81).fill(0),
     selected: null,
     notesMode: false,
+    colors: Array(81).fill(0),
+    colorMode: false,
     history: [],
     mistakes: 0,
     hints: 0,
@@ -234,11 +249,22 @@ function commit(s: GameState, move: Move, patch: Partial<GameState>): GameState 
   return { ...s, ...patch, history: [...s.history, move], future: [] };
 }
 
+/** まとめて変えた手（cell は -1）。元のメモか色を持たせる */
+const bulkMove = (prev: Pick<Move, "bulkNotes" | "bulkColors">): Move => ({
+  cell: -1,
+  prevValue: 0,
+  prevNotes: 0,
+  clearedNotes: [],
+  ...prev,
+});
+
 /** メモをまとめて変えた手を積む（点数・手の記録には触れない） */
 function commitNotes(s: GameState, notes: number[], effect: Effect): [GameState, Effect[]] {
-  const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
-  return [commit(s, move, { notes }), [effect]];
+  return [commit(s, bulkMove({ bulkNotes: s.notes }), { notes }), [effect]];
 }
+
+/** マスの色。古い保存データには無いので、そのときは色なしとして扱う */
+const colorsOf = (s: GameState): number[] => s.colors ?? Array<number>(81).fill(0);
 
 function place(
   s: GameState,
@@ -342,8 +368,12 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return [pickOne(s, r * 9 + c), []];
     }
     case "toggleNotes":
-      return [{ ...s, notesMode: !s.notesMode }, []];
+      return [{ ...s, notesMode: !s.notesMode, colorMode: false }, []];
+    case "toggleColors":
+      return [{ ...s, colorMode: !s.colorMode, notesMode: false }, []];
     case "input": {
+      // 色モードでは、数字を色の番号として選んだマスに塗る（複数選択でも、Shift+数字でも）
+      if (s.colorMode) return paint(s, action.digit);
       // 2 マス以上選んでいるときは、メモモードに関わらずメモとして扱う
       if (s.selection) return noteSelection(s, action.digit);
       const cell = s.selected;
@@ -364,6 +394,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return place(s, cell, action.digit, false, action.t ?? 0, true, action.clearPeers ?? true);
     }
     case "erase": {
+      if (action.colors ?? s.colorMode) return eraseColors(s);
       if (s.selection) return eraseSelectionNotes(s);
       const cell = s.selected;
       if (cell === null || isGiven(s, cell)) return [s, [{ kind: "blocked" }]];
@@ -372,7 +403,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
     case "undo": {
       const move = s.history[s.history.length - 1];
       if (!move) return [s, [{ kind: "blocked" }]];
-      const future = [...(s.future ?? []), { move, values: s.values, notes: s.notes }];
+      const future = [...(s.future ?? []), { move, values: s.values, notes: s.notes, colors: s.colors }];
       return [{ ...undoOnce(s), future }, [{ kind: "undo", cell: move.cell }]];
     }
     case "redo": {
@@ -380,10 +411,20 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       const future = s.future ?? [];
       const entry = future[future.length - 1];
       if (!entry) return [s, [{ kind: "blocked" }]];
-      const { move, values, notes } = entry;
-      const next = { ...s, values, notes, history: [...s.history, move], future: future.slice(0, -1) };
-      // まとめて変えたメモの手なら選択はそのまま、1 マスの手ならそのマスを選ぶ
-      return [move.bulkNotes ? next : pickOne(next, move.cell), [{ kind: "redo", cell: move.cell }]];
+      const { move, values, notes, colors } = entry;
+      const next = {
+        ...s,
+        values,
+        notes,
+        colors,
+        history: [...s.history, move],
+        future: future.slice(0, -1),
+      };
+      // まとめて変えたメモや色の手なら選択はそのまま、1 マスの手ならそのマスを選ぶ
+      return [
+        move.bulkNotes || move.bulkColors ? next : pickOne(next, move.cell),
+        [{ kind: "redo", cell: move.cell }],
+      ];
     }
     case "rewind": {
       // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す
@@ -440,6 +481,7 @@ function undoOnce(s: GameState): GameState {
   const move = s.history[s.history.length - 1];
   if (!move) return s;
   if (move.bulkNotes) return { ...s, notes: move.bulkNotes.slice(), history: s.history.slice(0, -1) };
+  if (move.bulkColors) return { ...s, colors: move.bulkColors.slice(), history: s.history.slice(0, -1) };
   const values = s.values.slice();
   const notes = s.notes.slice();
   values[move.cell] = move.prevValue;
@@ -506,6 +548,36 @@ function noteSelection(s: GameState, digit: number): [GameState, Effect[]] {
 function eraseSelectionNotes(s: GameState): [GameState, Effect[]] {
   const cells = emptySelectedCells(s).filter((i) => s.notes[i]);
   return editNotes(s, cells, () => 0, { kind: "erase", cell: -1 });
+}
+
+/**
+ * cells の色を to（0 は色なし）にし、まとめて変えた色として 1 手に積む（点数・手の記録には触れない）。
+ * cells が空なら何もしない
+ */
+function editColors(s: GameState, cells: number[], to: number, effect: Effect): [GameState, Effect[]] {
+  if (!cells.length) return [s, [{ kind: "blocked" }]];
+  const prev = colorsOf(s);
+  const colors = prev.slice();
+  for (const i of cells) colors[i] = to;
+  return [commit(s, bulkMove({ bulkColors: prev }), { colors }), [effect]];
+}
+
+/**
+ * 選んだマスすべてに色を付ける。すべてがすでにその色なら全部から外す。
+ * 最初から入っているマスや数字のあるマスにも付けられる
+ */
+function paint(s: GameState, color: number): [GameState, Effect[]] {
+  const cells = selectedCells(s);
+  const colors = colorsOf(s);
+  const on = cells.some((i) => colors[i] !== color);
+  return editColors(s, cells, on ? color : 0, { kind: "color", color, on });
+}
+
+/** 選んだマスの色だけを外す（数字とメモは消さない） */
+function eraseColors(s: GameState): [GameState, Effect[]] {
+  const colors = colorsOf(s);
+  const cells = selectedCells(s).filter((i) => colors[i]);
+  return editColors(s, cells, 0, { kind: "erase", cell: -1 });
 }
 
 /** ヒントを出すマス：選択中のマスが空きか間違いならそこ、無ければ候補が最も少ない空きマス */

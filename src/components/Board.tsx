@@ -153,6 +153,7 @@ export function Board({
             className={classes.join(" ")}
             value={hidden ? 0 : value}
             notes={hidden ? 0 : game.notes[i]}
+            color={hidden ? 0 : (game.colors?.[i] ?? 0)}
             noteHighlight={highlightSame ? selValue : 0}
             flashKey={flashOrder !== undefined ? fx.flash!.key : null}
             flashOrder={flashOrder ?? 0}
@@ -171,6 +172,8 @@ type CellProps = {
   className: string;
   value: number;
   notes: number;
+  /** 色の番号（0 は色なし） */
+  color: number;
   noteHighlight: number;
   flashKey: number | null;
   flashOrder: number;
@@ -184,6 +187,7 @@ const Cell = memo(function Cell({
   className,
   value,
   notes,
+  color,
   noteHighlight,
   flashKey,
   flashOrder,
@@ -199,12 +203,16 @@ const Cell = memo(function Cell({
       role="gridcell"
       className={className}
       style={{ "--diag": r + c - 2 } as CSSProperties}
-      aria-label={`${r}行${c}列 ${value ? value : "空き"}`}
+      aria-label={`${r}行${c}列 ${value ? value : "空き"}${color ? ` 色${color}` : ""}`}
       data-i={index}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onSelect(index);
       }}
     >
+      {/* 色は数字・メモより下に敷くので、先に置く */}
+      {color ? (
+        <span className="mark" data-color={color} style={{ background: `var(--mark-${color})` }} />
+      ) : null}
       {flashKey !== null && (
         <span
           key={`f${flashKey}`}

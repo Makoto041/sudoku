@@ -186,6 +186,8 @@ export function SettingsSheet({
         <dd>移動</dd>
         <dt>N</dt>
         <dd>メモ切替</dd>
+        <dt>C</dt>
+        <dd>色切替（1–9 で色を選ぶ）</dd>
         <dt>Backspace</dt>
         <dd>消す</dd>
         <dt>Z</dt>
