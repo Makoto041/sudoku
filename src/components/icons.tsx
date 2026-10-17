@@ -66,6 +66,14 @@ export const Pencil = (p: IconProps) => (
     <path d="M14 6.5l3 3" />
   </Svg>
 );
+export const Palette = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3.5a8.5 8.5 0 000 17c1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.4-1.1-.3-.3-.5-.7-.5-1.2 0-.9.8-1.6 1.7-1.6h2a4.1 4.1 0 004.1-4.1c0-4.2-3.8-7.4-8.5-7.4z" />
+    <circle cx="7.6" cy="11.2" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="10.3" cy="7.6" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="14.7" cy="7.6" r="1.1" fill="currentColor" stroke="none" />
+  </Svg>
+);
 export const Bulb = (p: IconProps) => (
   <Svg {...p}>
     <path d="M9 18h6M10 21h4" />

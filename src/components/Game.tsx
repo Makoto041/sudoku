@@ -79,9 +79,8 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
     if (pendingHint && gameRef.current.status === "playing") showHint(pendingHint);
     setPendingHint(null);
   };
-  // 盤面が変わったらヒントは古くなるので閉じる
-  const historyLength = game.history.length;
-  useEffect(() => setHint(null), [historyLength]);
+  // 盤面かメモが変わったらヒントは古くなるので閉じる。色を変えただけなら閉じない（ヒントのマスに色を付けられるように）
+  useEffect(() => setHint(null), [game.values, game.notes]);
   const applyHint = () => {
     if (!hint) return;
     const h = hint.data;
@@ -91,7 +90,8 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
       dispatch({ type: "setNotes", notes: notesAfterHint(game.values, game.notes, h.eliminations) });
     else if (h.kind === "wrong") {
       dispatch({ type: "select", cell: h.cell });
-      dispatch({ type: "erase" });
+      // 色モードでも色ではなく数字を消す
+      dispatch({ type: "erase", colors: false });
     }
   };
   const hintCells = useMemo(() => {
@@ -243,6 +243,11 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
         case "n":
         case "N":
           dispatch({ type: "toggleNotes" });
+          sfx.tap();
+          break;
+        case "c":
+        case "C":
+          dispatch({ type: "toggleColors" });
           sfx.tap();
           break;
         case "z":
@@ -461,6 +466,10 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             onErase={() => dispatch({ type: "erase" })}
             onToggleNotes={() => {
               dispatch({ type: "toggleNotes" });
+              sfx.tap();
+            }}
+            onToggleColors={() => {
+              dispatch({ type: "toggleColors" });
               sfx.tap();
             }}
             onHint={openHint}

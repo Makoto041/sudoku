@@ -2,7 +2,7 @@
 
 import { remainingCounts } from "@/lib/sudoku/core";
 import type { GameState } from "@/lib/game/state";
-import { AutoNote, Bulb, Eraser, Pencil, Redo, Undo } from "./icons";
+import { AutoNote, Bulb, Eraser, Palette, Pencil, Redo, Undo } from "./icons";
 
 type ToolProps = {
   game: GameState;
@@ -10,14 +10,25 @@ type ToolProps = {
   onRedo: () => void;
   onErase: () => void;
   onToggleNotes: () => void;
+  onToggleColors: () => void;
   onHint: () => void;
   onAutoNotes: () => void;
 };
 
-export function Tools({ game, onUndo, onRedo, onErase, onToggleNotes, onHint, onAutoNotes }: ToolProps) {
+export function Tools({
+  game,
+  onUndo,
+  onRedo,
+  onErase,
+  onToggleNotes,
+  onToggleColors,
+  onHint,
+  onAutoNotes,
+}: ToolProps) {
   const canHint = game.mode === "free";
+  // フリープレイは 7 つ並ぶので、詰めて並べる
   return (
-    <div className="tools">
+    <div className={`tools${canHint ? " is-dense" : ""}`}>
       <button type="button" className="tool" onClick={onUndo} disabled={game.history.length === 0}>
         <Undo />
         <span>戻す</span>
@@ -41,6 +52,18 @@ export function Tools({ game, onUndo, onRedo, onErase, onToggleNotes, onHint, on
           <span className="tool-badge">{game.notesMode ? "ON" : "OFF"}</span>
         </span>
         <span>メモ</span>
+      </button>
+      <button
+        type="button"
+        className={`tool${game.colorMode ? " is-on" : ""}`}
+        onClick={onToggleColors}
+        aria-pressed={!!game.colorMode}
+      >
+        <span className="tool-icon">
+          <Palette />
+          <span className="tool-badge">{game.colorMode ? "ON" : "OFF"}</span>
+        </span>
+        <span>色</span>
       </button>
       {canHint && (
         <button type="button" className="tool" onClick={onAutoNotes}>
@@ -70,13 +93,16 @@ type PadProps = {
 
 export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
   const remaining = remainingCounts(game.values);
+  // 色モードでは数字の代わりに色を出し、残りの数は出さない
+  const asColors = !!game.colorMode;
+  const showLeft = showRemaining && !asColors;
   // 2 マス以上選んでいる間はメモとして入るので、メモの見た目にする
-  const asNotes = game.notesMode || !!game.selection;
+  const padMode = asColors ? " is-colors" : game.notesMode || game.selection ? " is-notes" : "";
   return (
-    <div className={`pad${asNotes ? " is-notes" : ""}`}>
+    <div className={`pad${padMode}`}>
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => {
         const left = Math.max(0, remaining[d]);
-        const done = showRemaining && left === 0;
+        const done = showLeft && left === 0;
         return (
           <button
             key={d}
@@ -94,11 +120,15 @@ export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
                 onDigit(d);
               }
             }}
-            aria-label={showRemaining ? `${d}（残り${left}）` : `${d}`}
+            aria-label={asColors ? `色${d}` : showLeft ? `${d}（残り${left}）` : `${d}`}
           >
-            <span className="pad-digit">{d}</span>
+            {asColors ? (
+              <span className="swatch" style={{ background: `var(--mark-${d})` }} />
+            ) : (
+              <span className="pad-digit">{d}</span>
+            )}
             {/* 表示しないときも高さをそろえるため空で残す */}
-            <span className="pad-left">{showRemaining && left > 0 ? left : ""}</span>
+            <span className="pad-left">{showLeft && left > 0 ? left : ""}</span>
           </button>
         );
       })}

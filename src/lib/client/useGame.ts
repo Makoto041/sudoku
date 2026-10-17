@@ -44,6 +44,10 @@ function playEffects(effects: Effect[]) {
         sfx.note(e.digit, e.on);
         haptic("light");
         break;
+      case "color":
+        sfx.note(e.color, e.on);
+        haptic("light");
+        break;
       case "erase":
         sfx.erase();
         haptic("light");

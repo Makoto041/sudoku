@@ -22,6 +22,25 @@
   --bronze: #b07246;
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.05), 0 4px 16px rgba(20, 20, 30, 0.05);
   --shadow-key: 0 1px 0 rgba(20, 20, 30, 0.06), 0 1px 3px rgba(20, 20, 30, 0.06);
+  /*
+   * マスの色。マスの背景に重ねる半透明の層。数字の上でも読め、色覚の違いがあっても隣の番号と見分けやすいよう、
+   * 明るさも変えている
+   */
+  --mark-1: rgba(229, 72, 77, 0.49);
+  --mark-2: rgba(240, 140, 0, 0.57);
+  --mark-3: rgba(245, 217, 10, 0.48);
+  --mark-4: rgba(47, 158, 68, 0.28);
+  --mark-5: rgba(34, 184, 207, 0.68);
+  --mark-6: rgba(59, 91, 219, 0.47);
+  --mark-7: rgba(174, 62, 201, 0.31);
+  --mark-8: rgba(247, 131, 172, 0.31);
+  --mark-9: rgba(134, 142, 150, 0.66);
+  /*
+   * 色の上に描く間違いとヒントの印。どの色の上でも見えるよう、文字の色に寄せる（ライトでは濃く、ダークでは明るくなる）。
+   * :root で一度だけ決め、ダークでは --danger・--gold・--ink の置き換えに合わせて変わる
+   */
+  --danger-on-mark: color-mix(in srgb, var(--danger) 45%, var(--ink));
+  --gold-on-mark: color-mix(in srgb, var(--gold) 40%, var(--ink));
   --font-ui:
     system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI",
     sans-serif;
@@ -53,6 +72,14 @@
     --success: #4cc98a;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-key: 0 1px 0 rgba(0, 0, 0, 0.5);
+    --mark-1: rgba(229, 72, 77, 0.42);
+    --mark-2: rgba(240, 140, 0, 0.21);
+    --mark-3: rgba(245, 217, 10, 0.26);
+    --mark-4: rgba(47, 158, 68, 0.19);
+    --mark-5: rgba(34, 184, 207, 0.39);
+    --mark-6: rgba(59, 91, 219, 0.58);
+    --mark-7: rgba(174, 62, 201, 0.26);
+    --mark-9: rgba(134, 142, 150, 0.49);
   }
 }
 
@@ -776,14 +803,20 @@ p {
   background: var(--same);
 }
 
+/* --ring は色のあるマスで、色の上に描き直す枠の色（.mark） */
 .cell.selected,
 .cell.multi {
   background: var(--sel);
+  --ring: var(--accent);
 }
 
-/* 複数選択中は、基準のマスを枠で区別する。行き詰まり・ヒントの枠は隠さない */
+/*
+ * 複数選択中は、基準のマスを太い枠で区別する。色のあるマスでは他の選択マスにも枠を描くので、それより太くする
+ * （色の上でも同じ太さにするため --ring-w で .mark と合わせる）。行き詰まり・ヒントの枠は隠さない
+ */
 .board.is-multi .cell.selected:not(.stuck):not(.hint-target) {
-  box-shadow: inset 0 0 0 2px var(--accent);
+  --ring-w: 4px;
+  box-shadow: inset 0 0 0 var(--ring-w) var(--accent);
 }
 
 .cell.wrong {
@@ -824,6 +857,7 @@ p {
 .cell.hint-target {
   background: color-mix(in srgb, var(--gold) 30%, var(--surface));
   box-shadow: inset 0 0 0 2px var(--gold);
+  --ring: var(--gold-on-mark);
 }
 
 .hint-panel {
@@ -864,6 +898,7 @@ p {
 
 .cell.stuck {
   box-shadow: inset 0 0 0 2px var(--danger);
+  --ring: var(--danger);
 }
 
 .stuck-bar {
@@ -949,6 +984,58 @@ p {
   height: 92%;
   display: grid;
   place-items: center;
+}
+
+/*
+ * マスの色。背景の強調より上、数字・メモより下に重ねる。色で隠れる選択・ヒント・行き詰まりの枠は --ring で描き直す
+ * （同じ詳しさのルールのソース順で、行き詰まり > ヒントの対象 > 選択）
+ */
+.mark {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--ring-w, 2px) var(--ring, transparent);
+}
+
+/* 色の上では薄い灰色のメモが読みにくいので濃くする */
+.mark ~ .notes {
+  color: var(--ink);
+}
+
+/*
+ * 間違い・重複の赤い背景も色で隠れるので、色の上に角の三角を描き、数字を濃く太くする。
+ * 行き詰まりの枠と見分けられるよう、枠ではなく三角にする
+ */
+.cell.wrong .mark::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 34%;
+  height: 34%;
+  background: var(--danger-on-mark);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+.cell.wrong .mark ~ .digit {
+  color: var(--danger-on-mark);
+  font-weight: 700;
+}
+
+/*
+ * 手筋ヒントの金色の背景も色で隠れるので、色の上に枠を描く。
+ * 対象のマスの実線の枠と見分けるため、根拠のマスは破線、注目する範囲は点線にする。選択の枠を隠さないよう、その内側に描く
+ */
+.cell.hint-pattern .mark::before,
+.cell.hint-focus .mark::before {
+  content: "";
+  position: absolute;
+  inset: var(--ring-w, 2px);
+  border: 2px dashed var(--gold-on-mark);
+}
+
+.cell.hint-focus .mark::before {
+  border-style: dotted;
 }
 
 .cell-flash {
@@ -1051,6 +1138,7 @@ p {
 .tools {
   display: flex;
   justify-content: space-around;
+  container-type: inline-size;
 }
 
 .tool {
@@ -1064,10 +1152,16 @@ p {
   color: var(--ink-2);
   font-size: 11.5px;
   font-weight: 600;
+  white-space: nowrap;
   transition:
     color 0.15s,
     transform 0.12s,
     background 0.15s;
+}
+
+/* フリープレイは 7 つ並び、狭い画面で「自動メモ」が収まらないので、並びの幅に合わせて小さくする */
+.tools.is-dense .tool {
+  font-size: clamp(9px, 3.5cqi, 11.5px);
 }
 
 .tool:active {
@@ -1099,6 +1193,15 @@ p {
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--ink-2);
+}
+
+/*
+ * 7 つ並びではボタンが狭く、バッジがボタンの右へはみ出して隣のボタンのタップを取るので、はみ出す分だけ左へ寄せる。
+ * ボタンの右端の 1px 内側（ボタンは並びの幅の 1/7）に置いてからバッジの幅だけ戻し、元の位置（15px）より右には置かない
+ */
+.tools.is-dense .tool-badge {
+  left: calc(100cqi / 14 + 10px);
+  transform: translateX(min(calc(5px - 100cqi / 14), -100%));
 }
 
 .tool.is-on .tool-badge {
@@ -1179,6 +1282,19 @@ p {
   color: var(--ink-2);
 }
 
+/* 色モードの色の丸。盤面のマスと同じ見え方にする。狭い画面ではボタンの幅に合わせて小さくする */
+.pad.is-colors .pad-key {
+  container-type: inline-size;
+}
+
+.swatch {
+  --d: min(28px, 80cqi);
+  width: var(--d);
+  height: var(--d);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
 .result-reopen {
   position: fixed;
   left: 50%;
@@ -1225,6 +1341,9 @@ p {
   }
   .pad-digit {
     font-size: 34px;
+  }
+  .swatch {
+    --d: min(40px, 80cqi);
   }
 }
 

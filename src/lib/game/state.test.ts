@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bitCount, candidatesAt, digitsOf, findConflicts, parseGrid } from "@/lib/sudoku/core";
+import { PEERS, bitCount, candidatesAt, digitsOf, findConflicts, parseGrid } from "@/lib/sudoku/core";
 import { generatePuzzle } from "@/lib/sudoku/generator";
 import { createRng } from "@/lib/sudoku/rng";
 import { countSolutions } from "@/lib/sudoku/solver";
@@ -9,6 +9,7 @@ import {
   formatTime,
   isGiven,
   isSolved,
+  isWrong,
   newGame,
   persisted,
   reduce,
@@ -424,6 +425,7 @@ describe("進む（元に戻した手のやり直し）", () => {
       [{ type: "toggleSelection", cell: peer }],
       [{ type: "move", dr: 1, dc: 0 }],
       [{ type: "toggleNotes" }],
+      [{ type: "toggleColors" }],
       [{ type: "hintUsed" }],
       [{ type: "pause" }, { type: "resume" }],
       [{ type: "tick", ms: 500 }],
@@ -444,6 +446,7 @@ describe("進む（元に戻した手のやり直し）", () => {
         { type: "toggleSelection", cell: peer },
         { type: "input", digit: 1 },
       ],
+      [{ type: "toggleColors" }, { type: "input", digit: 2 }],
     ];
     for (const actions of clears) {
       const s = run(undone, ...actions).s;
@@ -752,5 +755,306 @@ describe("複数選択とメモの一括入力", () => {
     expect(saved).not.toHaveProperty("selection");
     expect(saved).not.toHaveProperty("future");
     expect(saved.selected).toBe(null);
+  });
+});
+
+describe("マスの色", () => {
+  /**
+   * 空きマス a・b、正解を置いたマス d、最初から入っているマス given。a にはメモ 4 を付けておき、色モードで a を選んだ状態で返す
+   */
+  function colored(s0: GameState, solution: number[]) {
+    const [a, b, d] = s0.puzzle.flatMap((v, i) => (v ? [] : [i]));
+    const given = s0.puzzle.findIndex((v) => v !== 0);
+    const { s } = run(
+      s0,
+      { type: "select", cell: d },
+      { type: "input", digit: solution[d], t: 1000 },
+      { type: "select", cell: a },
+      { type: "input", digit: 4, asNote: true },
+      { type: "toggleColors" },
+    );
+    return { s, a, b, d, given };
+  }
+  const colorsAt = (s: GameState, cells: number[]) => cells.map((i) => s.colors![i]);
+
+  it("色モードでは数字で選んだマスに色を付け、同じ色をもう一度で外す。数字とメモは変えない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s, a, d, given } = colored(s0, p.solution);
+    expect(s.colorMode).toBe(true);
+    for (const cell of [a, d, given]) {
+      const base = run(s, { type: "select", cell }).s;
+      const on = run(base, { type: "input", digit: 3 });
+      expect(on.effects).toEqual([{ kind: "color", color: 3, on: true }]);
+      expect(on.s.colors![cell]).toBe(3);
+      expect(on.s.colors!.filter((c) => c)).toHaveLength(1);
+      expect(on.s.values).toEqual(s.values);
+      expect(on.s.notes).toEqual(s.notes);
+      expect(on.s.history).toHaveLength(s.history.length + 1);
+      expect(on.s.history.at(-1)).toMatchObject({ cell: -1, bulkColors: s.colors });
+      // 別の色に塗り替え、同じ色でもう一度で外す
+      const other = run(on.s, { type: "input", digit: 7 }).s;
+      expect(other.colors![cell]).toBe(7);
+      const off = run(other, { type: "input", digit: 7 });
+      expect(off.effects).toEqual([{ kind: "color", color: 7, on: false }]);
+      expect(off.s.colors![cell]).toBe(0);
+    }
+  });
+
+  it("複数選択では、すべてがその色なら全部から外し、どこかが違えば全部をその色にする", () => {
+    const { p, s: s0 } = freeGame();
+    const { s: base, a, b, d, given } = colored(s0, p.solution);
+    const cells = [a, b, d, given];
+    // a だけ先に 5、b は 2 にしておく
+    const pre = run(
+      base,
+      { type: "input", digit: 5 },
+      { type: "select", cell: b },
+      { type: "input", digit: 2 },
+    ).s;
+    const s = run(
+      pre,
+      { type: "select", cell: a },
+      { type: "toggleSelection", cell: b },
+      { type: "toggleSelection", cell: d },
+      { type: "toggleSelection", cell: given },
+    ).s;
+    expect(colorsAt(s, cells)).toEqual([5, 2, 0, 0]);
+    const all = run(s, { type: "input", digit: 5 });
+    expect(all.effects).toEqual([{ kind: "color", color: 5, on: true }]);
+    expect(colorsAt(all.s, cells)).toEqual([5, 5, 5, 5]);
+    // 1 手として積み、メモは付けない
+    expect(all.s.history).toHaveLength(s.history.length + 1);
+    expect(all.s.notes).toEqual(s.notes);
+    const none = run(all.s, { type: "input", digit: 5 });
+    expect(none.effects).toEqual([{ kind: "color", color: 5, on: false }]);
+    expect(colorsAt(none.s, cells)).toEqual([0, 0, 0, 0]);
+    // Shift+数字（asNote）でも色になる
+    expect(run(s, { type: "input", digit: 5, asNote: true }).s.colors).toEqual(all.s.colors);
+    // 選択は動かない
+    expect(selectedCells(none.s)).toEqual(selectedCells(s));
+  });
+
+  it("消すは選んだマスの色だけを外し、数字とメモは残す。色が無ければ何もしない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s: base, a, b, d } = colored(s0, p.solution);
+    const s = run(
+      base,
+      { type: "toggleSelection", cell: b },
+      { type: "toggleSelection", cell: d },
+      { type: "input", digit: 6 },
+      { type: "toggleSelection", cell: b },
+    ).s;
+    expect(selectedCells(s)).toEqual([a, d]);
+    const erased = run(s, { type: "erase" });
+    expect(erased.effects).toEqual([{ kind: "erase", cell: -1 }]);
+    expect(colorsAt(erased.s, [a, b, d])).toEqual([0, 6, 0]);
+    expect(erased.s.values).toEqual(s.values);
+    expect(erased.s.notes).toEqual(s.notes);
+    expect(erased.s.notes[a]).toBe(1 << 4);
+    expect(run(erased.s, { type: "erase" }).effects).toEqual([{ kind: "blocked" }]);
+    // 1 マスでも同じ
+    const one = run(s, { type: "select", cell: d }, { type: "erase" }).s;
+    expect(one.values[d]).toBe(p.solution[d]);
+    expect(one.colors![d]).toBe(0);
+    // colors: false なら色モードでも数字を消す（手筋ヒントの「消す」）
+    const value = run(s, { type: "select", cell: d }, { type: "erase", colors: false }).s;
+    expect(value.values[d]).toBe(0);
+    expect(value.colors![d]).toBe(6);
+  });
+
+  it("選んだマスが無ければ塗らない", () => {
+    const { s: s0 } = freeGame();
+    const s = run(s0, { type: "toggleColors" }).s;
+    for (const a of [{ type: "input", digit: 1 }, { type: "erase" }] as Action[]) {
+      const out = run(s, a);
+      expect(out.s).toBe(s);
+      expect(out.effects).toEqual([{ kind: "blocked" }]);
+    }
+  });
+
+  it("メモモードとは同時にオンにならない", () => {
+    const { s: s0 } = freeGame();
+    const notes = run(s0, { type: "toggleNotes" }).s;
+    expect([notes.notesMode, notes.colorMode]).toEqual([true, false]);
+    const colors = run(notes, { type: "toggleColors" }).s;
+    expect([colors.notesMode, colors.colorMode]).toEqual([false, true]);
+    const back = run(colors, { type: "toggleNotes" }).s;
+    expect([back.notesMode, back.colorMode]).toEqual([true, false]);
+    expect(run(colors, { type: "toggleColors" }).s).toMatchObject({ notesMode: false, colorMode: false });
+    // 色モードを外すと、数字はまた値として入る
+    const cell = s0.puzzle.indexOf(0);
+    const placed = run(
+      colors,
+      { type: "toggleColors" },
+      { type: "select", cell },
+      { type: "input", digit: 1 },
+    ).s;
+    expect(placed.values[cell]).toBe(1);
+    expect(placed.colors![cell]).toBe(0);
+  });
+
+  it("戻す・進むで色が元どおりになり、選択は動かない。新しい手を打つと進めなくなる", () => {
+    const { p, s: s0 } = freeGame();
+    const { s: base, a, b } = colored(s0, p.solution);
+    const steps: Action[][] = [
+      [{ type: "input", digit: 1 }],
+      [
+        { type: "toggleSelection", cell: b },
+        { type: "input", digit: 2 },
+      ],
+      [
+        { type: "toggleColors" },
+        { type: "select", cell: b },
+        { type: "input", digit: p.solution[b], t: 2000 },
+      ],
+      [
+        { type: "toggleColors" },
+        { type: "select", cell: a },
+        { type: "toggleSelection", cell: b },
+        { type: "input", digit: 3 },
+      ],
+      [{ type: "erase" }],
+      [{ type: "autoNotes" }],
+    ];
+    const states = [base];
+    for (const actions of steps) states.push(run(states[states.length - 1], ...actions).s);
+    let s = states[steps.length];
+    expect(s.history).toHaveLength(base.history.length + steps.length);
+    for (let k = steps.length - 1; k >= 0; k--) {
+      const prev = s;
+      const { s: next, effects } = run(s, { type: "undo" });
+      expect(next.values).toEqual(states[k].values);
+      expect(next.notes).toEqual(states[k].notes);
+      expect(next.colors).toEqual(states[k].colors);
+      if (prev.history.at(-1)!.bulkColors) {
+        expect(effects).toEqual([{ kind: "undo", cell: -1 }]);
+        expect(selectedCells(next)).toEqual(selectedCells(prev));
+      }
+      s = next;
+    }
+    for (let k = 1; k <= steps.length; k++) {
+      const prev = s;
+      const { s: next, effects } = run(s, { type: "redo" });
+      expect(next.values).toEqual(states[k].values);
+      expect(next.notes).toEqual(states[k].notes);
+      expect(next.colors).toEqual(states[k].colors);
+      expect(next.history).toEqual(states[k].history);
+      if (next.history.at(-1)!.bulkColors) {
+        expect(effects).toEqual([{ kind: "redo", cell: -1 }]);
+        expect(selectedCells(next)).toEqual(selectedCells(prev));
+      }
+      s = next;
+    }
+    expect(s.future).toEqual([]);
+    // 戻したあとに色を変えると進めなくなる
+    expect(run(s, { type: "undo" }, { type: "input", digit: 9 }, { type: "redo" }).effects[0].kind).toBe(
+      "blocked",
+    );
+  });
+
+  it("古い保存データ（色なし）でも塗れ、戻すと色なしに戻る", () => {
+    const { s: s0 } = freeGame();
+    const { colors: _, colorMode: __, ...old } = s0;
+    const cell = s0.puzzle.indexOf(0);
+    const painted = run(
+      old as GameState,
+      { type: "toggleColors" },
+      { type: "select", cell },
+      { type: "input", digit: 4 },
+    ).s;
+    expect(painted.colors![cell]).toBe(4);
+    const undone = run(painted, { type: "undo" }).s;
+    expect(undone.colors).toEqual(Array(81).fill(0));
+    expect(run(undone, { type: "redo" }).s.colors).toEqual(painted.colors);
+  });
+
+  it("日次でも使え、手の記録・点数・ミスは変わらない", () => {
+    const p = generatePuzzle("daily-colors", "easy");
+    const s0 = withSolution(
+      newGame({
+        mode: "daily",
+        difficulty: "easy",
+        seed: "2026-10-17",
+        puzzle: p.puzzle,
+        solution: null,
+        daily: { sessionId: "s", date: "2026-10-17", startedAt: 0, clockOffset: 0 },
+      }),
+    );
+    const { s, a, b, d, given } = colored(s0, p.solution);
+    expect(s.moves).toEqual([[1000, d, p.solution[d]]]);
+    const after = run(
+      s,
+      { type: "input", digit: 2 },
+      { type: "toggleSelection", cell: b },
+      { type: "toggleSelection", cell: given },
+      { type: "input", digit: 3 },
+      { type: "erase" },
+      { type: "input", digit: 8 },
+      { type: "undo" },
+      { type: "redo" },
+    );
+    expect(colorsAt(after.s, [a, b, given])).toEqual([8, 8, 8]);
+    expect(after.s.moves).toEqual(s.moves);
+    expect(after.s.score).toEqual(s.score);
+    expect(after.s.mistakes).toBe(s.mistakes);
+  });
+
+  it("間違えた数字や重複のあるマスに色を付けても、間違い・重複のままで、ミスの数は変わらない", () => {
+    const { p, s: s0 } = freeGame();
+    const [a, b] = s0.puzzle.flatMap((v, i) => (v ? [] : [i]));
+    // a には解答と違う数字、b には同じ行・列・ブロックにある数字を置く
+    const dupe = s0.puzzle[PEERS[b].find((i) => s0.puzzle[i] !== 0)!];
+    const s = run(
+      s0,
+      { type: "select", cell: a },
+      { type: "input", digit: (p.solution[a] % 9) + 1 },
+      { type: "select", cell: b },
+      { type: "input", digit: dupe },
+    ).s;
+    expect(isWrong(s, a)).toBe(true);
+    expect(findConflicts(s.values).has(b)).toBe(true);
+    const painted = run(
+      s,
+      { type: "toggleColors" },
+      { type: "select", cell: a },
+      { type: "toggleSelection", cell: b },
+      { type: "input", digit: 6 },
+    ).s;
+    expect(colorsAt(painted, [a, b])).toEqual([6, 6]);
+    expect(painted.values).toEqual(s.values);
+    expect(isWrong(painted, a)).toBe(true);
+    expect(findConflicts(painted.values).has(b)).toBe(true);
+    expect(painted.mistakes).toBe(s.mistakes);
+  });
+
+  it("一時停止中と解き終えた後は、色も色モードも変えない", () => {
+    const { p, s: s0 } = freeGame();
+    const { s } = colored(s0, p.solution);
+    const paused = run(s, { type: "pause" }).s;
+    let solved = run(
+      s0,
+      { type: "toggleColors" },
+      { type: "select", cell: 0 },
+      { type: "input", digit: 1 },
+      { type: "toggleColors" },
+    ).s;
+    for (let i = 0; i < 81; i++) {
+      if (p.puzzle[i]) continue;
+      solved = run(solved, { type: "select", cell: i }, { type: "input", digit: p.solution[i] }).s;
+    }
+    expect(solved.status).toBe("solved");
+    // 解き終えても色は残る
+    expect(solved.colors![0]).toBe(1);
+    const solvedColorMode = { ...solved, colorMode: true, selected: 0 };
+    for (const g of [paused, solvedColorMode]) {
+      for (const a of [
+        { type: "input", digit: 2 },
+        { type: "erase" },
+        { type: "toggleColors" },
+        { type: "toggleNotes" },
+      ] as Action[]) {
+        expect(reduce(g, a)).toEqual([g, []]);
+      }
+    }
   });
 });
