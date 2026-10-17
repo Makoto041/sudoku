@@ -17,7 +17,13 @@ async function shot(page: Page, name: string) {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png` });
 }
 
-type Saved = { puzzle: number[]; solution: number[] | null; values: number[]; history: unknown[] };
+type Saved = {
+  puzzle: number[];
+  solution: number[] | null;
+  values: number[];
+  history: unknown[];
+  moves?: unknown[];
+};
 
 async function savedGame(page: Page, key: string): Promise<Saved> {
   const raw = await page.evaluate((k) => localStorage.getItem(k), key);
@@ -537,4 +543,78 @@ test("「ヒントの前に確認」をオンにすると、ヒントを開く�
   await expect(confirm).toBeHidden();
   await expect(page.locator(".hint-panel")).toBeVisible();
   await expect(page.locator(".tool-count")).toHaveText("1");
+});
+
+test("戻した数字を、進むボタンとキー（Ctrl+Shift+Z・Ctrl+Y・Shift+Z）で戻せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const [cell, other] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const cells = page.getByRole("gridcell");
+  const target = cells.nth(cell);
+  const digit = g.solution![cell];
+  const placed = new RegExp(` ${digit}$`);
+  // 「間違える前まで戻す」と取り違えないよう、ボタン名は完全一致で探す
+  const undo = page.getByRole("button", { name: "戻す", exact: true });
+  const redo = page.getByRole("button", { name: "進む", exact: true });
+  await expect(redo).toBeDisabled();
+
+  await target.dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${digit}`);
+  await expect(target).toHaveAttribute("aria-label", placed);
+  await undo.click();
+  await expect(target).toHaveAttribute("aria-label", /空き$/);
+  await expect(redo).toBeEnabled();
+  await shot(page, "redo");
+  await redo.click();
+  await expect(target).toHaveAttribute("aria-label", placed);
+  await expect(redo).toBeDisabled();
+
+  for (const key of ["Control+Shift+KeyZ", "Control+KeyY", "Shift+KeyZ"]) {
+    await page.keyboard.press("Control+KeyZ");
+    await expect(target).toHaveAttribute("aria-label", /空き$/);
+    await page.keyboard.press(key);
+    await expect(target, key).toHaveAttribute("aria-label", placed);
+  }
+
+  // 戻したあとに別の数字を置くと、進めなくなる
+  await undo.click();
+  await expect(redo).toBeEnabled();
+  await cells.nth(other).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![other]}`);
+  await expect(redo).toBeDisabled();
+  await page.keyboard.press("Shift+KeyZ");
+  await expect(target).toHaveAttribute("aria-label", /空き$/);
+});
+
+test("今日の一問でも進むが使え、手の記録は増えず、進む手は保存しない", async ({ page }, info) => {
+  await page.goto("/");
+  await page.locator(".daily-row").nth(1).click();
+  await page.getByPlaceholder("ニックネーム").fill(`進む${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  const cell = g.puzzle.indexOf(0);
+  const target = page.getByRole("gridcell").nth(cell);
+  const redo = page.getByRole("button", { name: "進む", exact: true });
+  await target.dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[cell]}`);
+  await expect(redo).toBeDisabled();
+  await page.getByRole("button", { name: "戻す", exact: true }).click();
+  await expect(target).toHaveAttribute("aria-label", /空き$/);
+  await expect.poll(async () => (await savedGame(page, key)).values[cell]).toBe(0);
+  expect(await savedGame(page, key)).not.toHaveProperty("future");
+  await redo.click();
+  await expect(target).toHaveAttribute("aria-label", new RegExp(` ${solution[cell]}$`));
+  await expect(redo).toBeDisabled();
+  await expect.poll(async () => (await savedGame(page, key)).values[cell]).toBe(solution[cell]);
+  expect((await savedGame(page, key)).moves).toHaveLength(1);
 });

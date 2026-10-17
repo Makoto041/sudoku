@@ -25,6 +25,8 @@ export function storageKeyFor(s: GameState): string {
   return s.mode === "daily" && s.daily ? KEYS.daily(s.daily.date, s.difficulty) : KEYS.free;
 }
 
+const persisted = (g: GameState) => ({ ...g, selected: null, future: undefined });
+
 function playEffects(effects: Effect[]) {
   for (const e of effects) {
     switch (e.kind) {
@@ -49,6 +51,7 @@ function playEffects(effects: Effect[]) {
         haptic("light");
         break;
       case "undo":
+      case "redo":
         sfx.undo();
         haptic("light");
         break;
@@ -179,7 +182,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
     return () => document.removeEventListener("visibilitychange", onHide);
   }, [dispatch]);
 
-  // 保存。盤面が変わったらすぐ、時計だけの更新は数秒おきに書く
+  // 保存。盤面が変わったらすぐ、時計だけの更新は数秒おきに書く。選択と進む手は保存しない
   const lastSaved = useRef<{ game: GameState; at: number } | null>(null);
   useEffect(() => {
     const prev = lastSaved.current;
@@ -191,10 +194,10 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
       prev.game.finalMs !== game.finalMs;
     if (!boardChanged && now - prev.at < 3000) return;
     lastSaved.current = { game, at: now };
-    save(storageKeyFor(game), { ...game, selected: null });
+    save(storageKeyFor(game), persisted(game));
   }, [game]);
   useEffect(() => {
-    const flush = () => save(storageKeyFor(gameRef.current), { ...gameRef.current, selected: null });
+    const flush = () => save(storageKeyFor(gameRef.current), persisted(gameRef.current));
     window.addEventListener("pagehide", flush);
     return () => {
       window.removeEventListener("pagehide", flush);

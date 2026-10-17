@@ -196,7 +196,15 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       // フォーカス中のボタンは Space/Enter で押せるようにし、一時停止に回さない
       if ((e.key === " " || e.key === "Enter") && target?.closest("button")) return;
-      if (e.ctrlKey && e.key.toLowerCase() === "z") {
+      const key = e.key.toLowerCase();
+      // Shift を先に見る（Ctrl+Shift+Z を元に戻すにしない）
+      const isRedo = (key === "z" && e.shiftKey) || (e.ctrlKey && key === "y");
+      if (isRedo) {
+        e.preventDefault();
+        dispatch({ type: "redo" });
+        return;
+      }
+      if (e.ctrlKey && key === "z") {
         e.preventDefault();
         dispatch({ type: "undo" });
         return;
@@ -434,6 +442,7 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
           <Tools
             game={game}
             onUndo={() => dispatch({ type: "undo" })}
+            onRedo={() => dispatch({ type: "redo" })}
             onErase={() => dispatch({ type: "erase" })}
             onToggleNotes={() => {
               dispatch({ type: "toggleNotes" });

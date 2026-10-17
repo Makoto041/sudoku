@@ -185,7 +185,9 @@ export function SettingsSheet({
         <dt>Backspace</dt>
         <dd>消す</dd>
         <dt>Z</dt>
-        <dd>元に戻す</dd>
+        <dd>戻す</dd>
+        <dt>Shift + Z</dt>
+        <dd>進む</dd>
         <dt>H</dt>
         <dd>ヒント（フリープレイ）</dd>
         <dt>Space</dt>
