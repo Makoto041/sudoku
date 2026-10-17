@@ -56,4 +56,6 @@ export const KEYS = {
   historyCache: "sudoku:history",
   /** 手筋の練習の進み具合（端末内だけ。引き継ぎには含めない） */
   practice: "sudoku:practice",
+  /** ホームの遊び方の案内を閉じたか（端末内だけ。引き継ぎには含めない） */
+  howto: "sudoku:howto",
 };

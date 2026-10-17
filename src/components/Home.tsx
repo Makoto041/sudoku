@@ -5,7 +5,7 @@ import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { SubmitResponse } from "@/lib/client/api";
 import { bestScores } from "@/lib/client/stats";
 import { formatPoints } from "@/lib/game/score";
-import { Calendar, ChevronRight, Gear, Trophy } from "./icons";
+import { Calendar, ChevronRight, Close, Gear, Help, Trophy } from "./icons";
 import { InstallHint } from "./InstallHint";
 import { Logo } from "./Logo";
 
@@ -26,6 +26,10 @@ type Props = {
   onSettings: () => void;
   onRecords: () => void;
   onPractice: () => void;
+  onHowto: () => void;
+  /** 遊び方の案内を出すか（まだ閉じていない・遊び方を開いていない） */
+  howtoHint: boolean;
+  onCloseHowtoHint: () => void;
   /** 今日の一問の連続日数 */
   streak: number;
 };
@@ -51,6 +55,9 @@ export function Home(props: Props) {
           <h1>ナンプレ</h1>
         </div>
         <div className="head-actions">
+          <button type="button" className="icon-btn" onClick={props.onHowto} aria-label="遊び方">
+            <Help />
+          </button>
           <button type="button" className="icon-btn" onClick={props.onRecords} aria-label="記録">
             <Calendar />
           </button>
@@ -59,6 +66,26 @@ export function Home(props: Props) {
           </button>
         </div>
       </header>
+
+      {props.howtoHint && (
+        <div className="hint-bar howto-hint" role="note">
+          <span>
+            ルールと操作は
+            <button type="button" className="howto-hint-link" onClick={props.onHowto}>
+              遊び方
+            </button>
+            にあります
+          </span>
+          <button
+            type="button"
+            className="icon-btn small"
+            aria-label="閉じる"
+            onClick={props.onCloseHowtoHint}
+          >
+            <Close size={18} />
+          </button>
+        </div>
+      )}
 
       <section className="card daily" aria-labelledby="daily-title">
         <div className="card-head">

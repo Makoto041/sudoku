@@ -14,6 +14,7 @@ import { loadStats, mergeStats, recordFreeStart } from "@/lib/client/stats";
 import { firstUnsolved, loadPracticeProgress, markPracticeSolved } from "@/lib/client/practiceProgress";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
+import { howtoSeen, markHowtoSeen } from "@/lib/client/howto";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -21,7 +22,7 @@ import { Practice } from "./Practice";
 import { PracticeList } from "./PracticeList";
 import { Ranking } from "./Ranking";
 import { Records } from "./Records";
-import { ConfirmSheet, NameSheet, SettingsSheet } from "./Sheets";
+import { ConfirmSheet, HowtoSheet, NameSheet, SettingsSheet } from "./Sheets";
 
 type View =
   | { name: "home" }
@@ -33,6 +34,7 @@ type View =
 
 type SheetState =
   | { kind: "settings" }
+  | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
   | { kind: "confirmFree"; difficulty: Difficulty }
   | null;
@@ -65,12 +67,14 @@ export function App() {
   const [starting, setStarting] = useState<Difficulty | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [howtoHint, setHowtoHint] = useState(false);
 
   useEffect(() => {
     clockOffset = load<number>(KEYS.clockOffset) ?? 0;
     setToday(serverToday());
     setSettings(loadSettings());
     setPlayer(getPlayer());
+    setHowtoHint(!howtoSeen());
     setMounted(true);
     // 日付が変わったときのために、画面に戻るたびに今日を確認する
     const onVisible = () => {
@@ -310,6 +314,34 @@ export function App() {
   };
   const practiceItem = view.name === "practice" ? practice?.find((i) => i.key === view.key) : undefined;
 
+  // 遊び方の「練習してみる」：一覧を開き、局面のデータが揃ったら最初の項目（ネイキッドシングル）を開く。
+  // 一覧の描画後に開くので、履歴は ホーム → 一覧 → 局面 になる（戻ると一覧、もう一度でホーム）。
+  // 揃う前に一覧から離れたら開かない。読み込みに失敗しても、一覧の再試行で揃えばそのまま開く
+  const [tryPractice, setTryPractice] = useState(false);
+  useEffect(() => {
+    if (!tryPractice) return;
+    const onList = view.name === "practiceList";
+    if (onList && !practice) return;
+    setTryPractice(false);
+    if (onList) openPractice("naked-single");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tryPractice, view.name, practice]);
+  const startTryPractice = () => {
+    setSheet(null);
+    setTryPractice(true);
+    openPracticeList();
+  };
+
+  const dismissHowtoHint = () => {
+    markHowtoSeen();
+    setHowtoHint(false);
+  };
+  const openHowto = () => {
+    sfx.tap();
+    dismissHowtoHint();
+    setSheet({ kind: "howto" });
+  };
+
   const updateSettings = (s: Settings) => {
     setSettings(s);
     saveSettings(s);
@@ -372,6 +404,9 @@ export function App() {
               setSheet({ kind: "settings" });
             }}
             onPractice={openPracticeList}
+            onHowto={openHowto}
+            howtoHint={howtoHint}
+            onCloseHowtoHint={dismissHowtoHint}
           />
         </>
       )}
@@ -455,6 +490,14 @@ export function App() {
             setRefresh((n) => n + 1);
             void loadRecords(next.id);
           }}
+          onHowto={openHowto}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "howto" && (
+        <HowtoSheet
+          // 練習はホームから開いたときだけ（ゲームや練習の途中から開くと、戻る操作で一覧を通らない）
+          onPractice={view.name === "home" ? startTryPractice : undefined}
           onClose={() => setSheet(null)}
         />
       )}
