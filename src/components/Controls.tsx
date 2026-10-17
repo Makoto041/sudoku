@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import { remainingCounts } from "@/lib/sudoku/core";
 import type { GameState } from "@/lib/game/state";
 import { AutoNote, Bulb, Eraser, Palette, Pencil, Redo, Undo } from "./icons";
@@ -25,10 +26,19 @@ export function Tools({
   onHint,
   onAutoNotes,
 }: ToolProps) {
-  const canHint = game.mode === "free";
-  // フリープレイは 7 つ並ぶので、詰めて並べる
+  // ヒントが使えないのは日次だけ。自動メモはフリープレイだけ
+  // （練習の始めのメモは局面の前提なので、候補をすべて書き直したり全部消したりさせない）
+  const canHint = game.mode !== "daily";
+  const canAutoNotes = game.mode === "free";
+  // 6 つ以上並ぶときは詰めて並べる
+  const dense = canHint || canAutoNotes;
   return (
-    <div className={`tools${canHint ? " is-dense" : ""}`}>
+    <div
+      className={`tools${dense ? " is-dense" : ""}`}
+      style={
+        dense ? ({ "--tools-n": 5 + Number(canHint) + Number(canAutoNotes) } as CSSProperties) : undefined
+      }
+    >
       <button type="button" className="tool" onClick={onUndo} disabled={game.history.length === 0}>
         <Undo />
         <span>戻す</span>
@@ -65,7 +75,7 @@ export function Tools({
         </span>
         <span>色</span>
       </button>
-      {canHint && (
+      {canAutoNotes && (
         <button type="button" className="tool" onClick={onAutoNotes}>
           <AutoNote />
           <span>自動メモ</span>

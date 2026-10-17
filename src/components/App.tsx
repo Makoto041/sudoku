@@ -11,10 +11,14 @@ import { adoptPlayer, getPlayer, setPlayerName, type Player } from "@/lib/client
 import { loadRecords, localRecords } from "@/lib/client/history";
 import { mergeRecords, summarize, type ClearRecord } from "@/lib/client/records";
 import { loadStats, mergeStats, recordFreeStart } from "@/lib/client/stats";
+import { firstUnsolved, loadPracticeProgress, markPracticeSolved } from "@/lib/client/practiceProgress";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
+import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
+import { Practice } from "./Practice";
+import { PracticeList } from "./PracticeList";
 import { Ranking } from "./Ranking";
 import { Records } from "./Records";
 import { ConfirmSheet, NameSheet, SettingsSheet } from "./Sheets";
@@ -23,7 +27,9 @@ type View =
   | { name: "home" }
   | { name: "game"; game: GameState; key: number }
   | { name: "ranking"; difficulty: Difficulty; date?: string }
-  | { name: "records" };
+  | { name: "records" }
+  | { name: "practiceList" }
+  | { name: "practice"; key: PracticeKey; index: number };
 
 type SheetState =
   | { kind: "settings" }
@@ -91,11 +97,19 @@ export function App() {
     setHapticsEnabled(settings.haptics);
   }, [settings]);
 
-  // ブラウザの戻る操作でホームへ
+  const viewName = useRef(view.name);
+  viewName.current = view.name;
+
+  // ブラウザの戻る操作でホームへ。練習の局面からは一覧へ
+  // （再読み込みするとホームから始まり、履歴に一覧の印が残るので、局面から戻るときだけ一覧にする）
   useEffect(() => {
     const onPop = () => {
-      setView({ name: "home" });
       setSheet(null);
+      if (history.state?.v === "practiceList" && viewName.current === "practice") {
+        setView({ name: "practiceList" });
+        return;
+      }
+      setView({ name: "home" });
       setToday(serverToday());
       setRefresh((n) => n + 1);
     };
@@ -103,10 +117,11 @@ export function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const viewName = useRef(view.name);
-  viewName.current = view.name;
+  // ホームから出るときと、練習の一覧から局面を開くときに履歴を積む（ブラウザの戻るで 1 つ前の画面へ）
   const go = useCallback((next: View) => {
-    if (viewName.current === "home" && next.name !== "home") history.pushState({ v: next.name }, "");
+    const from = viewName.current;
+    if ((from === "home" && next.name !== "home") || (from === "practiceList" && next.name === "practice"))
+      history.pushState({ v: next.name }, "");
     setView(next);
   }, []);
 
@@ -270,6 +285,31 @@ export function App() {
     [startFree],
   );
 
+  // 手筋の練習。局面のデータは一覧を開くときに読む（最初の読み込みに含めない）
+  const [practice, setPractice] = useState<PracticeItem[] | null>(null);
+  const [practiceFailed, setPracticeFailed] = useState(false);
+  const loadPracticeItems = useCallback(() => {
+    setPracticeFailed(false);
+    loadPractice().then(setPractice, () => setPracticeFailed(true));
+  }, []);
+  const openPracticeList = () => {
+    sfx.tap();
+    go({ name: "practiceList" });
+    if (!practice) loadPracticeItems();
+  };
+  const openPractice = (key: PracticeKey) => {
+    const item = practice?.find((i) => i.key === key);
+    if (!practice || !item) return;
+    sfx.tap();
+    go({ name: "practice", key, index: firstUnsolved(item, loadPracticeProgress(practice)) });
+  };
+  const backToPracticeList = () => {
+    sfx.tap();
+    if (history.state?.v === "practice") history.back();
+    else setView({ name: "practiceList" });
+  };
+  const practiceItem = view.name === "practice" ? practice?.find((i) => i.key === view.key) : undefined;
+
   const updateSettings = (s: Settings) => {
     setSettings(s);
     saveSettings(s);
@@ -331,6 +371,7 @@ export function App() {
               sfx.tap();
               setSheet({ kind: "settings" });
             }}
+            onPractice={openPracticeList}
           />
         </>
       )}
@@ -357,6 +398,35 @@ export function App() {
         />
       )}
       {view.name === "records" && <Records today={today} playerId={player.id} onBack={goHome} />}
+      {view.name === "practiceList" && (
+        <PracticeList
+          items={practice}
+          failed={practiceFailed}
+          onRetry={loadPracticeItems}
+          onBack={goHome}
+          onOpen={openPractice}
+        />
+      )}
+      {view.name === "practice" && practice && practiceItem && (
+        <Practice
+          key={practiceItem.positions[view.index].id}
+          item={practiceItem}
+          index={view.index}
+          settings={settings}
+          onBack={backToPracticeList}
+          onNext={() => {
+            if (view.index + 1 < practiceItem.positions.length) {
+              sfx.tap();
+              setView({ ...view, index: view.index + 1 });
+            } else backToPracticeList();
+          }}
+          onSolved={(id) => markPracticeSolved(practice, view.key, id)}
+          onOpenSettings={() => {
+            sfx.tap();
+            setSheet({ kind: "settings" });
+          }}
+        />
+      )}
       {view.name === "ranking" && (
         <Ranking
           today={today}

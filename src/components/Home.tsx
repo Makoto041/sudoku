@@ -25,6 +25,7 @@ type Props = {
   onRanking: () => void;
   onSettings: () => void;
   onRecords: () => void;
+  onPractice: () => void;
   /** 今日の一問の連続日数 */
   streak: number;
 };
@@ -167,6 +168,11 @@ export function Home(props: Props) {
           ))}
         </div>
       </section>
+
+      <button type="button" className="card practice-entry" onClick={props.onPractice}>
+        <span className="practice-entry-title">手筋の練習</span>
+        <ChevronRight size={20} className="row-chevron" />
+      </button>
 
       <InstallHint />
     </div>

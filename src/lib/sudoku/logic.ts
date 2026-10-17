@@ -57,6 +57,15 @@ export type Trace = {
 let tracer: ((t: Trace) => void) | null = null;
 const note = (t: Trace) => tracer?.(t);
 
+/**
+ * 手をすべて集めているとき（findAllSteps）の受け取り先。
+ * このあいだ手筋の関数は盤面を変えず、見つけた手をここに渡して、最初の 1 つで止まらずに探し続ける
+ */
+let collector: ((step: NextStep) => void) | null = null;
+
+const byCellDigit = (a: { cell: number; digit: number }, b: { cell: number; digit: number }) =>
+  a.cell - b.cell || a.digit - b.digit;
+
 function init(puzzle: readonly number[]): State {
   const grid = puzzle.slice();
   const cands = Array<number>(81).fill(0);
@@ -87,6 +96,43 @@ function eliminate(s: State, cells: Iterable<number>, mask: number): boolean {
   return changed;
 }
 
+/**
+ * 手筋が見つけたマスに数字を置き、置いたら true（手筋の関数はそこで止まる）。
+ * 集めているときは置かずに、置く手（findNextStep が返すのと同じ形）を渡して false を返す
+ */
+function placeFound(s: State, cell: number, digit: number, trace: Trace): boolean {
+  if (collector) {
+    const eliminations = PEERS[cell]
+      .filter((p) => !s.grid[p] && s.cands[p] & (1 << digit))
+      .sort((a, b) => a - b)
+      .map((p) => ({ cell: p, digit }));
+    collector({ trace, placement: { cell, digit }, eliminations });
+    return false;
+  }
+  note(trace);
+  assign(s, cell, digit);
+  return true;
+}
+
+/**
+ * 手筋が見つけた箇所で、cells の候補から mask の数字を消し、消せたら true（手筋の関数はそこで止まる）。
+ * 集めているときは消さずに、消せる候補があればその手を渡して false を返す
+ */
+function eliminateFound(s: State, cells: Iterable<number>, mask: number, trace: () => Trace): boolean {
+  if (collector) {
+    const eliminations: { cell: number; digit: number }[] = [];
+    for (const cell of cells) {
+      for (const digit of digitsOf(s.cands[cell] & mask)) eliminations.push({ cell, digit });
+    }
+    if (eliminations.length > 0)
+      collector({ trace: trace(), placement: null, eliminations: eliminations.sort(byCellDigit) });
+    return false;
+  }
+  if (!eliminate(s, cells, mask)) return false;
+  note(trace());
+  return true;
+}
+
 function* combinations<T>(items: T[], size: number, start = 0, acc: T[] = []): Generator<T[]> {
   if (acc.length === size) {
     yield acc.slice();
@@ -102,9 +148,9 @@ function* combinations<T>(items: T[], size: number, start = 0, acc: T[] = []): G
 function singles(s: State): boolean {
   for (let i = 0; i < 81; i++) {
     if (!s.grid[i] && bitCount(s.cands[i]) === 1) {
-      note({ technique: "naked-single", pattern: [i], digits: [lowestDigit(s.cands[i])], units: [] });
-      assign(s, i, lowestDigit(s.cands[i]));
-      return true;
+      const d = lowestDigit(s.cands[i]);
+      if (placeFound(s, i, d, { technique: "naked-single", pattern: [i], digits: [d], units: [] }))
+        return true;
     }
   }
   for (let u = 0; u < 27; u++) {
@@ -119,11 +165,11 @@ function singles(s: State): boolean {
           n++;
         }
       }
-      if (n === 1) {
-        note({ technique: "hidden-single", pattern: [spot], digits: [d], units: [u] });
-        assign(s, spot, d);
+      if (
+        n === 1 &&
+        placeFound(s, spot, d, { technique: "hidden-single", pattern: [spot], digits: [d], units: [u] })
+      )
         return true;
-      }
     }
   }
   return false;
@@ -141,28 +187,43 @@ function lockedCandidates(s: State): boolean {
         const r = rowOf(spots[0]);
         if (spots.every((i) => rowOf(i) === r)) {
           const others = UNITS[r].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) {
-            note({ technique: "pointing", pattern: spots, digits: [d], units: [u, r] });
+          if (
+            eliminateFound(s, others, bit, () => ({
+              technique: "pointing",
+              pattern: spots,
+              digits: [d],
+              units: [u, r],
+            }))
+          )
             return true;
-          }
         }
         const c = colOf(spots[0]);
         if (spots.every((i) => colOf(i) === c)) {
           const others = UNITS[9 + c].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) {
-            note({ technique: "pointing", pattern: spots, digits: [d], units: [u, 9 + c] });
+          if (
+            eliminateFound(s, others, bit, () => ({
+              technique: "pointing",
+              pattern: spots,
+              digits: [d],
+              units: [u, 9 + c],
+            }))
+          )
             return true;
-          }
         }
       } else {
         // クレーミング：行（列）内の候補が 1 ブロックに収まれば、そのブロックの他から消す
         const b = 18 + Math.floor(rowOf(spots[0]) / 3) * 3 + Math.floor(colOf(spots[0]) / 3);
         if (spots.every((i) => UNITS[b].includes(i))) {
           const others = UNITS[b].filter((i) => !unit.includes(i));
-          if (eliminate(s, others, bit)) {
-            note({ technique: "claiming", pattern: spots, digits: [d], units: [u, b] });
+          if (
+            eliminateFound(s, others, bit, () => ({
+              technique: "claiming",
+              pattern: spots,
+              digits: [d],
+              units: [u, b],
+            }))
+          )
             return true;
-          }
         }
       }
     }
@@ -185,15 +246,14 @@ function nakedSubset(s: State, size: number): boolean {
       for (const i of combo) mask |= s.cands[i];
       if (bitCount(mask) !== size) continue;
       if (
-        eliminate(
+        eliminateFound(
           s,
           open.filter((i) => !combo.includes(i)),
           mask,
+          () => ({ technique: NAKED[size], pattern: combo, digits: digitsOf(mask), units: [u] }),
         )
-      ) {
-        note({ technique: NAKED[size], pattern: combo, digits: digitsOf(mask), units: [u] });
+      )
         return true;
-      }
     }
   }
   return false;
@@ -214,17 +274,16 @@ function hiddenSubset(s: State, size: number): boolean {
       if (cells.size !== size) continue;
       let keep = 0;
       for (const d of digits) keep |= 1 << d;
-      let changed = false;
-      for (const i of cells) {
-        if (s.cands[i] & ~keep) {
-          s.cands[i] &= keep;
-          changed = true;
-        }
-      }
-      if (changed) {
-        note({ technique: HIDDEN[size], pattern: [...cells], digits, units: [u] });
+      // そのマスの keep 以外の候補を消す
+      if (
+        eliminateFound(s, cells, ~keep, () => ({
+          technique: HIDDEN[size],
+          pattern: [...cells],
+          digits,
+          units: [u],
+        }))
+      )
         return true;
-      }
     }
   }
   return false;
@@ -253,16 +312,19 @@ function fish(s: State, size: number): boolean {
             if (!base.has(byRow ? rowOf(i) : colOf(i))) others.push(i);
           }
         }
-        if (eliminate(s, others, bit)) {
-          const baseUnits = combo.map((l) => (byRow ? l.line : 9 + l.line));
-          note({
-            technique: size === 2 ? "x-wing" : "swordfish",
-            pattern: baseUnits.flatMap((bu) => UNITS[bu].filter((i) => s.cands[i] & bit)),
-            digits: [d],
-            units: [...baseUnits, ...[...crosses].map((c) => (byRow ? 9 + c : c))],
-          });
+        // 根拠の行（列）のマスは消す先に入らないので、pattern は消す前と後で変わらない
+        if (
+          eliminateFound(s, others, bit, () => {
+            const baseUnits = combo.map((l) => (byRow ? l.line : 9 + l.line));
+            return {
+              technique: size === 2 ? "x-wing" : "swordfish",
+              pattern: baseUnits.flatMap((bu) => UNITS[bu].filter((i) => s.cands[i] & bit)),
+              digits: [d],
+              units: [...baseUnits, ...[...crosses].map((c) => (byRow ? 9 + c : c))],
+            };
+          })
+        )
           return true;
-        }
       }
     }
   }
@@ -286,10 +348,15 @@ function xyWing(s: State): boolean {
         for (let i = 0; i < 81; i++) {
           if (i !== pivot && i !== a && i !== b && IS_PEER[a][i] && IS_PEER[b][i]) targets.push(i);
         }
-        if (eliminate(s, targets, 1 << z)) {
-          note({ technique: "xy-wing", pattern: [pivot, a, b], digits: [z], units: [] });
+        if (
+          eliminateFound(s, targets, 1 << z, () => ({
+            technique: "xy-wing",
+            pattern: [pivot, a, b],
+            digits: [z],
+            units: [],
+          }))
+        )
           return true;
-        }
       }
     }
   }
@@ -313,10 +380,15 @@ function xyzWing(s: State): boolean {
         if (i === pivot || i === a || i === b) continue;
         if (IS_PEER[pivot][i] && IS_PEER[a][i] && IS_PEER[b][i]) targets.push(i);
       }
-      if (eliminate(s, targets, shared)) {
-        note({ technique: "xyz-wing", pattern: [pivot, a, b], digits: [lowestDigit(shared)], units: [] });
+      if (
+        eliminateFound(s, targets, shared, () => ({
+          technique: "xyz-wing",
+          pattern: [pivot, a, b],
+          digits: [lowestDigit(shared)],
+          units: [],
+        }))
+      )
         return true;
-      }
     }
   }
   return false;
@@ -476,6 +548,24 @@ export function findNextStep(grid: readonly number[], cands: readonly number[]):
     return { trace: t, placement, eliminations };
   }
   return null;
+}
+
+/**
+ * 盤面（数字と候補）で使える手筋の手を、findNextStep が試す順にすべて返す。盤面は変えない。
+ * どの手も、その箇所が最初に見つかったときに findNextStep が返すのと同じ形で、先頭は findNextStep の手と同じ。
+ * 同じ手筋で別の手が無いか（練習の局面の答えが 1 つか）を確かめるのに使う
+ */
+export function findAllSteps(grid: readonly number[], cands: readonly number[]): NextStep[] {
+  const out: NextStep[] = [];
+  // 集めている間は盤面を変えないので、1 つの写しで足りる
+  const s: State = { grid: grid.slice(), cands: cands.slice() };
+  collector = (step) => out.push(step);
+  try {
+    for (const step of STEPS) step(s);
+  } finally {
+    collector = null;
+  }
+  return out;
 }
 
 /** 盤面の数字から、空いているマスの候補を計算する */

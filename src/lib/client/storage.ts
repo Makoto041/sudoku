@@ -24,6 +24,10 @@ export function remove(key: string) {
   }
 }
 
+/** 配列でないオブジェクトか（保存データや受け取った記録を検証するときに使う） */
+export const isPlainObject = (x: unknown): x is Record<string, unknown> =>
+  typeof x === "object" && x !== null && !Array.isArray(x);
+
 /** 前方一致するキーと値を集める */
 export function loadByPrefix<T>(prefix: string): [string, T][] {
   const out: [string, T][] = [];
@@ -50,4 +54,6 @@ export const KEYS = {
   installHint: "sudoku:install-hint",
   clockOffset: "sudoku:clock-offset",
   historyCache: "sudoku:history",
+  /** 手筋の練習の進み具合（端末内だけ。引き継ぎには含めない） */
+  practice: "sudoku:practice",
 };

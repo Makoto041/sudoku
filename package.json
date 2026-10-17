@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
-    "gen:icons": "node scripts/gen-icons.mjs"
+    "gen:icons": "node scripts/gen-icons.mjs",
+    "gen:practice": "GEN_PRACTICE=1 vitest run src/lib/sudoku/practice-gen.test.ts"
   },
   "dependencies": {
     "@upstash/redis": "1.39.0",

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { formatPoints } from "@/lib/game/score";
 import { formatTime } from "@/lib/game/state";
 import type { Difficulty } from "@/lib/sudoku/core";
@@ -18,20 +18,10 @@ import {
   totalPlayMs,
   type Stats,
 } from "./stats";
+import { installMemoryStorage } from "./memoryStorage";
 import { KEYS } from "./storage";
 
-// vitest は Node で動くので、localStorage をメモリで置き換える
-const store = new Map<string, string>();
-vi.stubGlobal("localStorage", {
-  getItem: (k: string) => store.get(k) ?? null,
-  setItem: (k: string, v: string) => void store.set(k, String(v)),
-  removeItem: (k: string) => void store.delete(k),
-  key: (i: number) => [...store.keys()][i] ?? null,
-  get length() {
-    return store.size;
-  },
-});
-beforeEach(() => store.clear());
+const { store } = installMemoryStorage();
 
 const setStats = (s: unknown) => store.set(KEYS.stats, JSON.stringify(s));
 

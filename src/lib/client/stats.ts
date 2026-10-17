@@ -1,6 +1,6 @@
 import { DIFFICULTIES, isDifficulty, type Difficulty } from "@/lib/sudoku/core";
 import type { DifficultySummary } from "./records";
-import { KEYS, load, save } from "./storage";
+import { KEYS, isPlainObject, load, save } from "./storage";
 
 export type DifficultyStats = {
   /** クリア数（名前は古いまま） */
@@ -48,9 +48,6 @@ const EMPTY: DifficultyStats = { played: 0, bestMs: null, cleanBestMs: null, bes
 function num(x: unknown, max: number): number | null {
   return Number.isFinite(x) ? Math.min(max, Math.max(0, x as number)) : null;
 }
-
-const isPlainObject = (x: unknown): x is Record<string, unknown> =>
-  typeof x === "object" && x !== null && !Array.isArray(x);
 
 /**
  * 難易度 1 つ分の記録を検証済みの値にする。知らない項目は捨て、無効な数は null（任意の項目は未設定）。

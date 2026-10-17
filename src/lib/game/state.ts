@@ -18,7 +18,11 @@ import {
   type Grid,
 } from "@/lib/sudoku/core";
 
-export type Mode = "free" | "daily";
+/**
+ * practice は手筋の練習。保存せず、記録・統計にも入れない。時計は進めず、一時停止も解き終えもしない。
+ * ヒントと自動メモの制限は日次だけ
+ */
+export type Mode = "free" | "daily" | "practice";
 export type Status = "playing" | "paused" | "solved";
 
 export type GameState = {
@@ -151,6 +155,8 @@ export function newGame(input: {
   puzzle: Grid;
   solution: Grid | null;
   daily?: GameState["daily"];
+  /** 始めのメモ（練習の局面）。省略するとメモなし */
+  notes?: number[];
 }): GameState {
   return {
     version: 1,
@@ -160,7 +166,7 @@ export function newGame(input: {
     puzzle: input.puzzle.slice(),
     solution: input.solution ? input.solution.slice() : null,
     values: input.puzzle.slice(),
-    notes: Array(81).fill(0),
+    notes: input.notes ? input.notes.slice() : Array(81).fill(0),
     selected: null,
     notesMode: false,
     colors: Array(81).fill(0),
@@ -321,7 +327,8 @@ function place(
           bonus: delta?.bonus ?? 0,
         },
   ];
-  if (isSolved(next, values)) {
+  // 練習は解き終えにしない（結果・効果音・盤面の波を出さない）
+  if (s.mode !== "practice" && isSolved(next, values)) {
     const bonus = next.score ? timeBonus(s.difficulty, s.puzzle, t) : 0;
     if (next.score) next.score = { ...next.score, points: next.score.points + bonus, timeBonus: bonus };
     next.status = "solved";
@@ -438,24 +445,25 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       // 進むで行き詰まった盤面に戻れないようにする
       return [{ ...cur, future: [] }, [{ kind: "rewind", steps }]];
     }
+    // ヒント・自動メモが使えないのは日次だけ（練習では手筋の答え合わせに使う）
     case "hintUsed": {
-      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      if (s.mode === "daily") return [s, [{ kind: "blocked" }]];
       return [{ ...s, hints: s.hints + 1, score: s.score ? { ...s.score, streak: 0 } : s.score }, []];
     }
     case "setNotes": {
-      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      if (s.mode === "daily") return [s, [{ kind: "blocked" }]];
       const notes = action.notes.map((n, i) => (s.values[i] ? 0 : n));
       return commitNotes(s, notes, { kind: "notes", filled: true });
     }
     case "autoNotes": {
-      if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
+      if (s.mode === "daily") return [s, [{ kind: "blocked" }]];
       const full = candidatesOf(s.values);
       const isFull = s.notes.every((n, i) => s.values[i] || n === full[i]);
       const notes = isFull ? Array<number>(81).fill(0) : full;
       return commitNotes(s, notes, { kind: "notes", filled: !isFull });
     }
     case "hint": {
-      if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
+      if (s.mode === "daily" || !s.solution) return [s, [{ kind: "blocked" }]];
       const cell =
         action.cell !== undefined &&
         !isGiven(s, action.cell) &&
