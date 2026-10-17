@@ -1159,7 +1159,10 @@ p {
     background 0.15s;
 }
 
-/* フリープレイは 7 つ並び、狭い画面で「自動メモ」が収まらないので、並びの幅に合わせて小さくする */
+/*
+ * フリープレイは 7 つ（練習は 6 つ）並び、狭い画面で「自動メモ」などが収まらないので、並びの幅に合わせて小さくする。
+ * 並ぶ数は --tools-n
+ */
 .tools.is-dense .tool {
   font-size: clamp(9px, 3.5cqi, 11.5px);
 }
@@ -1196,12 +1199,13 @@ p {
 }
 
 /*
- * 7 つ並びではボタンが狭く、バッジがボタンの右へはみ出して隣のボタンのタップを取るので、はみ出す分だけ左へ寄せる。
- * ボタンの右端の 1px 内側（ボタンは並びの幅の 1/7）に置いてからバッジの幅だけ戻し、元の位置（15px）より右には置かない
+ * 詰めた並びではボタンが狭く、バッジがボタンの右へはみ出して隣のボタンのタップを取るので、はみ出す分だけ左へ寄せる。
+ * ボタンの右端の 1px 内側（ボタンは並びの幅の 1/--tools-n）に置いてからバッジの幅だけ戻し、
+ * 元の位置（15px）より右には置かない
  */
 .tools.is-dense .tool-badge {
-  left: calc(100cqi / 14 + 10px);
-  transform: translateX(min(calc(5px - 100cqi / 14), -100%));
+  left: calc(50cqi / var(--tools-n) + 10px);
+  transform: translateX(min(calc(5px - 50cqi / var(--tools-n)), -100%));
 }
 
 .tool.is-on .tool-badge {
@@ -2158,4 +2162,124 @@ p {
 .levels-list dd {
   margin: 0;
   color: var(--ink-2);
+}
+
+/* ---------- 手筋の練習 ---------- */
+
+.practice-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  transition: transform 0.12s;
+}
+
+.practice-entry:active {
+  transform: scale(0.985);
+}
+
+.practice-entry-title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.practice-list {
+  gap: 12px;
+}
+
+.practice-items {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.practice-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto 18px;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 10px 6px 12px;
+  border-radius: 14px;
+  text-align: left;
+  transition:
+    background 0.15s,
+    transform 0.12s;
+}
+
+.practice-row:active {
+  background: var(--surface-2);
+  transform: scale(0.985);
+}
+
+.practice-name {
+  min-width: 0;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.practice-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+
+.practice-row.is-done .practice-count {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.practice-loading {
+  display: grid;
+  place-items: center;
+  padding: 48px 0;
+  color: var(--ink-2);
+}
+
+.practice-failed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.practice-failed .error-text {
+  margin-top: 0;
+}
+
+/* 練習の画面では、スコアと時計の行の代わりに、することを 1 行で出す */
+.practice-status {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+
+.practice-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--success) 14%, var(--surface));
+  color: var(--success);
+  font-size: 15px;
+  font-weight: 700;
+  animation: rise 0.25s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.practice-result-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }

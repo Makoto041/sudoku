@@ -1058,3 +1058,107 @@ describe("マスの色", () => {
     }
   });
 });
+
+describe("練習", () => {
+  function games(seed: string) {
+    const p = generatePuzzle(seed, "easy");
+    const base = { difficulty: "easy" as const, puzzle: p.puzzle, solution: p.solution };
+    return {
+      p,
+      free: newGame({ ...base, mode: "free", seed }),
+      daily: newGame({
+        ...base,
+        mode: "daily",
+        seed: "2026-10-17",
+        daily: { sessionId: "s", date: "2026-10-17", startedAt: 0, clockOffset: 0 },
+      }),
+      practice: newGame({ ...base, mode: "practice", seed }),
+    };
+  }
+
+  it("ヒント・自動メモ・ヒントのメモ反映を塞ぐのは日次だけで、練習では使える", () => {
+    const { p, free, daily, practice } = games("practice-assist");
+    const cell = p.puzzle.indexOf(0);
+    const actions: Action[] = [
+      { type: "hint", cell },
+      { type: "hint" },
+      { type: "hintUsed" },
+      { type: "autoNotes" },
+      { type: "setNotes", notes: Array(81).fill(1 << 2) },
+    ];
+    for (const a of actions) {
+      expect(
+        run(daily, a).effects.map((e) => e.kind),
+        a.type,
+      ).toEqual(["blocked"]);
+      // 練習はフリープレイと同じ結果になる
+      const [f, pr] = [run(free, a), run(practice, a)];
+      expect(pr.effects, a.type).toEqual(f.effects);
+      expect(pr.effects.map((e) => e.kind)).not.toContain("blocked");
+      expect({ ...pr.s, mode: "free" }).toEqual(f.s);
+    }
+    expect(run(practice, { type: "hint", cell }).s.values[cell]).toBe(p.solution[cell]);
+  });
+
+  it("時計は進まず、一時停止もしない", () => {
+    const { practice } = games("practice-clock");
+    const ticked = run(practice, { type: "tick", ms: 5000 }, { type: "tick", ms: 5000 }).s;
+    expect(ticked).toBe(practice);
+    expect(elapsedOf(ticked, 1e12)).toBe(0);
+    const paused = run(practice, { type: "pause" }).s;
+    expect(paused).toBe(practice);
+    expect(paused.status).toBe("playing");
+  });
+
+  it("置いた手は記録しない（サーバーに送る手の記録は日次だけ）", () => {
+    const { p, daily, practice } = games("practice-moves");
+    const cell = p.puzzle.indexOf(0);
+    const actions: Action[] = [
+      { type: "select", cell },
+      { type: "input", digit: p.solution[cell], t: 1000 },
+    ];
+    expect(run(daily, ...actions).s.moves).toEqual([[1000, cell, p.solution[cell]]]);
+    const placed = run(practice, ...actions).s;
+    expect(placed.values[cell]).toBe(p.solution[cell]);
+    expect(placed.moves).toEqual([]);
+  });
+
+  it("全マスを埋めても解き終えにならない（フリープレイは解き終える）", () => {
+    const { p, free, practice } = games("practice-solve");
+    const fillAll = (s: GameState) =>
+      run(
+        s,
+        ...p.puzzle.flatMap((v, cell): Action[] =>
+          v
+            ? []
+            : [
+                { type: "select", cell },
+                { type: "input", digit: p.solution[cell] },
+              ],
+        ),
+      );
+    const f = fillAll(free);
+    expect(f.s.status).toBe("solved");
+    expect(f.effects.map((e) => e.kind)).toContain("solved");
+    const pr = fillAll(practice);
+    expect(pr.s.values).toEqual(p.solution);
+    expect(pr.s.status).toBe("playing");
+    expect(pr.effects.map((e) => e.kind)).not.toContain("solved");
+  });
+
+  it("始めのメモを渡せる（写しを持ち、元に戻す手には入らない）", () => {
+    const p = generatePuzzle("practice-notes", "easy");
+    const notes = Array.from({ length: 81 }, (_, i) => (p.puzzle[i] ? 0 : 1 << p.solution[i]));
+    const g = newGame({
+      mode: "practice",
+      difficulty: "easy",
+      seed: "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+      notes,
+    });
+    expect(g.notes).toEqual(notes);
+    expect(g.notes).not.toBe(notes);
+    expect(g.history).toEqual([]);
+  });
+});

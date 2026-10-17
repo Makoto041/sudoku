@@ -195,7 +195,7 @@ export function SettingsSheet({
         <dt>Shift + Z</dt>
         <dd>進む</dd>
         <dt>H</dt>
-        <dd>ヒント（フリープレイ）</dd>
+        <dd>ヒント（今日の一問を除く）</dd>
         <dt>Space</dt>
         <dd>一時停止（フリープレイ）</dd>
         <dt>Esc</dt>

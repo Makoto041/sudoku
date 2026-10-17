@@ -1,4 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { digitsOf } from "../src/lib/sudoku/core";
+import { answerOf, practiceItems, startNotes, type PracticeItem } from "../src/lib/sudoku/practice";
+import { PRACTICE_POSITIONS } from "../src/lib/sudoku/practice-data";
 import { solve } from "../src/lib/sudoku/solver";
 
 // ページ内で例外が出たら失敗にする（効果音や触覚の処理も含む）
@@ -1272,6 +1275,39 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
   await shot(page, "colors-marks-dark");
 });
 
+/**
+ * ツールの並びで、メモ・色の ON/OFF のバッジがはみ出していないか。
+ * 掛かった部分を叩くと隣ではなくバッジのボタンが反応するので、ボタンの左右からはみ出さないこと。
+ * 位置は文字の幅で変わるので、固定の座標ではなく実際の矩形どうしで比べる。
+ * 横向きでは上へも 4px ほどはみ出すが、そこにボタンは無いので見ない
+ */
+function toolBadgeProblems(page: Page) {
+  return page.evaluate(() => {
+    const tools = [...document.querySelectorAll(".tools .tool")];
+    const rects = tools.map((t) => t.getBoundingClientRect());
+    const problems: string[] = [];
+    let badges = 0;
+    tools.forEach((tool, i) => {
+      const badge = tool.querySelector(".tool-badge");
+      if (!badge) return;
+      badges++;
+      const b = badge.getBoundingClientRect();
+      const own = rects[i];
+      if (b.left < own.left - 0.5 || b.right > own.right + 0.5) {
+        const [l, r] = [own.left - b.left, b.right - own.right].map((v) => v.toFixed(1));
+        problems.push(`${tool.textContent}: ボタンの外へはみ出す（左 ${l}px・右 ${r}px）`);
+      }
+      rects.forEach((other, j) => {
+        const w = Math.min(b.right, other.right) - Math.max(b.left, other.left);
+        const h = Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top);
+        if (j !== i && w > 0.5 && h > 0)
+          problems.push(`${tool.textContent} → ${tools[j].textContent}: ${w.toFixed(1)}px`);
+      });
+    });
+    return { badges, problems };
+  });
+}
+
 test("フリープレイの 7 つ並びでも、メモ・色の ON/OFF のバッジが隣のボタンに掛からない", async ({ page }) => {
   await page.goto("/");
   await page
@@ -1281,34 +1317,6 @@ test("フリープレイの 7 つ並びでも、メモ・色の ON/OFF のバッ
   await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
   await expect(page.locator(".tools.is-dense .tool")).toHaveCount(7);
   const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
-  // 掛かった部分を叩くと隣ではなくバッジのボタンが反応するので、ボタンの左右からはみ出さないこと。
-  // 位置は文字の幅で変わるので、固定の座標ではなく実際の矩形どうしで比べる。
-  // 横向きでは上へも 4px ほどはみ出すが、そこにボタンは無いので見ない
-  const measure = () =>
-    page.evaluate(() => {
-      const tools = [...document.querySelectorAll(".tools .tool")];
-      const rects = tools.map((t) => t.getBoundingClientRect());
-      const problems: string[] = [];
-      let badges = 0;
-      tools.forEach((tool, i) => {
-        const badge = tool.querySelector(".tool-badge");
-        if (!badge) return;
-        badges++;
-        const b = badge.getBoundingClientRect();
-        const own = rects[i];
-        if (b.left < own.left - 0.5 || b.right > own.right + 0.5) {
-          const [l, r] = [own.left - b.left, b.right - own.right].map((v) => v.toFixed(1));
-          problems.push(`${tool.textContent}: ボタンの外へはみ出す（左 ${l}px・右 ${r}px）`);
-        }
-        rects.forEach((other, j) => {
-          const w = Math.min(b.right, other.right) - Math.max(b.left, other.left);
-          const h = Math.min(b.bottom, other.bottom) - Math.max(b.top, other.top);
-          if (j !== i && w > 0.5 && h > 0)
-            problems.push(`${tool.textContent} → ${tools[j].textContent}: ${w.toFixed(1)}px`);
-        });
-      });
-      return { badges, problems };
-    });
 
   for (const size of [
     page.viewportSize()!,
@@ -1325,11 +1333,361 @@ test("フリープレイの 7 つ並びでも、メモ・色の ON/OFF のバッ
     for (const on of [false, true]) {
       if ((await notesTool.getAttribute("aria-pressed")) !== String(on)) await notesTool.click();
       await expect(notesTool).toHaveAttribute("aria-pressed", String(on));
-      expect(await measure(), `${size.width}x${size.height} メモ${on ? "ON" : "OFF"}`).toEqual({
+      expect(await toolBadgeProblems(page), `${size.width}x${size.height} メモ${on ? "ON" : "OFF"}`).toEqual({
         badges: 2,
         problems: [],
       });
     }
     await shot(page, `tools-${size.width}x${size.height}`);
   }
+});
+
+const PRACTICE = practiceItems(PRACTICE_POSITIONS);
+const practiceItem = (key: string) => PRACTICE.find((item) => item.key === key)!;
+
+/** ホームから手筋の練習の一覧を開き、項目が出るまで待つ（局面のデータは開くときに読む） */
+async function openPracticeList(page: Page) {
+  await page.getByRole("button", { name: "手筋の練習" }).click();
+  await expect(page.locator(".practice-row")).toHaveCount(PRACTICE.length);
+}
+
+async function openPracticeItem(page: Page, item: PracticeItem) {
+  await page.locator(".practice-name").getByText(item.name, { exact: true }).click();
+  await expect(page.getByRole("heading", { name: item.name })).toBeVisible();
+}
+
+/** 練習の画面に出ている局面 */
+async function practicePosition(page: Page, item: PracticeItem) {
+  const id = await page.locator(".practice").getAttribute("data-position");
+  const position = item.positions.find((p) => p.id === id);
+  expect(position, `局面 ${id}`).toBeDefined();
+  return position!;
+}
+
+/** 練習の一覧の、項目ごとの「解いた数/局面の数」 */
+const practiceCount = (page: Page, item: PracticeItem) =>
+  page
+    .locator(".practice-row")
+    .filter({ has: page.getByText(item.name, { exact: true }) })
+    .locator(".practice-count");
+
+/**
+ * 合成した効果音の数（Web Audio のオシレーターを作った回数）を数え始め、数を読む関数を返す。page.goto の前に呼ぶ
+ */
+async function countSounds(page: Page) {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __sounds: number };
+    w.__sounds = 0;
+    const proto = BaseAudioContext.prototype;
+    const create = proto.createOscillator;
+    proto.createOscillator = function (this: BaseAudioContext) {
+      w.__sounds++;
+      return create.call(this);
+    };
+  });
+  return () => page.evaluate(() => (window as unknown as { __sounds: number }).__sounds);
+}
+
+/** 入力の反映と描画を待つ */
+const nextFrames = (page: Page) =>
+  page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+/** 端末に保存したフリープレイと記録、保存しているキー（今日の一問の履歴は裏で取り直して保存するので除く） */
+const savedState = (page: Page) =>
+  page.evaluate(() => ({
+    free: localStorage.getItem("sudoku:free"),
+    stats: localStorage.getItem("sudoku:stats"),
+    keys: Object.keys(localStorage)
+      .filter((k) => k !== "sudoku:history")
+      .sort(),
+  }));
+
+test("手筋の練習：シングルを置いて正解し、次へ進む。戻るで一覧へ。進み具合は再読み込み後も残り、フリープレイの保存と記録は変わらない", async ({
+  page,
+}) => {
+  const sounds = await countSounds(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "sudoku:stats",
+      JSON.stringify({ easy: { played: 1, bestMs: 60_000, cleanBestMs: null, bestPoints: 100 } }),
+    ),
+  );
+  const before = await savedState(page);
+  await shot(page, "practice-home");
+
+  await openPracticeList(page);
+  await expect(page.locator(".practice-name")).toHaveText(PRACTICE.map((item) => item.name));
+  await expect(page.locator(".practice-count")).toHaveText(
+    PRACTICE.map((item) => `0/${item.positions.length}`),
+  );
+  await shot(page, "practice-list");
+
+  const single = practiceItem("naked-single");
+  const total = single.positions.length;
+  await openPracticeItem(page, single);
+  await expect(page.locator(".bar-kicker")).toHaveText(`手筋の練習 · 1/${total}`);
+  await expect(page.locator(".practice-status")).toHaveText("置けるマスに数字を置く");
+  // 時計・スコア・一時停止・得点は出さず、自動メモも隠す
+  await expect(page.locator(".clock, .score-value, .popups")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /一時停止|自動メモ/ })).toHaveCount(0);
+  await expect(page.locator(".tools .tool")).toHaveCount(6);
+  // 始めのメモは候補をすべて書いた状態から removed を除いたもの
+  const first = await practicePosition(page, single);
+  const cells = page.getByRole("gridcell");
+  const notes = startNotes(first);
+  const empty = first.values.indexOf(0);
+  await expect(cells.nth(empty).locator(".notes .on")).toHaveText(
+    [1, 2, 3, 4, 5, 6, 7, 8, 9].filter((d) => notes[empty] & (1 << d)).map(String),
+  );
+  await shot(page, "practice-single");
+
+  // 違う数字は誤りとして示し、消せば消える
+  const { cell, digit } = answerOf(first).placement!;
+  const target = cells.nth(cell);
+  await target.dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${(digit % 9) + 1}`);
+  await expect(page.locator(".stuck-bar")).toHaveText("違う数字があります");
+  await expect(target).toHaveClass(/wrong/);
+  await page.keyboard.press("Backspace");
+  await expect(page.locator(".stuck-bar")).toHaveCount(0);
+  // 正解する前は N でメモを切り替えると音が鳴る（音を数えられていることの確認）
+  const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
+  const beforeToggle = await sounds();
+  await page.keyboard.press("n");
+  await expect(notesTool).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("n");
+  await expect(notesTool).toHaveAttribute("aria-pressed", "false");
+  expect(await sounds()).toBeGreaterThanOrEqual(beforeToggle + 2);
+  await page.keyboard.press(`Digit${digit}`);
+  const result = page.locator(".practice-result");
+  await expect(result).toContainText("正解");
+  await shot(page, "practice-correct");
+  // 正解したら盤面は変えず、キーを押しても音を鳴らさない（消す・移動・メモ切替・色切替・数字）
+  await nextFrames(page);
+  const afterSolved = await sounds();
+  for (const key of ["Backspace", "ArrowRight", "n", "c", `Digit${(digit % 9) + 1}`])
+    await page.keyboard.press(key);
+  await nextFrames(page);
+  expect(await target.getAttribute("aria-label")).toMatch(new RegExp(` ${digit}$`));
+  expect(
+    await page.locator(".cell.selected").evaluateAll((els) => els.map((el) => el.getAttribute("data-i"))),
+  ).toEqual([String(cell)]);
+  expect(await notesTool.getAttribute("aria-pressed")).toBe("false");
+  expect(await page.getByRole("button", { name: /^(ON|OFF) ?色$/ }).getAttribute("aria-pressed")).toBe(
+    "false",
+  );
+  expect(await sounds()).toBe(afterSolved);
+
+  await result.getByRole("button", { name: "次へ" }).click();
+  await expect(page.locator(".bar-kicker")).toHaveText(`手筋の練習 · 2/${total}`);
+  expect((await practicePosition(page, single)).id).toBe(single.positions[1].id);
+  await expect(result).toHaveCount(0);
+
+  // ブラウザの戻るで一覧へ。解いた数が増えている
+  await page.goBack();
+  await expect(practiceCount(page, single)).toHaveText(`1/${total}`);
+
+  // 開き直すと、まだ解いていない局面から。最後の局面では一覧に戻る
+  await openPracticeItem(page, single);
+  for (let i = 1; i < total; i++) {
+    await expect(page.locator(".bar-kicker")).toHaveText(`手筋の練習 · ${i + 1}/${total}`);
+    const p = await practicePosition(page, single);
+    const move = answerOf(p).placement!;
+    await cells.nth(move.cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${move.digit}`);
+    await expect(result).toContainText("正解");
+    await result.getByRole("button", { name: i < total - 1 ? "次へ" : "一覧に戻る" }).click();
+  }
+  await expect(practiceCount(page, single)).toHaveText(`${total}/${total}`);
+  await expect(page.locator(".practice-row.is-done")).toHaveCount(1);
+  await shot(page, "practice-list-done");
+
+  // 再読み込みしても残る。ブラウザの戻るでホームへ
+  await page.reload();
+  await openPracticeList(page);
+  await expect(practiceCount(page, single)).toHaveText(`${total}/${total}`);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+
+  // 練習はフリープレイの保存と記録に触れず、練習の進み具合だけを保存する
+  const after = await savedState(page);
+  expect(after.free).toBe(before.free);
+  expect(after.stats).toBe(before.stats);
+  expect(after.keys).toEqual([...before.keys, "sudoku:practice"].sort());
+  expect(JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:practice")))!)).toEqual({
+    "naked-single": single.positions.map((p) => p.id),
+  });
+});
+
+test("手筋の練習：ヒントで手筋の名前→説明と消す候補の順に見せ、メモに反映すると正解になる", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openPracticeList(page);
+  const item = practiceItem("x-wing");
+  await openPracticeItem(page, item);
+  await expect(page.locator(".practice-status")).toHaveText("消せる候補をメモから消す");
+  const p = await practicePosition(page, item);
+  const answer = answerOf(p);
+
+  await page.getByRole("button", { name: "ヒント", exact: true }).click();
+  const panel = page.locator(".hint-panel");
+  await expect(panel.locator(".hint-title")).toHaveText(item.name);
+  await expect(panel.locator(".hint-body")).toHaveCount(0);
+  await panel.getByRole("button", { name: "もっと見る" }).click();
+  await expect(panel.locator(".hint-body")).toBeVisible();
+  const targets = [...new Set(answer.eliminations.map((e) => e.cell))].sort((a, b) => a - b);
+  await expect(page.locator(".cell.hint-target")).toHaveCount(targets.length);
+  expect(
+    await page
+      .locator(".cell.hint-target")
+      .evaluateAll((els) => els.map((el) => Number(el.getAttribute("data-i")))),
+  ).toEqual(targets);
+  await shot(page, "practice-hint");
+
+  await panel.getByRole("button", { name: "メモに反映" }).click();
+  await expect(page.locator(".practice-result")).toContainText("正解");
+  const cells = page.getByRole("gridcell");
+  for (const { cell, digit } of answer.eliminations) {
+    await expect(cells.nth(cell).locator(".notes .on").getByText(String(digit), { exact: true })).toHaveCount(
+      0,
+    );
+  }
+  await page.getByRole("button", { name: "一覧に戻る" }).first().click();
+  await expect(practiceCount(page, item)).toHaveText(`1/${item.positions.length}`);
+});
+
+test("手筋の練習：狙いの手にならないヒントを反映しても正解にしない（正解の数字をメモから消したまま反映する、消しすぎて見つかった易しい手筋を反映する）", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openPracticeList(page);
+  const item = practiceItem("x-wing");
+  await openPracticeItem(page, item);
+  const p = await practicePosition(page, item);
+  const answer = answerOf(p);
+  const notes = startNotes(p);
+  const cells = page.getByRole("gridcell");
+  const noteOf = (cell: number, digit: number) =>
+    cells.nth(cell).locator(".notes .on").getByText(String(digit), { exact: true });
+  const toggleNote = async (cell: number, digit: number) => {
+    await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Shift+Digit${digit}`);
+  };
+  const panel = page.locator(".hint-panel");
+  /** ヒントを開き、手筋の名前を確かめてから説明に進み、盤面に反映する */
+  const applyHint = async (title: string, button: string) => {
+    await page.getByRole("button", { name: "ヒント", exact: true }).click();
+    await expect(panel.locator(".hint-title")).toHaveText(title);
+    await panel.getByRole("button", { name: "もっと見る" }).click();
+    await panel.getByRole("button", { name: button }).click();
+    await expect(panel).toHaveCount(0);
+  };
+  const result = page.locator(".practice-result");
+  const problem = page.locator(".stuck-bar");
+  const undo = page.getByRole("button", { name: "戻す", exact: true });
+
+  // 狙いと関係なく、始めのメモが候補をすべて書いたまま（2 つ以上）のマス
+  const other = notes.findIndex(
+    (n, i) =>
+      digitsOf(n).length >= 2 &&
+      !answer.eliminations.some((e) => e.cell === i) &&
+      !p.removed.some(([c]) => c === i),
+  );
+  expect(other).toBeGreaterThanOrEqual(0);
+  const solution = p.solution[other];
+
+  // 正解の数字をメモから消してから狙いの手筋のヒントを反映しても、消した数字は戻らないので正解にしない
+  await toggleNote(other, solution);
+  await expect(problem).toHaveText("正解の数字をメモから消しています");
+  await applyHint(item.name, "メモに反映");
+  for (const { cell, digit } of answer.eliminations) await expect(noteOf(cell, digit)).toHaveCount(0);
+  await expect(noteOf(other, solution)).toHaveCount(0);
+  await expect(problem).toHaveText("正解の数字をメモから消しています");
+  await expect(cells.nth(other)).toHaveClass(/stuck/);
+  await expect(result).toHaveCount(0);
+  await undo.click();
+  await undo.click();
+  await expect(undo).toBeDisabled();
+  await expect(problem).toHaveCount(0);
+
+  // メモを正解の数字だけにすると、ヒントはそのマスに置くシングルになる。置いても狙いの手筋をしていないので正解にしない
+  const extra = digitsOf(notes[other]).filter((d) => d !== solution);
+  for (const d of extra) await toggleNote(other, d);
+  await expect(cells.nth(other).locator(".notes .on")).toHaveText([String(solution)]);
+  await applyHint("ネイキッドシングル", "置く");
+  await expect(cells.nth(other)).toHaveAttribute("aria-label", new RegExp(` ${solution}$`));
+  await expect(result).toHaveCount(0);
+  await expect(problem).toHaveCount(0);
+  for (let i = 0; i <= extra.length; i++) await undo.click();
+  await expect(undo).toBeDisabled();
+
+  // 狙いの手筋のヒントを反映すれば正解
+  await applyHint(item.name, "メモに反映");
+  await expect(result).toContainText("正解");
+});
+
+test("手筋の練習：消す手筋を手で解く。正解の数字を消すと誤りを示し、余計な候補を消しても正解になる。6 つ並びのバッジも掛からない", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openPracticeList(page);
+  const item = practiceItem("naked-pair");
+  await openPracticeItem(page, item);
+  const p = await practicePosition(page, item);
+  const answer = answerOf(p);
+  const notes = startNotes(p);
+  const cells = page.getByRole("gridcell");
+  const toggleNote = async (cell: number, digit: number) => {
+    await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Shift+Digit${digit}`);
+  };
+  const problem = page.locator(".stuck-bar");
+
+  // 正解の数字をメモから消すと、そのマスを赤い枠で示す。戻せば消える
+  const [{ cell }] = answer.eliminations;
+  await toggleNote(cell, p.solution[cell]);
+  await expect(problem).toHaveText("正解の数字をメモから消しています");
+  await expect(cells.nth(cell)).toHaveClass(/stuck/);
+  await shot(page, "practice-lost");
+  await page.getByRole("button", { name: "戻す", exact: true }).click();
+  await expect(problem).toHaveCount(0);
+  await expect(cells.nth(cell)).not.toHaveClass(/stuck/);
+
+  // 狙いではなく正解でもない候補を消しても誤りにしない
+  const extra = notes.flatMap((n, i) =>
+    [1, 2, 3, 4, 5, 6, 7, 8, 9]
+      .filter((d) => n & (1 << d) && d !== p.solution[i] && !answer.eliminations.some((e) => e.cell === i))
+      .map((d) => ({ cell: i, digit: d })),
+  )[0];
+  await toggleNote(extra.cell, extra.digit);
+  await expect(
+    cells.nth(extra.cell).locator(".notes .on").getByText(String(extra.digit), { exact: true }),
+  ).toHaveCount(0);
+  await expect(problem).toHaveCount(0);
+  await expect(page.locator(".practice-result")).toHaveCount(0);
+
+  for (const e of answer.eliminations) await toggleNote(e.cell, e.digit);
+  await expect(page.locator(".practice-result")).toContainText("正解");
+
+  // 練習のツールは 6 つ並び。狭い画面でもバッジが隣のボタンに掛からない
+  await expect(page.locator(".tools.is-dense .tool")).toHaveCount(6);
+  for (const size of [
+    { width: 320, height: 568 },
+    { width: 393, height: 852 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.waitForFunction((width) => window.innerWidth === width, size.width);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    expect(await toolBadgeProblems(page), `${size.width}x${size.height}`).toEqual({
+      badges: 2,
+      problems: [],
+    });
+    await shot(page, `practice-tools-${size.width}`);
+  }
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForTimeout(300);
+  await shot(page, "practice-dark");
 });

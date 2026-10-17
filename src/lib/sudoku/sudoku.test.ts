@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DIFFICULTIES, findConflicts, isValidSolution, parseGrid, serializeGrid } from "./core";
 import { PROFILES, generateDaily, generateExtreme, generatePuzzle, jstDateKey } from "./generator";
-import { gradePuzzle, searchEffort, solveLogically } from "./logic";
+import { candidatesOf, findAllSteps, findNextStep, gradePuzzle, searchEffort, solveLogically } from "./logic";
 import { countSolutions, solve } from "./solver";
 
 // 極は作るのに時間がかかるので、まとめて回すテストからは外し、下で個別に確かめる
@@ -79,6 +79,33 @@ describe("logic grader", () => {
         else expect(s.cands[i] & (1 << p.solution[i])).not.toBe(0);
       }
       if (s.level < 6) expect(s.grid).toEqual(p.solution);
+    }
+  });
+
+  it("findAllSteps の先頭は findNextStep の手で、どの手も解と食い違わない（手筋で解き進めた各局面）", () => {
+    for (const difficulty of ["hard", "expert"] as const) {
+      for (let k = 0; k < 3; k++) {
+        const { puzzle, solution } = generatePuzzle(`all-steps-${k}`, difficulty);
+        const grid = puzzle.slice();
+        const cands = candidatesOf(grid);
+        for (;;) {
+          const next = findNextStep(grid, cands);
+          const all = findAllSteps(grid, cands);
+          expect(all[0] ?? null).toEqual(next);
+          for (const step of all) {
+            if (step.placement) expect(step.placement.digit).toBe(solution[step.placement.cell]);
+            for (const e of step.eliminations) expect(e.digit).not.toBe(solution[e.cell]);
+          }
+          if (!next) break;
+          if (next.placement) {
+            const { cell, digit } = next.placement;
+            grid[cell] = digit;
+            cands[cell] = 0;
+          }
+          for (const e of next.eliminations) cands[e.cell] &= ~(1 << e.digit);
+        }
+        if (gradePuzzle(puzzle) < 6) expect(grid).toEqual(solution);
+      }
     }
   });
 });

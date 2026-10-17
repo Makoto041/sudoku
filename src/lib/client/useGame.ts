@@ -21,8 +21,16 @@ export type Popup = { id: number; cell: number; text: string; kind: "gain" | "bo
 
 const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, popups: [] };
 
-export function storageKeyFor(s: GameState): string {
+/** 保存先のキー。練習は保存しないので null */
+export function storageKeyFor(s: GameState): string | null {
+  if (s.mode === "practice") return null;
   return s.mode === "daily" && s.daily ? KEYS.daily(s.daily.date, s.difficulty) : KEYS.free;
+}
+
+/** 選択と進む手を落として保存する。保存先が無ければ（練習）何もしない */
+export function saveGame(s: GameState) {
+  const key = storageKeyFor(s);
+  if (key) save(key, persisted(s));
 }
 
 function playEffects(effects: Effect[]) {
@@ -83,7 +91,7 @@ function playEffects(effects: Effect[]) {
 }
 
 /**
- * ゲームの状態と入力。入力ごとに音・触覚・アニメーションを出し、localStorage に保存する。
+ * ゲームの状態と入力。入力ごとに音・触覚・アニメーションを出し、localStorage に保存する（練習は保存しない）。
  * フリープレイの時計はここで進め、画面が隠れたら自動で一時停止する。
  */
 export function useGame(initial: GameState, options: { showMistakes: boolean; autoClearNotes: boolean }) {
@@ -199,10 +207,10 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
       prev.game.finalMs !== game.finalMs;
     if (!boardChanged && now - prev.at < 3000) return;
     lastSaved.current = { game, at: now };
-    save(storageKeyFor(game), persisted(game));
+    saveGame(game);
   }, [game]);
   useEffect(() => {
-    const flush = () => save(storageKeyFor(gameRef.current), persisted(gameRef.current));
+    const flush = () => saveGame(gameRef.current);
     window.addEventListener("pagehide", flush);
     return () => {
       window.removeEventListener("pagehide", flush);
