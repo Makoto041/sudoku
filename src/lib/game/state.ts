@@ -39,6 +39,8 @@ export type GameState = {
   selected: number | null;
   notesMode: boolean;
   history: Move[];
+  /** 元に戻した手（最後が次に進む手）。保存しない */
+  future?: Undone[];
   mistakes: number;
   hints: number;
   /** フリープレイの経過時間（一時停止を除く） */
@@ -64,6 +66,9 @@ type Move = {
   bulkNotes?: number[];
 };
 
+/** 元に戻した手と、戻す前の盤面とメモ。元に戻すは最後の手から順なので、戻す前の盤面はその手を打った直後と同じ */
+type Undone = { move: Move; values: Grid; notes: number[] };
+
 /** 入力の結果。音・アニメーションの出し分けに使う */
 export type Effect =
   | {
@@ -82,6 +87,7 @@ export type Effect =
   | { kind: "note"; cell: number; digit: number; on: boolean }
   | { kind: "erase"; cell: number }
   | { kind: "undo"; cell: number }
+  | { kind: "redo"; cell: number }
   | { kind: "hint"; cell: number; digit: number; units: number[][]; bonus: number }
   /** timeBonus は解き終えたときの時間ボーナス（日次はサーバーが測り直す） */
   | { kind: "solved"; cell: number; timeBonus: number }
@@ -99,6 +105,8 @@ export type Action =
   | { type: "input"; digit: number; asNote?: boolean; t?: number; clearPeers?: boolean }
   | { type: "erase" }
   | { type: "undo" }
+  /** 元に戻した手をやり直す */
+  | { type: "redo" }
   /** cell を指定すると、そのマスに正解を置く（手筋ヒントの「置く」） */
   | { type: "hint"; t?: number; cell?: number; clearPeers?: boolean }
   /** メモをまとめて置き換える（手筋ヒントの「メモに反映」） */
@@ -190,6 +198,11 @@ export function isSolved(s: GameState, values: Grid = s.values): boolean {
   return findConflicts(values).size === 0;
 }
 
+/** 手を積む。新しい手を打ったら、元に戻した手には進めなくなる */
+function commit(s: GameState, move: Move, patch: Partial<GameState>): GameState {
+  return { ...s, ...patch, history: [...s.history, move], future: [] };
+}
+
 function place(
   s: GameState,
   cell: number,
@@ -221,17 +234,15 @@ function place(
   let delta: ScoreDelta | null = null;
   if (s.solution && score)
     [score, delta] = applyPlacement(score, { cell, digit, t, viaHint }, s.solution, s.difficulty);
-  const next: GameState = {
-    ...s,
+  const next = commit(s, move, {
     values,
     notes,
-    history: [...s.history, move],
     mistakes: s.mistakes + (wrong ? 1 : 0),
     hints: s.hints + (viaHint && countHint ? 1 : 0),
     score,
     // 日次はサーバーで計算し直すので、置いた手を残す
     moves: s.mode === "daily" && !viaHint ? [...(s.moves ?? []), [Math.round(t), cell, digit]] : s.moves,
-  };
+  });
   const units = wrong ? [] : completedUnits(next, values, cell);
   const effects: Effect[] = [
     viaHint
@@ -295,7 +306,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         notes[cell] ^= bit;
         const move: Move = { cell, prevValue: 0, prevNotes: s.notes[cell], clearedNotes: [] };
         return [
-          { ...s, notes, history: [...s.history, move] },
+          commit(s, move, { notes }),
           [{ kind: "note", cell, digit: action.digit, on: (notes[cell] & bit) !== 0 }],
         ];
       }
@@ -310,7 +321,26 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
     case "undo": {
       const move = s.history[s.history.length - 1];
       if (!move) return [s, [{ kind: "blocked" }]];
-      return [undoOnce(s), [{ kind: "undo", cell: move.cell }]];
+      const future = [...(s.future ?? []), { move, values: s.values, notes: s.notes }];
+      return [{ ...undoOnce(s), future }, [{ kind: "undo", cell: move.cell }]];
+    }
+    case "redo": {
+      // 戻す前の盤面に戻すだけで、得点・手の記録・ミスには触れない（元に戻すもそれらを戻さない）
+      const future = s.future ?? [];
+      const entry = future[future.length - 1];
+      if (!entry) return [s, [{ kind: "blocked" }]];
+      const { move, values, notes } = entry;
+      return [
+        {
+          ...s,
+          values,
+          notes,
+          history: [...s.history, move],
+          future: future.slice(0, -1),
+          selected: move.bulkNotes ? s.selected : move.cell,
+        },
+        [{ kind: "redo", cell: move.cell }],
+      ];
     }
     case "rewind": {
       // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す
@@ -321,7 +351,8 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         steps++;
       }
       if (steps === 0) return [s, [{ kind: "blocked" }]];
-      return [cur, [{ kind: "rewind", steps }]];
+      // 進むで行き詰まった盤面に戻れないようにする
+      return [{ ...cur, future: [] }, [{ kind: "rewind", steps }]];
     }
     case "hintUsed": {
       if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
@@ -331,7 +362,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
       const notes = action.notes.map((n, i) => (s.values[i] ? 0 : n));
       const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
-      return [{ ...s, notes, history: [...s.history, move] }, [{ kind: "notes", filled: true }]];
+      return [commit(s, move, { notes }), [{ kind: "notes", filled: true }]];
     }
     case "autoNotes": {
       if (s.mode !== "free") return [s, [{ kind: "blocked" }]];
@@ -339,7 +370,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       const isFull = s.notes.every((n, i) => s.values[i] || n === full[i]);
       const notes = isFull ? Array<number>(81).fill(0) : full;
       const move: Move = { cell: -1, prevValue: 0, prevNotes: 0, clearedNotes: [], bulkNotes: s.notes };
-      return [{ ...s, notes, history: [...s.history, move] }, [{ kind: "notes", filled: !isFull }]];
+      return [commit(s, move, { notes }), [{ kind: "notes", filled: !isFull }]];
     }
     case "hint": {
       if (s.mode !== "free" || !s.solution) return [s, [{ kind: "blocked" }]];
@@ -400,7 +431,7 @@ function erase(s: GameState, cell: number): [GameState, Effect[]] {
   const move: Move = { cell, prevValue: values[cell], prevNotes: notes[cell], clearedNotes: [] };
   values[cell] = 0;
   notes[cell] = 0;
-  return [{ ...s, values, notes, history: [...s.history, move] }, [{ kind: "erase", cell }]];
+  return [commit(s, move, { values, notes }), [{ kind: "erase", cell }]];
 }
 
 /** ヒントを出すマス：選択中のマスが空きか間違いならそこ、無ければ候補が最も少ない空きマス */
