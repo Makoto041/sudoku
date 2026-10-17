@@ -124,8 +124,8 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.addInitScript(() =>
     localStorage.setItem("sudoku:player", JSON.stringify({ id: crypto.randomUUID(), name: "背景" })),
   );
-  // 設定シートは上寄せで縦に長いので、シートの下にボタンが見える高さにする
-  await page.setViewportSize({ width: 393, height: 1100 });
+  // 設定シートは上寄せで縦に長い。画面の高さ（92dvh）で切れ、その下に背景が帯状に残る高さにする
+  await page.setViewportSize({ width: 393, height: 700 });
   await page.goto("/");
   let started = false;
   page.on("request", (r) => {
@@ -134,21 +134,55 @@ test("シートの背景をタップしても、下のボタンが押されな�
   await page.getByRole("button", { name: "設定" }).click();
   const sheet = page.getByRole("dialog", { name: "設定" });
   await expect(sheet).toBeVisible();
-  // シートの下に見えている背景のうち、その下にボタンがある位置を叩く
-  const sheetBottom = await sheet.locator(".sheet").evaluate((el) => el.getBoundingClientRect().bottom);
-  const target = await page.evaluate((bottom) => {
-    for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
-      const r = el.getBoundingClientRect();
-      if (r.top > bottom + 4 && r.bottom < window.innerHeight) {
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  // シートは上から下りてくる。動いている途中に測ったり叩いたりすると位置がずれるので、止まるのを待つ
+  await sheet.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  // 背景の帯の中央にボタンが来るよう、下のページをスクロールする。ボタンの位置はフォントで変わるので、
+  // ページの下端まで送っても届かないときは、画面を低くして帯を上げてから測り直す
+  let target: { x: number; y: number; band: number } | null = null;
+  for (let height = 700; !target && height >= 480; height -= 20) {
+    await page.setViewportSize({ width: 393, height });
+    target = await sheet.locator(".sheet").evaluate((sheetEl) => {
+      const top = sheetEl.getBoundingClientRect().bottom;
+      const y = (top + window.innerHeight) / 2;
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      for (const el of document.querySelectorAll(".daily-row, .free-btn")) {
+        const r = el.getBoundingClientRect();
+        const scroll = window.scrollY + r.top + r.height / 2 - y;
+        if (scroll < 0 || scroll > max) continue;
+        window.scrollTo({ top: scroll, behavior: "instant" });
+        const after = el.getBoundingClientRect();
+        return { x: after.left + after.width / 2, y, band: window.innerHeight - top };
       }
-    }
-    return null;
-  }, sheetBottom);
-  expect(target).not.toBeNull();
+      return null;
+    });
+  }
+  expect(target, "背景の帯に重ねられるボタンがない").not.toBeNull();
+  expect(target!.band, "シートの下に背景がほとんど残っていない").toBeGreaterThan(24);
+  // 叩く位置のいちばん上が背景そのもので、その下にボタンがあること
+  const stack = await page.evaluate(({ x, y }) => {
+    const [front, ...behind] = document.elementsFromPoint(x, y);
+    return {
+      backdrop: front.matches(".sheet-backdrop"),
+      button: behind.some((el) => el.matches(".daily-row, .free-btn")),
+    };
+  }, target!);
+  expect(stack).toEqual({ backdrop: true, button: true });
+  // 下のボタンに click が届いたかを記録する（鬼・極は盤面が出るまで時間がかかり、盤面の有無では分からない）
+  await page.evaluate(() => {
+    const w = window as unknown as { pressed: boolean };
+    w.pressed = false;
+    window.addEventListener(
+      "click",
+      (e) => {
+        if ((e.target as Element).closest(".daily-row, .free-btn")) w.pressed = true;
+      },
+      true,
+    );
+  });
   await page.touchscreen.tap(target!.x, target!.y);
   await expect(sheet).toBeHidden();
   await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as unknown as { pressed: boolean }).pressed)).toBe(false);
   expect(started).toBe(false);
   await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
   await expect(page.getByRole("grid")).toHaveCount(0);
@@ -437,4 +471,70 @@ test("自動メモで候補をすべて書き、もう一度で消す。今日�
   await expect(page.locator(".cell .notes")).toHaveCount(empties);
   await page.getByRole("button", { name: "自動メモ" }).click();
   await expect(page.locator(".cell .notes")).toHaveCount(0);
+});
+
+test("設定で行・列・ブロックの強調と残りの数を消せる", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const cells = page.getByRole("gridcell");
+  // 空きの最も少ない数字を使い切り、薄い表示が出る状態にする
+  const empties = (d: number) => g.puzzle.flatMap((v, i) => (!v && g.solution![i] === d ? [i] : []));
+  const digit = [1, 2, 3, 4, 5, 6, 7, 8, 9].sort((a, b) => empties(a).length - empties(b).length)[0];
+  for (const i of empties(digit)) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${digit}`);
+  }
+  await cells.nth(g.puzzle.indexOf(0)).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await expect(page.locator(".cell.peer")).toHaveCount(20);
+  await expect(page.locator(".pad-key.is-done").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /残り/ })).toHaveCount(9);
+
+  await page.getByRole("button", { name: "設定" }).click();
+  const sheet = page.getByRole("dialog", { name: "設定" });
+  await sheet.getByRole("checkbox", { name: "行・列・ブロックを強調" }).uncheck();
+  await sheet.getByRole("checkbox", { name: "残りの数を表示" }).uncheck();
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(sheet).toBeHidden();
+
+  await expect(page.locator(".cell.selected")).toHaveCount(1);
+  await expect(page.locator(".cell.peer")).toHaveCount(0);
+  await expect(page.locator(".pad-key.is-done")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /残り/ })).toHaveCount(0);
+  await expect(page.locator(".pad-left")).toHaveText(Array(9).fill(""));
+});
+
+test("「ヒントの前に確認」をオンにすると、ヒントを開く前に確認する", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "設定" }).click();
+  const settings = page.getByRole("dialog", { name: "設定" });
+  await settings.getByRole("checkbox", { name: "ヒントの前に確認" }).check();
+  await settings.getByRole("button", { name: "閉じる" }).click();
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+
+  await page.getByRole("button", { name: "ヒント" }).click();
+  const confirm = page.getByRole("dialog", { name: "ヒントを見ますか？" });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toContainText("コンボが切れます");
+  await expect(page.locator(".hint-panel")).toHaveCount(0);
+  await confirm.getByRole("button", { name: "やめる" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.locator(".hint-panel")).toHaveCount(0);
+  await expect(page.locator(".tool-count")).toHaveCount(0);
+
+  // H キーも同じく確認してから開く
+  await page.keyboard.press("h");
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole("button", { name: "見る" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(page.locator(".hint-panel")).toBeVisible();
+  await expect(page.locator(".tool-count")).toHaveText("1");
 });

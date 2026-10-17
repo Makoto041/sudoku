@@ -58,16 +58,18 @@ export function Tools({ game, onUndo, onErase, onToggleNotes, onHint, onAutoNote
 
 type PadProps = {
   game: GameState;
+  /** 残りの個数を出し、使い切った数字を薄くする */
+  showRemaining: boolean;
   onDigit: (digit: number) => void;
 };
 
-export function NumberPad({ game, onDigit }: PadProps) {
+export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
   const remaining = remainingCounts(game.values);
   return (
     <div className={`pad${game.notesMode ? " is-notes" : ""}`}>
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => {
         const left = Math.max(0, remaining[d]);
-        const done = left === 0;
+        const done = showRemaining && left === 0;
         return (
           <button
             key={d}
@@ -85,10 +87,11 @@ export function NumberPad({ game, onDigit }: PadProps) {
                 onDigit(d);
               }
             }}
-            aria-label={`${d}（残り${left}）`}
+            aria-label={showRemaining ? `${d}（残り${left}）` : `${d}`}
           >
             <span className="pad-digit">{d}</span>
-            <span className="pad-left">{done ? "" : left}</span>
+            {/* 表示しないときも高さをそろえるため空で残す */}
+            <span className="pad-left">{showRemaining && left > 0 ? left : ""}</span>
           </button>
         );
       })}

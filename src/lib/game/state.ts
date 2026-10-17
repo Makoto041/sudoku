@@ -92,12 +92,15 @@ export type Effect =
 export type Action =
   | { type: "select"; cell: number | null }
   | { type: "move"; dr: number; dc: number }
-  /** t は開始からの経過 ms（スコアの速さに使う。dispatch 側で付ける） */
-  | { type: "input"; digit: number; asNote?: boolean; t?: number }
+  /**
+   * t は開始からの経過 ms（スコアの速さに使う）。clearPeers は周りのメモからその数字を消すか（省略時は消す）。
+   * どちらも dispatch 側で付ける
+   */
+  | { type: "input"; digit: number; asNote?: boolean; t?: number; clearPeers?: boolean }
   | { type: "erase" }
   | { type: "undo" }
   /** cell を指定すると、そのマスに正解を置く（手筋ヒントの「置く」） */
-  | { type: "hint"; t?: number; cell?: number }
+  | { type: "hint"; t?: number; cell?: number; clearPeers?: boolean }
   /** メモをまとめて置き換える（手筋ヒントの「メモに反映」） */
   | { type: "setNotes"; notes: number[] }
   /** 自動メモ：候補をすべて書く。すでに候補どおりなら全部消す */
@@ -195,6 +198,8 @@ function place(
   t: number,
   /** ヒントの回数を数えるか（手筋ヒントは開いたときに数え済み） */
   countHint = true,
+  /** 周りのメモからこの数字を消すか。消さなければ元に戻すときも周りのメモには触れない */
+  clearPeers: boolean,
 ): [GameState, Effect[]] {
   const values = s.values.slice();
   const notes = s.notes.slice();
@@ -202,10 +207,12 @@ function place(
   values[cell] = digit;
   notes[cell] = 0;
   const bit = 1 << digit;
-  for (const p of PEERS[cell]) {
-    if (notes[p] & bit) {
-      move.clearedNotes.push([p, notes[p]]);
-      notes[p] &= ~bit;
+  if (clearPeers) {
+    for (const p of PEERS[cell]) {
+      if (notes[p] & bit) {
+        move.clearedNotes.push([p, notes[p]]);
+        notes[p] &= ~bit;
+      }
     }
   }
   const wrong = !viaHint && isWrong(s, cell, values);
@@ -293,7 +300,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         ];
       }
       if (s.values[cell] === action.digit) return erase(s, cell);
-      return place(s, cell, action.digit, false, action.t ?? 0);
+      return place(s, cell, action.digit, false, action.t ?? 0, true, action.clearPeers ?? true);
     }
     case "erase": {
       const cell = s.selected;
@@ -350,6 +357,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         true,
         action.t ?? 0,
         action.cell === undefined,
+        action.clearPeers ?? true,
       );
       return [next, effects];
     }

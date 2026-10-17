@@ -15,6 +15,7 @@ import { haptic } from "@/lib/haptics";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
 import { Result } from "./Result";
+import { ConfirmSheet } from "./Sheets";
 import { findHint, notesAfterHint, type Hint } from "@/lib/sudoku/hint";
 import { ChevronLeft, Close, Gear, Pause, Play } from "./icons";
 
@@ -34,12 +35,25 @@ export type DailyOutcome =
   | { state: "error"; message: string; retry: boolean };
 
 export function Game({ initial, settings, player, onExit, onOpenSettings, onRanking, onNewFree }: Props) {
-  const { game, fx, dispatch } = useGame(initial, { showMistakes: settings.showMistakes });
+  const { game, fx, dispatch } = useGame(initial, {
+    showMistakes: settings.showMistakes,
+    autoClearNotes: settings.autoClearNotes,
+  });
   const gameRef = useRef(game);
   gameRef.current = game;
 
   // 手筋ヒント：1 段目は手筋の名前と注目する場所、2 段目で根拠と結果、そこで置く／メモに反映
   const [hint, setHint] = useState<{ data: Hint; stage: 1 | 2 } | null>(null);
+  // 「ヒントの前に確認」がオンのとき、確認を待っているヒント
+  const [pendingHint, setPendingHint] = useState<Hint | null>(null);
+  const showHint = useCallback(
+    (data: Hint) => {
+      dispatch({ type: "hintUsed" });
+      sfx.hint(5);
+      setHint({ data, stage: data.kind === "wrong" || data.kind === "guess" ? 2 : 1 });
+    },
+    [dispatch],
+  );
   const openHint = useCallback(() => {
     const g = gameRef.current;
     if (g.mode !== "free" || !g.solution || g.status !== "playing") return;
@@ -53,10 +67,18 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
       sfx.blocked();
       return;
     }
-    dispatch({ type: "hintUsed" });
-    sfx.hint(5);
-    setHint({ data, stage: data.kind === "wrong" || data.kind === "guess" ? 2 : 1 });
-  }, [dispatch, hint]);
+    if (settings.confirmHint) {
+      sfx.tap();
+      setPendingHint(data);
+      return;
+    }
+    showHint(data);
+  }, [hint, settings.confirmHint, showHint]);
+  const acceptHint = () => {
+    // 確認中に一時停止していたら開かない
+    if (pendingHint && gameRef.current.status === "playing") showHint(pendingHint);
+    setPendingHint(null);
+  };
   // 盤面が変わったらヒントは古くなるので閉じる
   const historyLength = game.history.length;
   useEffect(() => setHint(null), [historyLength]);
@@ -323,6 +345,8 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             fx={fx}
             showMistakes={settings.showMistakes}
             highlightSame={settings.highlightSame}
+            highlightPeers={settings.highlightPeers}
+            unitFx={settings.unitFx}
             stuck={stuck}
             hint={hintCells}
             onSelect={onSelect}
@@ -418,9 +442,23 @@ export function Game({ initial, settings, player, onExit, onOpenSettings, onRank
             onHint={openHint}
             onAutoNotes={() => dispatch({ type: "autoNotes" })}
           />
-          <NumberPad game={game} onDigit={(digit) => dispatch({ type: "input", digit })} />
+          <NumberPad
+            game={game}
+            showRemaining={settings.showRemaining}
+            onDigit={(digit) => dispatch({ type: "input", digit })}
+          />
         </div>
       </div>
+
+      {pendingHint && (
+        <ConfirmSheet
+          title="ヒントを見ますか？"
+          body="コンボが切れます。"
+          confirm="見る"
+          onConfirm={acceptHint}
+          onClose={() => setPendingHint(null)}
+        />
+      )}
 
       {showResult && game.status === "solved" && (
         <Result
