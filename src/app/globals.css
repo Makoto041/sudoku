@@ -1561,6 +1561,15 @@ p {
   transform: translateX(20px);
 }
 
+.toggle-row.is-disabled,
+.toggle:disabled {
+  cursor: default;
+}
+
+.toggle:disabled {
+  opacity: 0.45;
+}
+
 .keys {
   display: grid;
   grid-template-columns: auto 1fr;

@@ -87,6 +87,12 @@ export const api = {
     }),
   rename: (playerId: string, name: string) =>
     request<{ name: string }>("/api/player", { method: "POST", body: JSON.stringify({ playerId, name }) }),
+  /** 通知の公開鍵。値は検査してから使う */
+  pushKey: () => request<{ publicKey?: unknown }>("/api/push"),
+  subscribePush: (playerId: string, subscription: PushSubscriptionJSON) =>
+    request<{ ok: true }>("/api/push", { method: "POST", body: JSON.stringify({ playerId, subscription }) }),
+  unsubscribePush: (playerId: string, endpoint: string) =>
+    request<{ ok: true }>("/api/push", { method: "DELETE", body: JSON.stringify({ playerId, endpoint }) }),
 };
 
 export function describeError(err: unknown): string {

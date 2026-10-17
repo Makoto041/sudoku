@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { createECDH } from "node:crypto";
+import { expect, test, type Locator, type Page, type Response } from "@playwright/test";
 import { digitsOf } from "../src/lib/sudoku/core";
 import { answerOf, practiceItems, startNotes, type PracticeItem } from "../src/lib/sudoku/practice";
 import { PRACTICE_POSITIONS } from "../src/lib/sudoku/practice-data";
@@ -2134,4 +2135,372 @@ test("実績：判定が例外を投げても、今日の一問の送信は成�
   await nextFrames(page);
   expect(submits).toBe(1);
   await restore();
+});
+
+/** 毎日の通知のテストで使うプレイヤーと公開鍵（P-256 の点を未圧縮で表した 65 バイト） */
+const PUSH_PLAYER = "55555555-5555-4555-8555-555555555555";
+const PUSH_PUBLIC_KEY = createECDH("prime256v1").generateKeys().toString("base64url");
+/** 偽の購読の endpoint と toJSON()（fakePush で n 番目に作る購読） */
+const fakeEndpoint = (n: number) => `https://fcm.googleapis.com/fcm/send/e2e-${n}`;
+const fakeSubscription = (n: number) => ({
+  endpoint: fakeEndpoint(n),
+  expirationTime: null,
+  keys: { p256dh: "e2e-p256dh", auth: "e2e-auth" },
+});
+
+/** 設定シートの「毎日の通知」のトグル */
+const reminderToggle = (page: Page) =>
+  page.getByRole("dialog", { name: "設定" }).getByRole("checkbox", { name: /毎日の通知/ });
+
+/**
+ * 通知の API（Service Worker の登録・購読・Notification）を偽物に置き換える。実際の購読・プッシュサービスへの接続はしない。
+ * iPhone でも使える端末として扱うよう、ホーム画面に追加したアプリとして開いていることにする。
+ * permission は初めの許可、grant は許可を求めたときの答え、subscribed は購読が残っているか、reminder は有効にした印。
+ * 購読は、実際のブラウザと同じく userVisibleOnly が true でないと作らず、鍵が公開鍵のバイト列でなければ作らない。
+ * 許可を求めた・購読した・外した回数は window.__push に残す
+ */
+async function fakePush(
+  page: Page,
+  opts: {
+    permission?: NotificationPermission;
+    grant?: NotificationPermission;
+    subscribed?: boolean;
+    reminder?: boolean;
+  } = {},
+) {
+  await page.addInitScript(
+    ({ o, player, publicKey }) => {
+      localStorage.setItem("sudoku:player", JSON.stringify({ id: player, name: "通知" }));
+      if (o.reminder) localStorage.setItem("sudoku:reminder", "true");
+      const log = { requested: 0, subscribe: 0, unsubscribe: 0 };
+      (window as unknown as { __push: typeof log }).__push = log;
+      let permission: NotificationPermission = o.permission ?? "default";
+      let made = 0;
+      type Sub = {
+        endpoint: string;
+        options: { applicationServerKey: ArrayBuffer | null };
+        toJSON: () => unknown;
+        unsubscribe: () => Promise<boolean>;
+      };
+      let current: Sub | null = null;
+      const make = (key: ArrayBuffer | null): Sub => {
+        const endpoint = `https://fcm.googleapis.com/fcm/send/e2e-${made++}`;
+        const sub: Sub = {
+          endpoint,
+          options: { applicationServerKey: key },
+          toJSON: () => ({
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: "e2e-p256dh", auth: "e2e-auth" },
+          }),
+          unsubscribe: async () => {
+            log.unsubscribe++;
+            if (current === sub) current = null;
+            return true;
+          },
+        };
+        return sub;
+      };
+      if (o.subscribed) current = make(null);
+      const expected = Uint8Array.from(atob(publicKey.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
+        c.charCodeAt(0),
+      );
+      const reg = {
+        active: {},
+        pushManager: {
+          getSubscription: async () => current,
+          subscribe: async (init: PushSubscriptionOptionsInit) => {
+            log.subscribe++;
+            const key = init.applicationServerKey;
+            if (
+              init.userVisibleOnly !== true ||
+              !(key instanceof Uint8Array) ||
+              key.length !== expected.length ||
+              key.some((b, i) => b !== expected[i])
+            ) {
+              throw new DOMException("invalid subscribe options", "NotAllowedError");
+            }
+            current ??= make(new Uint8Array(key).buffer);
+            return current;
+          },
+        },
+      };
+      const define = (target: object, key: string, value: unknown) =>
+        Object.defineProperty(target, key, { configurable: true, writable: true, value });
+      define(navigator, "serviceWorker", {
+        register: async () => reg,
+        getRegistration: async () => reg,
+        ready: Promise.resolve(reg),
+      });
+      define(navigator, "standalone", true);
+      define(window, "PushManager", function PushManager() {});
+      const FakeNotification = function Notification() {};
+      Object.defineProperty(FakeNotification, "permission", { get: () => permission });
+      define(FakeNotification, "requestPermission", async () => {
+        log.requested++;
+        permission = o.grant ?? "granted";
+        return permission;
+      });
+      define(window, "Notification", FakeNotification);
+    },
+    { o: opts, player: PUSH_PLAYER, publicKey: PUSH_PUBLIC_KEY },
+  );
+  return () => page.evaluate(() => (window as unknown as { __push: Record<string, number> }).__push);
+}
+
+/**
+ * /api/push を偽のサーバーにする。GET は公開鍵、POST・DELETE は statuses の順に返す（最後の値はその後も返す）。
+ * POST・DELETE で送った本文を、受けた時点で記録する。hold があれば、POST・DELETE の応答をそれが解決するまで待たせる
+ */
+async function routePush(
+  page: Page,
+  statuses: { POST?: number[]; DELETE?: number[]; hold?: Promise<void> } = {},
+) {
+  const sent: { method: string; body: unknown }[] = [];
+  await page.route("**/api/push", async (route) => {
+    const req = route.request();
+    const method = req.method();
+    if (method === "GET") return route.fulfill({ json: { publicKey: PUSH_PUBLIC_KEY } });
+    sent.push({ method, body: req.postDataJSON() });
+    await statuses.hold;
+    const queue = statuses[method as "POST" | "DELETE"] ?? [200];
+    const status = queue.length > 1 ? queue.shift()! : queue[0];
+    await route.fulfill({ status, json: status === 200 ? { ok: true } : { error: "error" } });
+  });
+  return sent;
+}
+
+/** /api/push への method の応答か（page.waitForResponse に渡す） */
+const isPushApi = (method: string) => (r: Response) =>
+  new URL(r.url()).pathname === "/api/push" && r.request().method() === method;
+
+const reminderFlag = (page: Page) => page.evaluate(() => localStorage.getItem("sudoku:reminder"));
+
+/** 通知の項目を見える位置に出し、シートとトグルの動きが止まってから撮る */
+async function reminderShot(page: Page, name: string) {
+  if (!SHOTS) return;
+  await reminderToggle(page).scrollIntoViewIfNeeded();
+  await page
+    .getByRole("dialog", { name: "設定" })
+    .evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  await shot(page, name);
+}
+
+test.describe("毎日の通知", () => {
+  // 本物の Service Worker が登録されると、page.route で応答を差し替えられないことがある
+  test.use({ serviceWorkers: "block" });
+
+  test("サーバーに通知の設定が無ければ（503）項目を出さない。公開鍵を返すようになれば、次に開いたときに出す", async ({
+    page,
+  }) => {
+    let available = false;
+    let gets = 0;
+    await page.route("**/api/push", (route) => {
+      gets++;
+      return available
+        ? route.fulfill({ json: { publicKey: PUSH_PUBLIC_KEY } })
+        : route.fulfill({ status: 503, json: { error: "push unavailable" } });
+    });
+    await page.goto("/");
+    const settings = page.getByRole("dialog", { name: "設定" });
+    const got = page.waitForResponse(isPushApi("GET"));
+    await page.getByRole("button", { name: "設定" }).click();
+    expect((await got).status()).toBe(503);
+    await nextFrames(page);
+    await expect(settings.getByRole("checkbox", { name: "ヒントの前に確認" })).toBeVisible();
+    await expect(settings.getByText("毎日の通知")).toHaveCount(0);
+    await expect(settings.getByRole("heading", { name: "通知", exact: true })).toHaveCount(0);
+    await settings.getByRole("button", { name: "閉じる" }).click();
+    await expect(settings).toBeHidden();
+
+    // 取れなかったときは、次に開いたときに取り直す（端末によって押せるかは違うので、項目があることだけ見る）
+    available = true;
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(reminderToggle(page)).toBeVisible();
+    await expect(settings.getByRole("heading", { name: "通知", exact: true })).toBeVisible();
+    expect(gets).toBe(2);
+    await reminderShot(page, "settings-reminder");
+  });
+
+  test("iPhone の Safari のページでは、ホーム画面に追加したアプリで設定できることを示し、押せない", async ({
+    page,
+  }, info) => {
+    test.skip(!/iPhone/.test(info.project.use.userAgent ?? ""), "iPhone の Safari だけ");
+    await routePush(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+    await expect(toggle).toBeDisabled();
+    await expect(toggle).not.toBeChecked();
+    await expect(
+      page.getByRole("dialog", { name: "設定" }).getByText("ホーム画面に追加したアプリで設定できます"),
+    ).toBeVisible();
+  });
+
+  test("通知の許可がブロックされていれば、そのことを示し、押せない", async ({ page }) => {
+    const pushLog = await fakePush(page, { permission: "denied" });
+    const sent = await routePush(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+    await expect(toggle).toBeDisabled();
+    await expect(
+      page.getByRole("dialog", { name: "設定" }).getByText("通知が許可されていません"),
+    ).toBeVisible();
+    expect(await pushLog()).toEqual({ requested: 0, subscribe: 0, unsubscribe: 0 });
+    expect(sent).toEqual([]);
+  });
+
+  test("有効にすると許可 → 購読 → 登録して印を保存する。無効にするとサーバーから消し、購読と印を外す。続けて押しても 1 回だけ", async ({
+    page,
+  }) => {
+    const pushLog = await fakePush(page, { permission: "default", grant: "granted" });
+    const sent = await routePush(page);
+    await page.goto("/");
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+    await expect(toggle).toBeEnabled();
+    await expect(toggle).not.toBeChecked();
+    await expect(
+      settings.getByText("今日の一問を 1 問もクリアしていない日の 20 時（日本時間）"),
+    ).toBeVisible();
+
+    // 続けて 2 回押しても、操作は 1 回だけ（1 回目で押せなくなる）
+    const pressTwice = () =>
+      toggle.evaluate((el: HTMLElement) => {
+        el.click();
+        el.click();
+      });
+    const posted = page.waitForResponse(isPushApi("POST"));
+    await pressTwice();
+    await posted;
+    await expect(toggle).toBeChecked();
+    await expect(toggle).toBeEnabled();
+    await nextFrames(page);
+    expect(sent).toEqual([
+      { method: "POST", body: { playerId: PUSH_PLAYER, subscription: fakeSubscription(0) } },
+    ]);
+    expect(await reminderFlag(page)).toBe("true");
+    expect(await pushLog()).toEqual({ requested: 1, subscribe: 1, unsubscribe: 0 });
+    await reminderShot(page, "settings-reminder-on");
+
+    // 開き直しても有効のまま
+    await settings.getByRole("button", { name: "閉じる" }).click();
+    await expect(settings).toBeHidden();
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(toggle).toBeChecked();
+
+    const deleted = page.waitForResponse(isPushApi("DELETE"));
+    await pressTwice();
+    await deleted;
+    await expect(toggle).not.toBeChecked();
+    await expect(toggle).toBeEnabled();
+    await nextFrames(page);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual({ method: "DELETE", body: { playerId: PUSH_PLAYER, endpoint: fakeEndpoint(0) } });
+    expect(await reminderFlag(page)).toBeNull();
+    expect(await pushLog()).toEqual({ requested: 1, subscribe: 1, unsubscribe: 1 });
+  });
+
+  test("有効にしている途中でシートを閉じて開き直すと、終わるまで項目を出さず（押せず）、終われば有効と示す", async ({
+    page,
+  }) => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const pushLog = await fakePush(page, { permission: "default", grant: "granted" });
+    const sent = await routePush(page, { hold });
+    await page.goto("/");
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+    await toggle.click();
+    // 登録の応答を待たせている間に閉じて開き直す
+    await expect.poll(() => sent.length).toBe(1);
+    await expect(toggle).toBeDisabled();
+    await settings.getByRole("button", { name: "閉じる" }).click();
+    await expect(settings).toBeHidden();
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(settings.getByRole("checkbox", { name: "ヒントの前に確認" })).toBeVisible();
+    await nextFrames(page);
+    await expect(toggle).toHaveCount(0);
+
+    release();
+    await expect(toggle).toBeChecked();
+    await expect(toggle).toBeEnabled();
+    expect(sent).toEqual([
+      { method: "POST", body: { playerId: PUSH_PLAYER, subscription: fakeSubscription(0) } },
+    ]);
+    expect(await reminderFlag(page)).toBe("true");
+    expect(await pushLog()).toEqual({ requested: 1, subscribe: 1, unsubscribe: 0 });
+  });
+
+  test("登録できなければ（429・400）短い失敗を示し、購読と印を外す", async ({ page }) => {
+    const pushLog = await fakePush(page, { permission: "default", grant: "granted" });
+    const sent = await routePush(page, { POST: [429, 400] });
+    await page.goto("/");
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+
+    await toggle.click();
+    await expect(settings.getByText("しばらくしてからもう一度試してください")).toBeVisible();
+    await expect(toggle).not.toBeChecked();
+    await expect(toggle).toBeEnabled();
+    expect(await reminderFlag(page)).toBeNull();
+    expect(await pushLog()).toEqual({ requested: 1, subscribe: 1, unsubscribe: 1 });
+    await reminderShot(page, "settings-reminder-failed");
+
+    await toggle.click();
+    await expect(settings.getByText("設定できませんでした")).toBeVisible();
+    await expect(settings.getByText("しばらくしてからもう一度試してください")).toHaveCount(0);
+    await expect(toggle).not.toBeChecked();
+    expect(await reminderFlag(page)).toBeNull();
+    expect(await pushLog()).toEqual({ requested: 2, subscribe: 2, unsubscribe: 2 });
+    expect(sent.map((s) => s.method)).toEqual(["POST", "POST"]);
+  });
+
+  test("有効にした端末は、開いたときに購読を登録し直す。引き継ぎでプレイヤーが変わると、新しいプレイヤーで登録し直す", async ({
+    page,
+  }) => {
+    await fakePush(page, { permission: "granted", subscribed: true, reminder: true });
+    const sent = await routePush(page);
+    const next = "66666666-6666-4666-8666-666666666666";
+    await page.route("**/api/player/claim", (route) =>
+      route.fulfill({ json: { playerId: next, name: "引き継ぎ先", stats: null } }),
+    );
+    const posted = page.waitForResponse(isPushApi("POST"));
+    await page.goto("/");
+    await posted;
+    expect(sent).toEqual([
+      { method: "POST", body: { playerId: PUSH_PLAYER, subscription: fakeSubscription(0) } },
+    ]);
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(reminderToggle(page)).toBeChecked();
+
+    const moved = page.waitForResponse(isPushApi("POST"));
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await settings.getByRole("button", { name: "コードを入力" }).click();
+    await settings.getByLabel("引き継ぎコード").fill("ABCD-EFGH");
+    await settings.getByRole("button", { name: "引き継ぐ" }).click();
+    await expect(settings.getByText("引き継ぎました")).toBeVisible();
+    await moved;
+    expect(sent).toEqual([
+      { method: "POST", body: { playerId: PUSH_PLAYER, subscription: fakeSubscription(0) } },
+      { method: "POST", body: { playerId: next, subscription: fakeSubscription(0) } },
+    ]);
+    expect(await reminderFlag(page)).toBe("true");
+  });
+
+  test("有効にした印があっても購読が消えていたら、開いたときに印を外し、無効と示す", async ({ page }) => {
+    await fakePush(page, { permission: "granted", subscribed: false, reminder: true });
+    const sent = await routePush(page);
+    await page.goto("/");
+    await expect.poll(() => reminderFlag(page)).toBeNull();
+    await page.getByRole("button", { name: "設定" }).click();
+    const toggle = reminderToggle(page);
+    await expect(toggle).toBeEnabled();
+    await expect(toggle).not.toBeChecked();
+    expect(sent).toEqual([]);
+  });
 });

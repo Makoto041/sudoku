@@ -21,6 +21,7 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 - **実績**: 記録画面に一覧がある。今日の一問・フリープレイ・手筋の練習の記録から判定し、新しく解除したらクリアの結果か練習の正解に 1 行出す。解除した日は端末にだけ残る（引き継いだ先では、移した記録から判定し直す）。
 - **引き継ぎ**: 設定でコードを発行し、別の端末で入力すると、プレイヤー（ID と名前）とフリープレイの記録を移せる。コードは 24 時間有効で 1 回だけ使える。今日の一問の記録はサーバーにあるので、そのまま見られる。
 - 設定: 効果音・振動、間違いの表示、同じ数字や行・列・ブロックの強調、残りの数の表示、揃ったときの光、周りのメモの自動消去、ヒントの前の確認を、それぞれオン／オフできます。点数には影響しません。
+- **毎日の通知**: 設定の「毎日の通知」でオンにすると、今日の一問を 1 問もクリアしていない日の 20 時（日本時間）に通知が届く。iPhone・iPad では、ホーム画面に追加したアプリ（iOS 16.4 以降）でだけ設定できる。端末にはオンにしたことだけを保存する（引き継ぎの対象外）。サーバーに保存するものは「リマインド通知（Web Push）」を参照。
 
 ## しくみ
 
@@ -32,7 +33,7 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 | `src/lib/haptics.ts` | 触覚。Android は Vibration API、iOS 18 以降の Safari は switch 型チェックボックスの触覚                        |
 | `src/lib/server/`    | ランキング API と通知の購読の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                          |
 | `src/app/api/`       | Route Handlers（`/api/daily/*`, `/api/leaderboard`, `/api/player`, `/api/push`, `/api/cron/remind`）           |
-| `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける                                 |
+| `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける。毎日の通知を表示する           |
 
 ### スコア
 
@@ -77,7 +78,10 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 ### リマインド通知（Web Push）
 
 - 環境変数: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`（公開鍵）、`VAPID_PRIVATE_KEY`（秘密鍵）、`VAPID_SUBJECT`（`mailto:` か `https://` で始まる連絡先）、`CRON_SECRET`（cron の認証）。1 つでも無いと、購読 API（`/api/push`）と cron は 503 を返す。
+- 端末は公開鍵をビルドに埋め込まず、`GET /api/push`（`{ publicKey }`）で取る。503 や通信の失敗のときは、設定に「毎日の通知」を出さない。
+- 端末は、通知をオンにしているとアプリを開くたびに購読を登録し直す（最後の登録から 400 日の期限を延ばす）。引き継ぎでプレイヤーが変わったときも、購読を新しいプレイヤーに移す。
 - VAPID の鍵は `npx web-push generate-vapid-keys` で作る。鍵を変えると既存の購読は無効になる（端末が購読し直すまで届かない）。
+- 通知の文言は端末側（`public/sw.js`）で固定し、届いた中身は読まない（VAPID の秘密鍵と購読の鍵が漏れても、任意の文言を出させない）。
 - cron は毎日 UTC 11:00（日本時間 20:00）に `/api/cron/remind` を呼ぶ（`vercel.json`）。Vercel が `Authorization: Bearer ${CRON_SECRET}` を付ける。今日の一問を 1 問もクリアしていないプレイヤーの購読に、1 日 1 回送る。
 - 受け付ける購読の送信先は、Apple（`push.apple.com` とそのサブドメイン）・FCM（`fcm.googleapis.com`）・Mozilla（`updates.push.services.mozilla.com`）・Windows（`notify.windows.com` とそのサブドメイン）の https だけ。
 - 購読の登録は playerId ごと。同じ endpoint を別の playerId に移すには auth の一致が必要。

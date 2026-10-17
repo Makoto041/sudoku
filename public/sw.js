@@ -85,3 +85,28 @@ self.addEventListener("fetch", (event) => {
     }),
   );
 });
+
+// 毎日の通知。文言はここで固定し、届いた中身は読まない（VAPID の秘密鍵と購読の鍵が漏れても、任意の文言を出させない）。
+// サーバーが送る中身（src/lib/server/push.ts の REMINDER）と同じ文言にしておく
+self.addEventListener("push", (event) => {
+  event.waitUntil(
+    self.registration.showNotification("ナンプレ", {
+      body: "今日の一問はまだです",
+      // 同じ印の通知は並べずに置き換える。置き換えたときも知らせる
+      tag: "daily-reminder",
+      renotify: true,
+      icon: "/icon-192.png",
+    }),
+  );
+});
+
+// 通知を押したら、開いているウィンドウを前に出し、無ければトップを開く。開く先は中身によらず固定
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+      const open = windows.find((w) => "focus" in w);
+      return open ? open.focus() : self.clients.openWindow("/");
+    }),
+  );
+});

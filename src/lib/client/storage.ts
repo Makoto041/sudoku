@@ -60,4 +60,6 @@ export const KEYS = {
   howto: "sudoku:howto",
   /** 実績を解除した日（端末内だけ。引き継ぎ先では記録から判定し直す） */
   achievements: "sudoku:achievements",
+  /** 毎日の通知を有効にしたか（端末内だけ。true のときだけ有効。引き継ぎには含めない） */
+  reminder: "sudoku:reminder",
 };
