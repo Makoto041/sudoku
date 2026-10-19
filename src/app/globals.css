@@ -2459,3 +2459,15 @@ p {
   flex-direction: column;
   gap: 2px;
 }
+
+/* ---------- アカウント ---------- */
+
+.account-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn.danger {
+  color: var(--danger);
+}

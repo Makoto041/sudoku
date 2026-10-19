@@ -19,6 +19,21 @@ import { updateAchievements } from "@/lib/client/achievements";
 import { disablePush, refreshPush, reminderOn } from "@/lib/client/push";
 import { iosStandalone } from "@/lib/client/device";
 import {
+  accountError,
+  addPasskey,
+  applyAccount,
+  createAccount,
+  deleteAccount,
+  isSignedOutError,
+  loadAccount,
+  login,
+  logoutDevice,
+  logoutOthers,
+  syncStats,
+  type AccountState,
+  type AccountView,
+} from "@/lib/client/account";
+import {
   fromLegacy,
   hasLocalData,
   isLegacyHost,
@@ -36,7 +51,15 @@ import { Practice } from "./Practice";
 import { PracticeList } from "./PracticeList";
 import { Ranking } from "./Ranking";
 import { Records } from "./Records";
-import { ClaimSheet, ConfirmSheet, HowtoSheet, MoveSheet, NameSheet, SettingsSheet } from "./Sheets";
+import {
+  AccountSheet,
+  ClaimSheet,
+  ConfirmSheet,
+  HowtoSheet,
+  MoveSheet,
+  NameSheet,
+  SettingsSheet,
+} from "./Sheets";
 
 type View =
   | { name: "home" }
@@ -53,7 +76,15 @@ type SheetState =
   | { kind: "confirmFree"; difficulty: Difficulty }
   | { kind: "move" }
   | { kind: "claim"; code: string; push: boolean; replace: boolean }
+  | { kind: "account" }
+  | { kind: "confirmLogout" }
+  | { kind: "confirmDelete" }
   | null;
+
+const SIGNED_OUT: AccountState = { status: "signed-out" };
+
+/** ログアウト・アカウントの削除の失敗の文言 */
+const describeAccountError = (err: unknown) => accountError(err, "other");
 
 function freeSeed() {
   const a = new Uint32Array(2);
@@ -89,6 +120,9 @@ export function App() {
    * standalone は iOS のホーム画面に追加したアプリか（新しい URL を開かずにコードを出す）
    */
   const [legacy, setLegacy] = useState<{ standalone: boolean } | null>(null);
+  const [account, setAccount] = useState<AccountState>({ status: "loading" });
+  /** 旧 URL のページから開かれたときの引き継ぎのリンク（受け取るシートを開く前） */
+  const [claimLink, setClaimLink] = useState<{ code: string; push: boolean; replace: boolean } | null>(null);
 
   useEffect(() => {
     // 記録があるかは、開いたときに作る保存データ（プレイヤー・実績など）を書く前に見る
@@ -108,8 +142,11 @@ export function App() {
     if (onLegacy) {
       setLegacy({ standalone: iosStandalone() });
       setSheet({ kind: "move" });
+      // 旧 URL ではログインの状態を確かめない（パスキーは新しい URL に結びつく。サーバーも 503 を返す）
+      setAccount({ status: "unavailable", retry: false });
     } else if (link?.code && fromLegacy(document.referrer) && navigationAllowsClaim(navigation?.type)) {
-      setSheet({ kind: "claim", code: link.code, push: link.push, replace: hadData });
+      // 開くのはログインの状態が分かってから（ログイン中なら開かない）
+      setClaimLink({ code: link.code, push: link.push, replace: hadData });
     }
     clockOffset = load<number>(KEYS.clockOffset) ?? 0;
     setToday(serverToday());
@@ -371,6 +408,98 @@ export function App() {
     if (mounted) judge(false);
   }, [mounted, historyTick, judge]);
 
+  /**
+   * アカウントのプレイヤーと記録に切り替えたあと（ログイン・ログアウト）。
+   * 記録での達成は、クリアしたときに出さないよう先に保存する（claim と同じ）。履歴は player.id の変化で取り直す
+   */
+  const switchPlayer = useCallback(
+    (next: Player) => {
+      judge(false);
+      setPlayer(next);
+      setRefresh((n) => n + 1);
+    },
+    [judge],
+  );
+
+  const accountRef = useRef(account);
+  accountRef.current = account;
+  const checkingAccount = useRef(false);
+  /** ログインの状態を確かめ、ログイン中ならアカウントのプレイヤーと記録に切り替える */
+  const checkAccount = useCallback(async () => {
+    if (checkingAccount.current) return;
+    checkingAccount.current = true;
+    try {
+      const state = await loadAccount();
+      if (state.status === "signed-in") switchPlayer(await applyAccount(state.account, getPlayer()));
+      setAccount(state);
+    } finally {
+      checkingAccount.current = false;
+    }
+  }, [switchPlayer]);
+  useEffect(() => {
+    if (mounted && accountRef.current.status === "loading") void checkAccount();
+    // 開いたときに 1 回だけ
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+  // ホームに戻ったとき（refresh）に、ログイン中なら記録を同期する。確かめられなかったときは確かめ直す
+  useEffect(() => {
+    const a = accountRef.current;
+    if (a.status === "signed-in") void syncStats(a.account.playerId);
+    else if (a.status === "unavailable" && a.retry) void checkAccount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresh]);
+
+  // 旧 URL からの引き継ぎのシートは、ログインの状態が分かってから、ホームでほかのシートが開いておらず、
+  // ゲームを始める途中（今日の一問の開始・問題を作っている間）でもないときに開く
+  // （確かめている間にゲームや設定を開いていたら、ホームに戻って閉じるまで待つ）。
+  // ログイン中なら開かない（コードでアカウントのプレイヤーを置き換えない。コードは開いたときに URL から消してある）
+  useEffect(() => {
+    if (!claimLink || account.status === "loading") return;
+    if (account.status === "signed-in") {
+      setClaimLink(null);
+      return;
+    }
+    if (view.name !== "home" || sheet !== null || starting !== null || generating !== null) return;
+    setClaimLink(null);
+    setSheet({ kind: "claim", ...claimLink });
+  }, [claimLink, account.status, view.name, sheet, starting, generating]);
+
+  /** ログイン中のアカウントのプレイヤー ID（アカウントの操作はログイン中にだけ開くシートから） */
+  const accountPlayerId = () => {
+    const a = accountRef.current;
+    return a.status === "signed-in" ? a.account.playerId : player.id;
+  };
+  /** セッションが切れていた（401）ら、ログインしていない表示にする */
+  const onAccountError = (err: unknown) => {
+    if (isSignedOutError(err)) setAccount(SIGNED_OUT);
+    throw err;
+  };
+  /** ログイン・作成。op はパスキーの操作を始めたもの（押した処理の中で、await より前に始める） */
+  const signIn = async (op: Promise<AccountView>) => {
+    const view = await op;
+    switchPlayer(await applyAccount(view, getPlayer()));
+    setAccount({ status: "signed-in", account: view });
+  };
+  const addAccountPasskey = async () => {
+    const view = await addPasskey(accountPlayerId()).catch(onAccountError);
+    setAccount({ status: "signed-in", account: view });
+  };
+  /** ログアウト・削除の後は、ログインしていないアカウントのシートに戻る */
+  const backToSignedOut = () => {
+    setAccount(SIGNED_OUT);
+    setSheet({ kind: "account" });
+  };
+  const confirmLogout = async () => {
+    await logoutDevice(accountPlayerId());
+    // 端末の記録を消したので、新しいプレイヤーになる（通知の購読は player.id の変化で新しいプレイヤーに移す）
+    switchPlayer(getPlayer());
+    backToSignedOut();
+  };
+  const confirmDelete = async () => {
+    await deleteAccount();
+    backToSignedOut();
+  };
+
   // 遊び方の「練習してみる」：一覧を開き、局面のデータが揃ったら最初の項目（ネイキッドシングル）を開く。
   // 一覧の描画後に開くので、履歴は ホーム → 一覧 → 局面 になる（戻ると一覧、もう一度でホーム）。
   // 揃う前に一覧から離れたら開かない。読み込みに失敗しても、一覧の再試行で揃えばそのまま開く
@@ -578,16 +707,69 @@ export function App() {
           playerName={player.name}
           onChange={updateSettings}
           onRename={() => setSheet({ kind: "name", difficulty: null })}
+          account={account}
+          // アカウントはホームから開いたときだけ（ゲームや練習の途中でプレイヤーが替わると、
+          // 今日の一問の送信が通らず、ログアウトの後に途中の盤面が書き戻される）
+          onAccount={
+            view.name === "home"
+              ? () => {
+                  sfx.tap();
+                  setSheet({ kind: "account" });
+                }
+              : undefined
+          }
           onCreateTransfer={createTransfer}
-          onClaim={claim}
+          // ログイン中（と確かめている途中）は、コードでプレイヤーを置き換えない（アカウントのプレイヤーと食い違う）
+          onClaim={account.status === "signed-in" || account.status === "loading" ? undefined : claim}
           onHowto={openHowto}
           onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "account" && (account.status === "signed-in" || account.status === "signed-out") && (
+        <AccountSheet
+          account={account}
+          playerId={player.id}
+          // パスキーの操作（login・createAccount・addPasskey）は押した処理の中で、await より前に始める
+          onLogin={() => signIn(login())}
+          onCreate={() => signIn(createAccount(player.id))}
+          onAdd={addAccountPasskey}
+          onLogoutOthers={() => logoutOthers().catch(onAccountError)}
+          onLogout={() => {
+            sfx.tap();
+            setSheet({ kind: "confirmLogout" });
+          }}
+          onDelete={() => {
+            sfx.tap();
+            setSheet({ kind: "confirmDelete" });
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "confirmLogout" && (
+        <ConfirmSheet
+          title="ログアウトしますか？"
+          body="この端末の記録は消えます。アカウントの記録は残ります。"
+          confirm="ログアウト"
+          onConfirm={confirmLogout}
+          describe={describeAccountError}
+          onClose={() => setSheet({ kind: "account" })}
+        />
+      )}
+      {sheet?.kind === "confirmDelete" && (
+        <ConfirmSheet
+          title="アカウントを削除しますか？"
+          body="パスキーではログインできなくなります。この端末の記録は残ります。"
+          confirm="削除する"
+          onConfirm={confirmDelete}
+          describe={describeAccountError}
+          onClose={() => setSheet({ kind: "account" })}
         />
       )}
       {sheet?.kind === "move" && legacy && (
         <MoveSheet standalone={legacy.standalone} onIssue={issueMove} onClose={() => setSheet(null)} />
       )}
-      {sheet?.kind === "claim" && (
+      {/* ゲームの上には出さない（ゲームの途中でプレイヤーを差し替えない） */}
+      {sheet?.kind === "claim" && view.name === "home" && (
         <ClaimSheet
           code={sheet.code}
           push={sheet.push}

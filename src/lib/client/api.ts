@@ -1,5 +1,12 @@
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from "@simplewebauthn/browser";
 import type { MoveLog } from "@/lib/game/score";
 import type { ClearRecord } from "./records";
+import type { Stats } from "./stats";
 import type { Difficulty } from "@/lib/sudoku/core";
 
 export type StartResponse = {
@@ -33,6 +40,9 @@ export type LeaderboardResponse = {
   entries: LeaderboardEntry[];
   me: { rank: number; points: number; timeMs: number; name: string | null } | null;
 };
+
+/** ログイン中のアカウント（GET /api/auth/me などの応答）。stats は同期した記録で、使う前に検証する */
+export type AccountView = { playerId: string; name: string | null; passkeys: number; stats: unknown };
 
 export class ApiError extends Error {
   constructor(
@@ -93,6 +103,49 @@ export const api = {
     request<{ ok: true }>("/api/push", { method: "POST", body: JSON.stringify({ playerId, subscription }) }),
   unsubscribePush: (playerId: string, endpoint: string) =>
     request<{ ok: true }>("/api/push", { method: "DELETE", body: JSON.stringify({ playerId, endpoint }) }),
+  // アカウント（パスキー）。ログインの状態は Cookie で持つ。GET 以外は本文が JSON でないと受け付けない（本文なしも不可）
+  /** ログイン中のアカウント。値は検査してから使う */
+  me: () => request<{ account?: unknown }>("/api/auth/me"),
+  signupOptions: (playerId: string) =>
+    request<{ options: PublicKeyCredentialCreationOptionsJSON }>("/api/auth/signup/options", {
+      method: "POST",
+      body: JSON.stringify({ playerId }),
+    }),
+  signupVerify: (response: RegistrationResponseJSON) =>
+    request<{ account?: unknown }>("/api/auth/signup/verify", {
+      method: "POST",
+      body: JSON.stringify({ response }),
+    }),
+  loginOptions: () =>
+    request<{ options: PublicKeyCredentialRequestOptionsJSON }>("/api/auth/login/options", {
+      method: "POST",
+      body: "{}",
+    }),
+  loginVerify: (response: AuthenticationResponseJSON) =>
+    request<{ account?: unknown }>("/api/auth/login/verify", {
+      method: "POST",
+      body: JSON.stringify({ response }),
+    }),
+  passkeyOptions: () =>
+    request<{ options: PublicKeyCredentialCreationOptionsJSON }>("/api/auth/passkeys/options", {
+      method: "POST",
+      body: "{}",
+    }),
+  passkeyVerify: (response: RegistrationResponseJSON) =>
+    request<{ account?: unknown }>("/api/auth/passkeys/verify", {
+      method: "POST",
+      body: JSON.stringify({ response }),
+    }),
+  logout: (scope: "this" | "others") =>
+    request<{ ok: true }>("/api/auth/logout", { method: "POST", body: JSON.stringify({ scope }) }),
+  deleteAccount: () => request<{ ok: true }>("/api/auth/account", { method: "DELETE", body: "{}" }),
+  putStats: (stats: Stats) =>
+    request<{ stats?: unknown }>("/api/auth/stats", { method: "PUT", body: JSON.stringify({ stats }) }),
+  merge: (fromPlayerId: string) =>
+    request<{ merged: number }>("/api/auth/merge", {
+      method: "POST",
+      body: JSON.stringify({ fromPlayerId }),
+    }),
 };
 
 export function describeError(err: unknown): string {
