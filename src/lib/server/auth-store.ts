@@ -43,8 +43,11 @@ export interface AuthStore {
   /** playerId を紐づけたアカウントの id */
   accountOfPlayer(playerId: string): Promise<string | null>;
   getCredential(id: string): Promise<StoredCredential | null>;
-  /** パスキーを足す。登録済みなら false */
-  addCredential(cred: StoredCredential): Promise<boolean>;
+  /**
+   * パスキーを足す。登録済みなら "exists"、アカウントのパスキーが maxPerAccount 件を超えるなら "full"（足さない）。
+   * 同時に足しても maxPerAccount 件を超えない（Redis では、足したあとに数えて超えていたら戻す）
+   */
+  addCredential(cred: StoredCredential, maxPerAccount: number): Promise<"ok" | "exists" | "full">;
   /** パスキーを書き換える（消えていたら何もしない） */
   updateCredential(cred: StoredCredential): Promise<void>;
   listCredentials(accountId: string): Promise<StoredCredential[]>;
@@ -58,7 +61,10 @@ export interface AuthStore {
   removeOtherSessions(accountId: string, keepHash: string | null): Promise<void>;
   getStats(accountId: string): Promise<string | null>;
   putStats(accountId: string, json: string): Promise<void>;
-  /** アカウントのパスキー・セッション・記録とアカウントを消す。playerId の紐づけは、このアカウントのものだけ消す */
+  /**
+   * アカウントのパスキー・セッション・記録とアカウントを消す。playerId の紐づけは、このアカウントのものだけ消す。
+   * 紐づけを最初に消す（途中で失敗しても、その playerId を紐づけられないままにしない。残りはもう一度呼べば消える）
+   */
   deleteAccount(accountId: string): Promise<void>;
 }
 
@@ -164,10 +170,17 @@ export class RedisAuthStore implements AuthStore {
     return toCredential(await this.redis.get<string>(credKey(id)));
   }
 
-  async addCredential(cred: StoredCredential) {
-    if (!(await this.redis.set(credKey(cred.id), JSON.stringify(cred), { nx: true }))) return false;
-    await this.redis.sadd(credsKey(cred.accountId), cred.id);
-    return true;
+  async addCredential(cred: StoredCredential, maxPerAccount: number) {
+    if (!(await this.redis.set(credKey(cred.id), JSON.stringify(cred), { nx: true }))) return "exists";
+    // 足してから数え、超えていたら戻す。どの要求も自分の分を足したあとに数えるので、同時に足しても残るのは上限まで
+    // （同時の要求がどれも超えたと見て、全部を戻すことはある）
+    const list = credsKey(cred.accountId);
+    const [, count] = await this.redis.pipeline().sadd(list, cred.id).scard(list).exec();
+    if (Number(count) > maxPerAccount) {
+      await this.redis.pipeline().srem(list, cred.id).del(credKey(cred.id)).exec();
+      return "full";
+    }
+    return "ok";
   }
 
   async updateCredential(cred: StoredCredential) {
@@ -243,10 +256,14 @@ export class RedisAuthStore implements AuthStore {
   }
 
   async deleteAccount(accountId: string) {
-    const [credIds, hashes, account] = await Promise.all([
+    // 紐づけは SET NX で取り、消すのはここだけなので、読んでから消すまでに別のアカウントのものに変わることはない
+    const account = await this.getAccount(accountId);
+    if (account && (await this.redis.get<string>(playerKey(account.playerId))) === accountId) {
+      await this.redis.del(playerKey(account.playerId));
+    }
+    const [credIds, hashes] = await Promise.all([
       this.redis.smembers<string[]>(credsKey(accountId)),
       this.redis.zrange<(string | number)[]>(sessionsKey(accountId), 0, -1),
-      this.getAccount(accountId),
     ]);
     const keys = [
       ...credIds.map((id) => credKey(String(id))),
@@ -261,10 +278,6 @@ export class RedisAuthStore implements AuthStore {
       .del(...keys)
       .srem(ACCOUNTS_KEY, accountId)
       .exec();
-    // 紐づけは SET NX で取り、消すのはここだけなので、読んでから消すまでに別のアカウントのものに変わることはない
-    if (account && (await this.redis.get<string>(playerKey(account.playerId))) === accountId) {
-      await this.redis.del(playerKey(account.playerId));
-    }
   }
 }
 
@@ -315,13 +328,14 @@ export class MemoryAuthStore implements AuthStore {
     return toCredential(this.credentials.get(id) ?? null);
   }
 
-  async addCredential(cred: StoredCredential) {
-    if (this.credentials.has(cred.id)) return false;
-    this.credentials.set(cred.id, JSON.stringify(cred));
+  async addCredential(cred: StoredCredential, maxPerAccount: number) {
+    if (this.credentials.has(cred.id)) return "exists";
     let set = this.accountCreds.get(cred.accountId);
     if (!set) this.accountCreds.set(cred.accountId, (set = new Set()));
+    if (set.size >= maxPerAccount) return "full";
+    this.credentials.set(cred.id, JSON.stringify(cred));
     set.add(cred.id);
-    return true;
+    return "ok";
   }
 
   async updateCredential(cred: StoredCredential) {
@@ -387,13 +401,13 @@ export class MemoryAuthStore implements AuthStore {
 
   async deleteAccount(accountId: string) {
     const account = await this.getAccount(accountId);
+    if (account && this.players.get(account.playerId) === accountId) this.players.delete(account.playerId);
     for (const id of this.accountCreds.get(accountId) ?? []) this.credentials.delete(id);
     for (const h of this.accountSessions.get(accountId)?.keys() ?? []) this.sessions.delete(h);
     this.accountCreds.delete(accountId);
     this.accountSessions.delete(accountId);
     this.stats.delete(accountId);
     this.accounts.delete(accountId);
-    if (account && this.players.get(account.playerId) === accountId) this.players.delete(account.playerId);
   }
 
   /** テスト用：保存しているものの数（消し残しの確認） */

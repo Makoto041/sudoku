@@ -53,8 +53,8 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 | `src/lib/game/`      | ゲームの状態遷移（純粋関数）。入力・メモ・元に戻す・ヒント・クリア判定                                         |
 | `src/lib/audio.ts`   | 効果音。数字を置く音は録音（`public/sounds/clack.mp3`）を数字ごとに高さを変えて鳴らし、ほかは Web Audio で合成 |
 | `src/lib/haptics.ts` | 触覚。Android は Vibration API、iOS 18 以降の Safari は switch 型チェックボックスの触覚                        |
-| `src/lib/server/`    | ランキング API と通知の購読の中身。保存先は Upstash Redis（ローカルとテストはメモリ）                          |
-| `src/app/api/`       | Route Handlers（`/api/daily/*`, `/api/leaderboard`, `/api/player`, `/api/push`, `/api/cron/remind`）           |
+| `src/lib/server/`    | ランキング API・通知の購読・アカウント（パスキー）の中身。保存先は Upstash Redis（ローカルとテストはメモリ）   |
+| `src/app/api/`       | Route Handlers（`/api/daily/*`, `/api/leaderboard`, `/api/player`, `/api/push`, `/api/cron/*`, `/api/auth/*`） |
 | `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける。毎日の通知を表示する           |
 
 ### スコア
@@ -106,17 +106,38 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 - 任意のログイン。パスキー（WebAuthn）だけを使い、メールアドレス・パスワード・外部サービスのログインは使わない。ログインしなくても今までどおり遊べる。端末側の画面はまだ無い（サーバーの API だけ）。
 - 環境変数: `WEBAUTHN_ORIGIN`（秘密の値ではない）。本番は `https://nanpure-game.vercel.app`（末尾の `/` なし）。受け付けるのは https（ホストが IP アドレスでないもの）と http の `localhost` だけ。Vercel 上で未設定（プレビューを含む）か受け付けない形なら、`/api/auth/*` は 503。Vercel 以外で未設定なら `http://localhost:3000`。
 - RP ID は `WEBAUTHN_ORIGIN` のホスト名。変えると登録済みのパスキーが使えなくなる（回復の手段は無い）。origin と RP ID は環境変数だけで決め、リクエストの Host からは決めない。`GET /api/auth/me` は、Host が `WEBAUTHN_ORIGIN` のホストと違えば（旧 URL など）503 を返す。
-- API: `GET /api/auth/me`（`{ account }`。ログインしていなければ `null`）、`POST /api/auth/signup/options`（`{ playerId }`）・`/signup/verify`（`{ response }`）、`/login/options`・`/login/verify`（`{ response }`）、`/logout`（`{ scope: "this" | "others" }`。`others` はこの端末以外のセッションを消す）。POST は `Origin` が `WEBAUTHN_ORIGIN` と一致しなければ 403、`Content-Type` が `application/json` でなければ 415。
+- API（本文はすべて JSON。GET 以外は、`Origin` が `WEBAUTHN_ORIGIN` と一致しなければ 403、`Content-Type` が `application/json` でなければ 415）:
+  - `GET /api/auth/me`: `{ account }`（`playerId`・`name`・`passkeys`（件数）・`stats`（同期した記録）。ログインしていなければ `null`）。
+  - `POST /api/auth/signup/options`（`{ playerId }`）・`/signup/verify`（`{ response }`）: アカウントを作ってログインする。
+  - `POST /api/auth/login/options`（`{}`）・`/login/verify`（`{ response }`）: ログインする。
+  - ログインが必要なもの（Cookie が無い・無効なら 401 で、Cookie を消す）:
+    - `POST /api/auth/logout`（`{ scope: "this" | "others" }`）: `others` はこの端末以外のセッションを消す。
+    - `POST /api/auth/passkeys/options`（`{}`）・`/passkeys/verify`（`{ response }`）: ログイン中のアカウントにパスキーを足す。`{ account }` を返す。
+    - `PUT /api/auth/stats`（`{ stats }`）: 記録を同期する。合わせた記録 `{ stats }` を返す。
+    - `POST /api/auth/merge`（`{ fromPlayerId }`）: 今日の一問の履歴を取り込む。写した件数 `{ merged }` を返す。
+    - `DELETE /api/auth/account`（本文は `{}`。本文が無いと 400）: アカウントを消し、この端末の Cookie も消す。
 - アカウントを作ると、端末のプレイヤー ID をアカウントに紐づける。1 つのプレイヤー ID は 1 つのアカウントだけ（紐づけ済みなら 409）で、紐づけは後から変えない。パスキーの user.id はアカウント ID（ランダムな UUID）で、プレイヤー ID は入れない。パスキーに付く名前はランキングの名前（無ければ「プレイヤー」）。
 - ログインの状態は Cookie（`__Secure-sdk_auth`。http の localhost では `sdk_auth`）で持つ: `Path=/api/auth; HttpOnly; Secure; SameSite=Strict`、90 日。トークンは応答の本文に出さない。`GET /api/auth/me` で有効だと確かめるたびに、セッションと Cookie の期限を 90 日に延ばす。
 - ログインの失敗（知らないパスキー・別のアカウントのパスキー・検証の失敗）は、どれも同じ 401 `login failed`。
+- パスキーの追加: 登録済みのパスキーは options の `excludeCredentials` に入れる。登録済みのパスキーは 409。
+- 記録の同期: 端末のフリープレイの記録を送ると、保存済みの記録と難易度ごとに良い方・多い方で合わせて保存し、合わせた記録を返す（何度送っても同じ結果になる）。
+- 履歴の取り込み: `fromPlayerId`（ログイン前に端末で使っていたプレイヤー ID など）の今日の一問の履歴を、アカウントのプレイヤー ID に写す。同じ日・難易度はアカウント側を残す。ランキングの行と名前は移さない。紐づき済みのプレイヤー ID からは写さない（0）。
+- アカウントの削除: 消すのはアカウント・パスキー・セッション・同期した記録・プレイヤー ID の紐づけ。ランキング・今日の一問の履歴・名前・通知の購読（プレイヤー ID のもの）は残す。消したパスキーではログインできない（401）。プレイヤー ID を持つ端末はそのまま遊べ、同じプレイヤー ID でアカウントを作り直せる。紐づけは最初に消すので、途中で失敗しても作り直せる（残りはもう一度消せば消える）。
 - 登録で受け付ける attestation は none だけ（ほかの形式は検証せずに 400）。ほかの形式ではライブラリが証明書を検証し、証明書に書かれた CRL の URL へサーバーから通信しうるため。
-- サーバーに保存するもの: アカウント（ID・プレイヤー ID・作成日時）、パスキー（credential ID・公開鍵・counter・transports・バックアップの状態・作成日時・最後に使った日時）、セッション（トークンの SHA-256・アカウント ID・期限。最後の確認から 90 日で消える）、challenge（300 秒で消える）。メールアドレスなどの個人情報は保存しない。
-- 回数制限と上限: challenge の発行（options の API）は IP ごとに 1 時間 60 回、アカウントの作成は IP ごとに 1 時間 5 件（検証を通ったものだけ数える。超えたら 429。IP の扱いは通知の購読と同じ）。アカウントは全体で 20,000 件まで（超えたら作成は 503）。セッションは 1 アカウント 20 件まで（超えたら最後に使ったのが古いものから消す）。本文は検証 API が 16KB、ほかは 1KB まで。登録の attestationObject は base64url で 4096 文字まで、保存する公開鍵は 1KB まで。
+- サーバーに保存するもの: アカウント（ID・プレイヤー ID・作成日時）、パスキー（credential ID・公開鍵・counter・transports・バックアップの状態・作成日時・最後に使った日時）、セッション（トークンの SHA-256・アカウント ID・期限。最後の確認から 90 日で消える）、同期した記録（難易度ごとの記録。4096 バイトまで）、challenge（300 秒で消える）。メールアドレスなどの個人情報は保存しない。
+- 回数制限（超えたら 429。IP の扱いは通知の購読と同じ）: challenge の発行（options の API。紐づき済みの playerId への 409 も数える）は IP ごとに 1 時間 60 回、アカウントの作成は IP ごとに 1 時間 5 件（検証を通ったものだけ数える）、記録の同期はアカウントごとに 1 時間 120 回、履歴の取り込みはアカウントごとに 1 日 20 回。
+- 件数の上限: アカウントは全体で 20,000 件（超えたら作成は 503）。パスキーは 1 アカウント 10 件（達していたら 409。同時に足しても超えない）。セッションは 1 アカウント 20 件（超えたら最後に使ったのが古いものから消す）。
+- サイズの上限: 本文は検証 API が 16KB、記録の同期が 8KB、ほかは 1KB。登録の attestationObject は base64url で 4096 文字、保存する公開鍵は 1KB、同期した記録は 4096 バイト。
 - 既知の限界:
-  - プレイヤー ID は、既存の API ではそれを知っていれば使える秘密のまま。知っていれば、まだ紐づいていないプレイヤー ID を自分のアカウントに紐づけられる（先着 1 つ）。
+  - プレイヤー ID は、既存の API ではそれを知っていれば使える秘密のまま。他人のプレイヤー ID を知っていれば、まだ紐づいていなければ自分のアカウントに紐づけられ（先着 1 つ）、履歴の取り込みで、そのプレイヤーの履歴の空いている日に別のプレイヤー ID の行を書き込める（履歴の読み取りは既存の `GET /api/player/history` でできる）。
   - プレイヤー ID は GET のクエリ（`/api/leaderboard`・`/api/player/history`）に入り、Vercel のログに残る。
   - RP ID は変えられない（ドメインを変えると、登録済みのパスキーではログインできない）。
+  - 2 台で同時に遊ぶと、記録は良い方・多い方で合わせるので、回数（始めた数・クリア数など）は足されず、少なく数えられる。
+  - 記録の同期は読んでから書くので、2 台が同時に同期すると片方の分が保存されないことがある（その端末が次に同期したときに戻る）。
+  - ログインなどで端末のプレイヤー ID が変わると、変わる前に始めた今日の一問の送信は 404 になる。
+  - パスキーの追加に再認証は無く、登録済みのパスキーの一覧・個別の削除も無い。同じ origin に XSS があれば、セッションの Cookie で攻撃者のパスキーを足せる（外す手段はアカウントの削除だけ）。
+  - アカウントの削除と同時に書き込み（パスキーの追加・記録の同期・ログイン）があると、持ち主のいないパスキー・記録・セッションが残りうる（ログインや閲覧には使えず、容量を使うだけ）。
+  - Redis や通信が途中で失敗すると、パスキーの追加で一覧に入らない（件数にも削除にも数えられない）パスキーが残ったり、上限を 1 件超えたりしうる。同じアカウントの削除が同時に 2 本走ると、その間に紐づけ直された別のアカウントの紐づけを消しうる。どちらも攻撃では起こせず、プレイヤー ID を知る者の権限は増えない。
   - ソフトウェアで作った偽の認証器でもアカウントは作れる。IP ごとの回数制限と全体の上限でしか抑えられないので、多数の IP を使われると全体の上限（20,000 件）を埋められうる。Vercel の WAF・レート制限のルールの併用を勧める。
 
 ### リマインド通知（Web Push）

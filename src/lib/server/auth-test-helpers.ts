@@ -1,7 +1,15 @@
+import { generateAuthenticationOptions, generateRegistrationOptions } from "@simplewebauthn/server";
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 import { expect } from "vitest";
-import { SITE_ORIGIN } from "@/lib/site";
-import type { AuthDeps, WebAuthnVerifier } from "./auth";
+import { SITE_HOST, SITE_ORIGIN } from "@/lib/site";
+import {
+  loginOptions,
+  loginVerify,
+  signupOptions,
+  signupVerify,
+  type AuthDeps,
+  type WebAuthnVerifier,
+} from "./auth";
 import { authConfig } from "./auth-config";
 import { MemoryAuthStore } from "./auth-store";
 import { RankingError } from "./ranking";
@@ -65,4 +73,115 @@ export function memorySetup(webauthn?: WebAuthnVerifier) {
     ...over,
   });
   return { store, auth, deps };
+}
+
+/** 検証の結果を決められる WebAuthn（options の生成はライブラリのまま） */
+export function fakeWebAuthn() {
+  const state = {
+    verified: true,
+    throws: false,
+    newCounter: 1,
+    /** 登録で認証器のデータから取れる id（null なら応答の id と同じ） */
+    authDataId: null as string | null,
+    /** 登録で認証器のデータから取れる公開鍵 */
+    publicKey: new Uint8Array([1, 2, 3]),
+  };
+  const calls: { verifyRegistration: unknown[]; verifyAuthentication: unknown[] } = {
+    verifyRegistration: [],
+    verifyAuthentication: [],
+  };
+  const webauthn: WebAuthnVerifier = {
+    registrationOptions: generateRegistrationOptions,
+    authenticationOptions: generateAuthenticationOptions,
+    verifyRegistration: (async (opts) => {
+      calls.verifyRegistration.push(opts);
+      if (state.throws)
+        throw new Error(`Unexpected registration response challenge ${opts.expectedChallenge}`);
+      if (!state.verified) return { verified: false };
+      return {
+        verified: true,
+        registrationInfo: {
+          fmt: "none",
+          aaguid: "00000000-0000-0000-0000-000000000000",
+          credential: {
+            id: state.authDataId ?? opts.response.id,
+            publicKey: state.publicKey,
+            counter: 0,
+            transports: opts.response.response.transports,
+          },
+          credentialType: "public-key",
+          attestationObject: new Uint8Array(),
+          userVerified: true,
+          credentialDeviceType: "multiDevice",
+          credentialBackedUp: false,
+          origin: SITE_ORIGIN,
+          rpID: SITE_HOST,
+        },
+      };
+    }) as WebAuthnVerifier["verifyRegistration"],
+    verifyAuthentication: (async (opts) => {
+      calls.verifyAuthentication.push(opts);
+      if (state.throws) throw new Error(`Unexpected authentication response origin ${opts.expectedOrigin}`);
+      return {
+        verified: state.verified,
+        authenticationInfo: {
+          credentialID: opts.credential.id,
+          newCounter: state.newCounter,
+          userVerified: true,
+          credentialDeviceType: "multiDevice",
+          credentialBackedUp: true,
+          origin: SITE_ORIGIN,
+          rpID: SITE_HOST,
+        },
+      };
+    }) as WebAuthnVerifier["verifyAuthentication"],
+  };
+  return { state, calls, webauthn };
+}
+
+/** メモリの保存先と、検証の結果を決められる WebAuthn */
+export function fakeSetup() {
+  const fake = fakeWebAuthn();
+  return { ...memorySetup(fake.webauthn), fake };
+}
+
+export type FakeSetup = ReturnType<typeof fakeSetup>;
+
+/** 登録の応答（偽の検証用。attestationObject は fmt: none の最小の形） */
+export const createResponse = (challenge: string, credId = b64("cred-1")) => ({
+  id: credId,
+  rawId: credId,
+  type: "public-key",
+  response: {
+    clientDataJSON: clientData("webauthn.create", challenge),
+    attestationObject: attestationObject(),
+    transports: ["internal", "hybrid"],
+  },
+  clientExtensionResults: {},
+});
+
+/** ログインの応答（偽の検証用） */
+export const getResponse = (challenge: string, credId: string, userHandle: string | undefined) => ({
+  id: credId,
+  rawId: credId,
+  type: "public-key",
+  response: {
+    clientDataJSON: clientData("webauthn.get", challenge),
+    authenticatorData: b64("authenticator-data"),
+    signature: b64("signature"),
+    userHandle,
+  },
+  clientExtensionResults: {},
+});
+
+/** アカウントを作ってログインする */
+export async function signup(s: FakeSetup, playerId: string, credId: string, over: Partial<AuthDeps> = {}) {
+  const { options } = await signupOptions(s.deps(over), { playerId });
+  const res = await signupVerify(s.deps(over), { response: createResponse(options.challenge, credId) });
+  return { ...res, accountId: unb64(options.user.id) };
+}
+
+export async function login(s: FakeSetup, credId: string, accountId: string, over: Partial<AuthDeps> = {}) {
+  const { options } = await loginOptions(s.deps(over));
+  return loginVerify(s.deps(over), { response: getResponse(options.challenge, credId, b64(accountId)) });
 }
