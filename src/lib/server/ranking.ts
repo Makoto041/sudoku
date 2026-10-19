@@ -1,6 +1,7 @@
 import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
+import { CODE_ALPHABET, CODE_LENGTH, normalizeCode } from "@/lib/transfer-code";
 import type { BoardKey, RankingStore, Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
@@ -252,22 +253,12 @@ export async function getHistory(store: RankingStore, input: { playerId?: unknow
   return { entries };
 }
 
-// 紛らわしい 0/O/1/I を除いた 32 文字。8 文字で約 1 兆通り
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const CODE_LENGTH = 8;
 const TRANSFER_TTL_SEC = 24 * 60 * 60;
 export const MAX_STATS_BYTES = 4096;
 
 function newCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(CODE_LENGTH));
   return [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
-}
-
-/** 入力されたコードを整える（小文字・空白・ハイフンを許す） */
-export function normalizeCode(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const code = value.toUpperCase().replace(/[\s-]/g, "");
-  return code.length === CODE_LENGTH && [...code].every((c) => CODE_ALPHABET.includes(c)) ? code : null;
 }
 
 /** 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える */

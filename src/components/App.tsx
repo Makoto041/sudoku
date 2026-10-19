@@ -16,7 +16,19 @@ import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/l
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { howtoSeen, markHowtoSeen } from "@/lib/client/howto";
 import { updateAchievements } from "@/lib/client/achievements";
-import { refreshPush } from "@/lib/client/push";
+import { disablePush, refreshPush, reminderOn } from "@/lib/client/push";
+import { iosStandalone } from "@/lib/client/device";
+import {
+  fromLegacy,
+  hasLocalData,
+  isLegacyHost,
+  legacyTarget,
+  markMovedWithReminder,
+  movedWithReminder,
+  moveUrl,
+  navigationAllowsClaim,
+  parseMoveHash,
+} from "@/lib/client/move";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -24,7 +36,7 @@ import { Practice } from "./Practice";
 import { PracticeList } from "./PracticeList";
 import { Ranking } from "./Ranking";
 import { Records } from "./Records";
-import { ConfirmSheet, HowtoSheet, NameSheet, SettingsSheet } from "./Sheets";
+import { ClaimSheet, ConfirmSheet, HowtoSheet, MoveSheet, NameSheet, SettingsSheet } from "./Sheets";
 
 type View =
   | { name: "home" }
@@ -39,6 +51,8 @@ type SheetState =
   | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
   | { kind: "confirmFree"; difficulty: Difficulty }
+  | { kind: "move" }
+  | { kind: "claim"; code: string; push: boolean; replace: boolean }
   | null;
 
 function freeSeed() {
@@ -70,8 +84,33 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [howtoHint, setHowtoHint] = useState(false);
+  /**
+   * 前の本番の URL で開いているとき（新しい URL へ移る案内を出す）。
+   * standalone は iOS のホーム画面に追加したアプリか（新しい URL を開かずにコードを出す）
+   */
+  const [legacy, setLegacy] = useState<{ standalone: boolean } | null>(null);
 
   useEffect(() => {
+    // 記録があるかは、開いたときに作る保存データ（プレイヤー・実績など）を書く前に見る
+    const hadData = hasLocalData();
+    const onLegacy = isLegacyHost(location.hostname);
+    // 旧 URL で記録の無い端末は、そのまま新しい URL へ移る（何も保存しない）
+    if (onLegacy && !hadData) {
+      location.replace(legacyTarget(location.pathname, location.search));
+      return;
+    }
+    // 引き継ぎのリンク（#code=）は通信の前に読み、URL から消す（履歴やブックマークにコードを残さない）。
+    // 受け取るシートを開くのは、新しい URL で、旧 URL のページから新しく開かれたときだけ
+    // （ほかのページから送られたリンクで、1 回のタップでプレイヤーを差し替えられないように。ほかは設定から入力する）
+    const link = parseMoveHash(location.hash);
+    if (link) history.replaceState(history.state, "", location.pathname + location.search);
+    const [navigation] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
+    if (onLegacy) {
+      setLegacy({ standalone: iosStandalone() });
+      setSheet({ kind: "move" });
+    } else if (link?.code && fromLegacy(document.referrer) && navigationAllowsClaim(navigation?.type)) {
+      setSheet({ kind: "claim", code: link.code, push: link.push, replace: hadData });
+    }
     clockOffset = load<number>(KEYS.clockOffset) ?? 0;
     setToday(serverToday());
     setSettings(loadSettings());
@@ -365,6 +404,43 @@ export function App() {
     saveSettings(s);
   };
 
+  // 旧版や手で書き換えた余計な項目を送ると、サーバーの上限を超えて発行できないことがある
+  const createTransfer = () => api.transfer({ playerId: player.id, name: player.name, stats: loadStats() });
+
+  /** 引き継ぎコードを使い、受け取ったプレイヤーと記録に切り替える */
+  const claim = async (code: string) => {
+    const res = await api.claim(code);
+    const next = adoptPlayer(res.playerId, res.name);
+    if (res.stats && typeof res.stats === "object") mergeStats(res.stats);
+    // 引き継いだ記録での達成は、クリアしたときに出さないよう先に保存する
+    judge(false);
+    setPlayer(next);
+    setRefresh((n) => n + 1);
+    void loadRecords(next.id);
+  };
+
+  /**
+   * 新しい URL へ移るコードを発行し、ホーム画面に追加したアプリでなければ、コードを付けて新しい URL を開く。
+   * 通知をオンにしていたら、この URL の購読を外す（移った先でもオンにすると 2 通届く）。
+   * 外すと通知の印も消えるので、先に移るときの印を残し、発行し直したときも新しい URL で通知の項目を出す
+   */
+  const issueMove = async () => {
+    const { code } = await createTransfer();
+    const reminder = reminderOn();
+    const push = reminder || movedWithReminder();
+    if (reminder) {
+      markMovedWithReminder();
+      await disablePush(player.id);
+    }
+    if (!legacy?.standalone) location.assign(moveUrl(code, push));
+    return { code, push };
+  };
+
+  const openMove = () => {
+    sfx.tap();
+    setSheet({ kind: "move" });
+  };
+
   const [nameBusy, setNameBusy] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const submitName = async (name: string, difficulty: Difficulty | null) => {
@@ -425,6 +501,7 @@ export function App() {
             onHowto={openHowto}
             howtoHint={howtoHint}
             onCloseHowtoHint={dismissHowtoHint}
+            onMove={legacy ? openMove : undefined}
           />
         </>
       )}
@@ -501,21 +578,22 @@ export function App() {
           playerName={player.name}
           onChange={updateSettings}
           onRename={() => setSheet({ kind: "name", difficulty: null })}
-          onCreateTransfer={() =>
-            // 旧版や手で書き換えた余計な項目を送ると、サーバーの上限を超えて発行できないことがある
-            api.transfer({ playerId: player.id, name: player.name, stats: loadStats() })
-          }
-          onClaim={async (code: string) => {
-            const res = await api.claim(code);
-            const next = adoptPlayer(res.playerId, res.name);
-            if (res.stats && typeof res.stats === "object") mergeStats(res.stats);
-            // 引き継いだ記録での達成は、クリアしたときに出さないよう先に保存する
-            judge(false);
-            setPlayer(next);
-            setRefresh((n) => n + 1);
-            void loadRecords(next.id);
-          }}
+          onCreateTransfer={createTransfer}
+          onClaim={claim}
           onHowto={openHowto}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "move" && legacy && (
+        <MoveSheet standalone={legacy.standalone} onIssue={issueMove} onClose={() => setSheet(null)} />
+      )}
+      {sheet?.kind === "claim" && (
+        <ClaimSheet
+          code={sheet.code}
+          push={sheet.push}
+          replace={sheet.replace}
+          playerId={player.id}
+          onClaim={claim}
           onClose={() => setSheet(null)}
         />
       )}

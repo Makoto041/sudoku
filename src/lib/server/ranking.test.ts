@@ -15,8 +15,8 @@ import {
   getHistory,
   createTransfer,
   claimTransfer,
-  normalizeCode,
 } from "./ranking";
+import { normalizeCode } from "@/lib/transfer-code";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { MemoryStore, fromRankValue, rankValue } from "./store";
 

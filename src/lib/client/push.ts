@@ -23,8 +23,11 @@ export type PushResult = { state: PushState; error?: PushError };
 export const reminderOn = () => load<unknown>(KEYS.reminder) === true;
 
 export function setReminderOn(on: boolean) {
-  if (on) save(KEYS.reminder, true);
-  else remove(KEYS.reminder);
+  if (on) {
+    save(KEYS.reminder, true);
+    // 旧 URL で通知をオンにし直したら、旧 URL で通知を使い続けるとみなし、移るときの印を消す
+    remove(KEYS.movedWithReminder);
+  } else remove(KEYS.reminder);
 }
 
 /**

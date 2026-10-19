@@ -32,6 +32,8 @@ type Props = {
   onCloseHowtoHint: () => void;
   /** 今日の一問の連続日数 */
   streak: number;
+  /** 旧 URL で開いたときに、新しい URL へ移るシートを開く（ある間は案内を出し、ホーム画面への追加は案内しない） */
+  onMove?: () => void;
 };
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
@@ -66,6 +68,15 @@ export function Home(props: Props) {
           </button>
         </div>
       </header>
+
+      {props.onMove && (
+        <div className="hint-bar move-hint" role="note">
+          <span>URL が変わりました</span>
+          <button type="button" className="btn small primary" onClick={props.onMove}>
+            移る
+          </button>
+        </div>
+      )}
 
       {props.howtoHint && (
         <div className="hint-bar howto-hint" role="note">
@@ -201,7 +212,7 @@ export function Home(props: Props) {
         <ChevronRight size={20} className="row-chevron" />
       </button>
 
-      <InstallHint />
+      {!props.onMove && <InstallHint />}
     </div>
   );
 }
