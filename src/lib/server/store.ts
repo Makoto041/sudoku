@@ -605,6 +605,18 @@ export class MemoryStore implements RankingStore {
   }
 }
 
+let cachedRedis: Redis | null | undefined;
+
+/** 環境変数に Redis の接続先があれば、その Redis クライアント（1 つを使い回す）。無ければ null */
+export function redisFromEnv(): Redis | null {
+  if (cachedRedis !== undefined) return cachedRedis;
+  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+  // 名前が "123" や "null" でも文字列のまま扱えるよう、値の自動 JSON 変換は使わない
+  cachedRedis = url && token ? new Redis({ url, token, automaticDeserialization: false }) : null;
+  return cachedRedis;
+}
+
 let cached: RankingStore | null | undefined;
 
 /**
@@ -613,11 +625,9 @@ let cached: RankingStore | null | undefined;
  */
 export function getStore(): RankingStore | null {
   if (cached !== undefined) return cached;
-  const url = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (url && token) {
-    // 名前が "123" や "null" でも文字列のまま扱えるよう、値の自動 JSON 変換は使わない
-    cached = new RedisStore(new Redis({ url, token, automaticDeserialization: false }));
+  const redis = redisFromEnv();
+  if (redis) {
+    cached = new RedisStore(redis);
   } else if (process.env.VERCEL) {
     cached = null;
   } else {

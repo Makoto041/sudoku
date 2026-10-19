@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { RankingError } from "./ranking";
 import { getStore, type RankingStore } from "./store";
 
-const NO_STORE = { "Cache-Control": "no-store" };
+export const NO_STORE = { "Cache-Control": "no-store" };
 
 /**
  * ランキング API 共通：保存先の用意、エラーの HTTP 変換、キャッシュ無効化。

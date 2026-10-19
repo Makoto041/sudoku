@@ -226,7 +226,7 @@ export const PUSH_RATE_LIMITS = {
  * （1 つの回線に /64 が割り当てられることが多く、アドレスを変えるだけで制限を回避できるため）。
  * IPv4 射影（::ffff:a.b.c.d）は IPv4 として扱う。取れなければ固定の unknown（ヘッダーを外して回避させない）
  */
-function ipRateName(ip: string | null): string {
+export function ipRateName(ip: string | null): string {
   if (!ip || !isIP(ip)) return "ip:unknown";
   let bucket = ip.toLowerCase();
   const words = isIP(ip) === 6 ? ipv6Words(ip) : null;

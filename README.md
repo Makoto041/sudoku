@@ -99,7 +99,25 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 
 - ドメインは 2 つとも Production に付ける（新しい URL `nanpure-game.vercel.app` と旧 URL `sudoku-xi-five.vercel.app`）。旧 URL に Vercel の転送（Redirect）は設定しない（記録のある端末が旧 URL の記録に戻れなくなる。「URL の移行」を参照）。
 - `VAPID_SUBJECT` は新しい URL（`https://nanpure-game.vercel.app`）にする。
-- パスキーを入れるときは、`WEBAUTHN_ORIGIN` と RP ID を `src/lib/site.ts` の `SITE_ORIGIN` に合わせる。
+- `WEBAUTHN_ORIGIN` は `src/lib/site.ts` の `SITE_ORIGIN` と同じ値にする（「アカウント（パスキー）」を参照）。
+
+### アカウント（パスキー）
+
+- 任意のログイン。パスキー（WebAuthn）だけを使い、メールアドレス・パスワード・外部サービスのログインは使わない。ログインしなくても今までどおり遊べる。端末側の画面はまだ無い（サーバーの API だけ）。
+- 環境変数: `WEBAUTHN_ORIGIN`（秘密の値ではない）。本番は `https://nanpure-game.vercel.app`（末尾の `/` なし）。受け付けるのは https（ホストが IP アドレスでないもの）と http の `localhost` だけ。Vercel 上で未設定（プレビューを含む）か受け付けない形なら、`/api/auth/*` は 503。Vercel 以外で未設定なら `http://localhost:3000`。
+- RP ID は `WEBAUTHN_ORIGIN` のホスト名。変えると登録済みのパスキーが使えなくなる（回復の手段は無い）。origin と RP ID は環境変数だけで決め、リクエストの Host からは決めない。`GET /api/auth/me` は、Host が `WEBAUTHN_ORIGIN` のホストと違えば（旧 URL など）503 を返す。
+- API: `GET /api/auth/me`（`{ account }`。ログインしていなければ `null`）、`POST /api/auth/signup/options`（`{ playerId }`）・`/signup/verify`（`{ response }`）、`/login/options`・`/login/verify`（`{ response }`）、`/logout`（`{ scope: "this" | "others" }`。`others` はこの端末以外のセッションを消す）。POST は `Origin` が `WEBAUTHN_ORIGIN` と一致しなければ 403、`Content-Type` が `application/json` でなければ 415。
+- アカウントを作ると、端末のプレイヤー ID をアカウントに紐づける。1 つのプレイヤー ID は 1 つのアカウントだけ（紐づけ済みなら 409）で、紐づけは後から変えない。パスキーの user.id はアカウント ID（ランダムな UUID）で、プレイヤー ID は入れない。パスキーに付く名前はランキングの名前（無ければ「プレイヤー」）。
+- ログインの状態は Cookie（`__Secure-sdk_auth`。http の localhost では `sdk_auth`）で持つ: `Path=/api/auth; HttpOnly; Secure; SameSite=Strict`、90 日。トークンは応答の本文に出さない。`GET /api/auth/me` で有効だと確かめるたびに、セッションと Cookie の期限を 90 日に延ばす。
+- ログインの失敗（知らないパスキー・別のアカウントのパスキー・検証の失敗）は、どれも同じ 401 `login failed`。
+- 登録で受け付ける attestation は none だけ（ほかの形式は検証せずに 400）。ほかの形式ではライブラリが証明書を検証し、証明書に書かれた CRL の URL へサーバーから通信しうるため。
+- サーバーに保存するもの: アカウント（ID・プレイヤー ID・作成日時）、パスキー（credential ID・公開鍵・counter・transports・バックアップの状態・作成日時・最後に使った日時）、セッション（トークンの SHA-256・アカウント ID・期限。最後の確認から 90 日で消える）、challenge（300 秒で消える）。メールアドレスなどの個人情報は保存しない。
+- 回数制限と上限: challenge の発行（options の API）は IP ごとに 1 時間 60 回、アカウントの作成は IP ごとに 1 時間 5 件（検証を通ったものだけ数える。超えたら 429。IP の扱いは通知の購読と同じ）。アカウントは全体で 20,000 件まで（超えたら作成は 503）。セッションは 1 アカウント 20 件まで（超えたら最後に使ったのが古いものから消す）。本文は検証 API が 16KB、ほかは 1KB まで。登録の attestationObject は base64url で 4096 文字まで、保存する公開鍵は 1KB まで。
+- 既知の限界:
+  - プレイヤー ID は、既存の API ではそれを知っていれば使える秘密のまま。知っていれば、まだ紐づいていないプレイヤー ID を自分のアカウントに紐づけられる（先着 1 つ）。
+  - プレイヤー ID は GET のクエリ（`/api/leaderboard`・`/api/player/history`）に入り、Vercel のログに残る。
+  - RP ID は変えられない（ドメインを変えると、登録済みのパスキーではログインできない）。
+  - ソフトウェアで作った偽の認証器でもアカウントは作れる。IP ごとの回数制限と全体の上限でしか抑えられないので、多数の IP を使われると全体の上限（20,000 件）を埋められうる。Vercel の WAF・レート制限のルールの併用を勧める。
 
 ### リマインド通知（Web Push）
 
