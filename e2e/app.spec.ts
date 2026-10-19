@@ -2794,7 +2794,9 @@ test.describe("URL の移行", () => {
     await expect(claim).toBeHidden();
     await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
     await page.getByRole("button", { name: "設定" }).click();
-    await expect(page.getByRole("dialog", { name: "設定" }).getByText("この端末")).toBeVisible();
+    await expect(
+      page.getByRole("dialog", { name: "設定" }).getByText("この端末", { exact: true }),
+    ).toBeVisible();
     await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
     expect(claimRequests()).toEqual([]);
     expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:player"])).toEqual(here);
