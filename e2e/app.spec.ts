@@ -1,9 +1,10 @@
-import { createECDH } from "node:crypto";
+import { createECDH, randomUUID } from "node:crypto";
 import {
   expect,
   test,
   type APIRequestContext,
   type BrowserContext,
+  type CDPSession,
   type Locator,
   type Page,
   type Response,
@@ -1406,6 +1407,23 @@ async function countSounds(page: Page) {
 const nextFrames = (page: Page) =>
   page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
+/** シートを ×・Escape・背景のタップで閉じようとしても、閉じない（処理中）ことを確かめる */
+async function expectNotClosable(dialog: Locator) {
+  const page = dialog.page();
+  await expect(dialog.getByRole("button", { name: "閉じる" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  // 背景（シートの外）をタップする
+  await dialog.click({ position: { x: 5, y: 5 } });
+  await nextFrames(page);
+  await expect(dialog).toBeVisible();
+}
+
+/** 開いたときのログインの状態の確認（GET /api/auth/me）の応答。origin があればその URL のものだけ */
+const authChecked = (page: Page, origin?: string) =>
+  page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/auth/me" && (!origin || new URL(r.url()).origin === origin),
+  );
+
 /** 端末に保存したフリープレイと記録、保存しているキー（今日の一問の履歴は裏で取り直して保存するので除く） */
 const savedState = (page: Page) =>
   page.evaluate(() => ({
@@ -2617,11 +2635,15 @@ test.describe("URL の移行", () => {
   const installHint = (page: Page) => page.getByText("「ホーム画面に追加」でアプリになります");
   const homeHeading = (page: Page) => page.getByRole("heading", { name: "ナンプレ" });
   /**
-   * origin のページを開いたときの履歴の取得（/api/player/history）の応答。開く前に作り、ページを離れる前に待つ
+   * origin のページを開いたときの履歴の取得（/api/player/history）と、新しい URL ではログインの状態の確認
+   * （/api/auth/me。旧 URL では確かめない）の応答。開く前に作り、ページを離れる前に待つ
    * （WebKit は、取得の途中でページを離れると、切れた fetch をページのエラーとして報告する）
    */
   const historyLoaded = (page: Page, origin = SITE_ORIGIN) =>
-    page.waitForResponse((r) => r.url().startsWith(`${origin}/api/player/history`));
+    Promise.all([
+      page.waitForResponse((r) => r.url().startsWith(`${origin}/api/player/history`)),
+      origin === SITE_ORIGIN ? authChecked(page, origin) : null,
+    ]);
 
   /** テストのサーバーで MOVE_PLAYER の引き継ぎコードを発行する */
   async function issueCode(request: APIRequestContext) {
@@ -2772,7 +2794,9 @@ test.describe("URL の移行", () => {
     await expect(claim).toBeHidden();
     await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
     await page.getByRole("button", { name: "設定" }).click();
-    await expect(page.getByRole("dialog", { name: "設定" }).getByText("この端末")).toBeVisible();
+    await expect(
+      page.getByRole("dialog", { name: "設定" }).getByText("この端末", { exact: true }),
+    ).toBeVisible();
     await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
     expect(claimRequests()).toEqual([]);
     expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:player"])).toEqual(here);
@@ -2945,6 +2969,129 @@ test.describe("URL の移行", () => {
     expect(sent.filter((s) => s.method === "DELETE")).toHaveLength(1);
   });
 
+  test("ログイン中の端末では、旧 URL から開いた #code のリンクでもシートを出さずに URL から消し、コードを使わない", async ({
+    page,
+    request,
+  }) => {
+    const here = { id: randomUUID(), name: "ログイン中" };
+    await page.addInitScript((p) => localStorage.setItem("sudoku:player", p), JSON.stringify(here));
+    // ログイン中と答える（このテストではアカウントを作らない。同じプレイヤーで記録も無いので、ほかの通信はしない）
+    await page.route(`${SITE_ORIGIN}/api/auth/me`, (route) =>
+      route.fulfill({ json: { account: { playerId: here.id, name: here.name, passkeys: 1, stats: null } } }),
+    );
+    const code = await issueCode(request);
+    const loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    await expect(homeHeading(page)).toBeVisible();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await loaded;
+    await nextFrames(page);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.getByRole("button", { name: "設定" }).click();
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await expect(settings.getByRole("button", { name: /^アカウント/ })).toContainText("ログイン中");
+    await expect(settings.getByRole("button", { name: "コードを入力" })).toHaveCount(0);
+    expect(claimRequests()).toEqual([]);
+    expect((await request.post("/api/player/claim", { data: { code } })).status()).toBe(200);
+  });
+
+  test("ログインの状態を確かめている間にゲームや設定を開いたら、旧 URL からの受け取るシートはホームに戻って閉じてから開く", async ({
+    page,
+    request,
+  }) => {
+    const code = await issueCode(request);
+    const holdMe = async () => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`${SITE_ORIGIN}/api/auth/me`, async (route) => {
+        await held;
+        await route.fallback();
+      });
+      return release;
+    };
+    const claim = claimSheet(page);
+
+    // 設定を開いている間に分かったら、設定を閉じてから開く
+    let release = await holdMe();
+    let loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/?n=1#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    await page.getByRole("button", { name: "設定" }).click();
+    const settings = page.getByRole("dialog", { name: "設定" });
+    await expect(settings).toBeVisible();
+    release();
+    await loaded;
+    await nextFrames(page);
+    await expect(claim).toHaveCount(0);
+    await settings.getByRole("button", { name: "閉じる" }).click();
+    await expect(claim).toBeVisible();
+    await claim.getByRole("button", { name: "やめる" }).click();
+    await expect(claim).toBeHidden();
+    await page.unrouteAll({ behavior: "wait" });
+
+    // ゲームを開いている間に分かったら、ホームに戻ってから開く
+    release = await holdMe();
+    loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/?n=2#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    await expect(homeHeading(page)).toBeVisible();
+    await page.locator(".free-easy").click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    release();
+    await loaded;
+    await nextFrames(page);
+    await expect(claim).toHaveCount(0);
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(claim).toBeVisible();
+    await claim.getByRole("button", { name: "やめる" }).click();
+    expect(claimRequests()).toEqual([]);
+  });
+
+  test("今日の一問を始める途中にログインの状態が分かっても、受け取るシートはゲームの上に出さず、ホームに戻ってから開く", async ({
+    page,
+    request,
+  }) => {
+    const here = { id: randomUUID(), name: "この端末" };
+    await page.addInitScript((p) => localStorage.setItem("sudoku:player", p), JSON.stringify(here));
+    const code = await issueCode(request);
+    /** release を呼ぶまで応答を止める */
+    const holdRoute = async (path: string) => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      await page.route(`${SITE_ORIGIN}${path}`, async (route) => {
+        await held;
+        await route.fallback();
+      });
+      return release;
+    };
+    const releaseMe = await holdRoute("/api/auth/me");
+    const releaseStart = await holdRoute("/api/daily/start");
+    const loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    await expect(homeHeading(page)).toBeVisible();
+    const started = page.waitForRequest(`${SITE_ORIGIN}/api/daily/start`);
+    await page.locator(".daily-row").first().click();
+    await started;
+
+    // 始める途中（開始の応答を待っている間）に、ログインしていないと分かっても開かない
+    releaseMe();
+    await loaded;
+    await nextFrames(page);
+    const claim = claimSheet(page);
+    await expect(claim).toHaveCount(0);
+    // ゲームが始まっても、ゲームの上には出さず、プレイヤーも替わらない
+    releaseStart();
+    await expect(page.getByLabel("ランキング戦")).toBeVisible();
+    await nextFrames(page);
+    await expect(claim).toHaveCount(0);
+    expect(JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:player")))!)).toEqual(here);
+
+    // ホームに戻ったら開く
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(claim).toBeVisible();
+    await claim.getByRole("button", { name: "やめる" }).click();
+    await expect(claim).toBeHidden();
+    expect(claimRequests()).toEqual([]);
+  });
+
   test("ローカルやプレビューの URL では、記録があっても移る案内を出さない", async ({
     page,
     baseURL,
@@ -2956,5 +3103,491 @@ test.describe("URL の移行", () => {
     await expect(moveBar(page)).toHaveCount(0);
     if (isIphone(info)) await expect(installHint(page)).toBeVisible();
     await expect(page).toHaveURL(`${baseURL}/`);
+  });
+});
+
+/** 仮想の認証器（パスキーを保存する端末の代わり）。Chromium の CDP でだけ使える */
+type Authenticator = { cdp: CDPSession; id: string };
+
+/** 認証器を足す。パスキーを端末に保存し、本人確認とタップは自動で通す */
+async function newAuthenticator(cdp: CDPSession): Promise<Authenticator> {
+  const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  return { cdp, id: authenticatorId };
+}
+
+async function addAuthenticator(page: Page): Promise<Authenticator> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  return newAuthenticator(cdp);
+}
+
+const passkeysOf = async (a: Authenticator) =>
+  (await a.cdp.send("WebAuthn.getCredentials", { authenticatorId: a.id })).credentials;
+
+/** from の認証器のパスキーを to の認証器に写す（同じパスキーを同期した別の端末の代わり） */
+async function copyPasskeys(from: Authenticator, to: Authenticator) {
+  const credentials = await passkeysOf(from);
+  expect(credentials.length).toBeGreaterThan(0);
+  for (const credential of credentials) {
+    await to.cdp.send("WebAuthn.addCredential", { authenticatorId: to.id, credential });
+  }
+}
+
+test.describe("アカウント（パスキー）", () => {
+  test.skip(!!process.env.E2E_BASE_URL, "アカウントを作るので、ローカルのサーバーだけ（本番を汚さない）");
+
+  const EASY = {
+    played: 2,
+    bestMs: 95_000,
+    cleanBestMs: null,
+    bestPoints: 1200,
+    started: 3,
+    trackedClears: 2,
+    totalMs: 200_000,
+  };
+  const MEDIUM = {
+    played: 1,
+    bestMs: 300_000,
+    cleanBestMs: 300_000,
+    bestPoints: 2000,
+    started: 1,
+    trackedClears: 1,
+    totalMs: 300_000,
+  };
+  const CDP_ONLY = "仮想の認証器（CDP）は Chromium だけ";
+
+  /**
+   * テストごとに回数制限の枠を分ける（アカウントの作成は IP ごとに 1 時間 5 件、options の取得は 60 回。
+   * サーバーは実行の間ずっと同じなので、iPhone とデスクトップでも分ける）。呼ぶたびに次の IP
+   */
+  let ipCount = 0;
+  const ipHeaders = (info: TestInfo) => ({
+    "x-forwarded-for": `${isIphone(info) ? "198.51.100" : "203.0.113"}.${++ipCount}`,
+  });
+
+  /** タブで初めて開いたときだけ保存データを入れる（読み込み直しても入れ直さない） */
+  async function seed(page: Page, items: Record<string, unknown>) {
+    await page.addInitScript((items) => {
+      if (sessionStorage.getItem("e2e:seeded")) return;
+      sessionStorage.setItem("e2e:seeded", "1");
+      for (const [k, v] of Object.entries(items)) localStorage.setItem(k, JSON.stringify(v));
+    }, items);
+  }
+
+  const stored = (page: Page, key: string) =>
+    page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null"), key);
+  const settingsSheet = (page: Page) => page.getByRole("dialog", { name: "設定" });
+  const accountSheet = (page: Page) => page.getByRole("dialog", { name: "アカウント" });
+  const accountRow = (page: Page) => settingsSheet(page).locator(".settings-link", { hasText: "アカウント" });
+
+  /** パスキーの操作の options の取得（開いたときと操作の後に先取りする）の応答 */
+  const optionsLoaded = (page: Page, kinds: ("signup" | "login" | "passkeys")[]) =>
+    Promise.all(
+      kinds.map((k) => page.waitForResponse((r) => new URL(r.url()).pathname === `/api/auth/${k}/options`)),
+    );
+
+  /**
+   * 設定からアカウントを開き、options を取り終えるまで待つ（取り終える前に押すと、もう一度押すよう示す）。
+   * 既定はログインしていない端末（ログインと作成の options）
+   */
+  async function openAccount(page: Page, kinds: ("signup" | "login" | "passkeys")[] = ["login", "signup"]) {
+    await page.getByRole("button", { name: "設定" }).click();
+    const loaded = optionsLoaded(page, kinds);
+    await accountRow(page).click();
+    await loaded;
+    return accountSheet(page);
+  }
+
+  /** アカウントを作る（ログインしていない端末で、アカウントを開いた状態から） */
+  async function createAccount(sheet: Locator) {
+    await sheet.getByRole("button", { name: "アカウントを作成" }).click();
+    await expect(sheet.getByText("作成しました")).toBeVisible();
+  }
+
+  test("アカウントを作り、別の端末でパスキーでログインすると、同じプレイヤー・名前になり記録が合わさる。ログイン中はコードを入力できない", async ({
+    browser,
+  }, info) => {
+    test.skip(isIphone(info), CDP_ONLY);
+    const headers = ipHeaders(info);
+    const owner = { id: randomUUID(), name: "作成元" };
+    const a = await browser.newContext({ extraHTTPHeaders: headers });
+    // ランキングの名前（アカウントの名前）をサーバーに保存しておく
+    expect(
+      (await a.request.post("/api/player", { data: { playerId: owner.id, name: owner.name } })).ok(),
+    ).toBe(true);
+    const pa = await a.newPage();
+    const authA = await addAuthenticator(pa);
+    await seed(pa, { "sudoku:player": owner, "sudoku:stats": { easy: EASY } });
+    await pa.goto("/");
+    await pa.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(pa)).toContainText("ログインしていません");
+    await settingsSheet(pa).getByRole("button", { name: "閉じる" }).click();
+
+    let sheet = await openAccount(pa);
+    await sheetShot(sheet, "account-signed-out");
+    await createAccount(sheet);
+    await expect(sheet.getByText("1 件")).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "追加" })).toBeVisible();
+    await sheetShot(sheet, "account-signed-in");
+    expect(await stored(pa, "sudoku:player")).toEqual(owner);
+    // ログイン中は、設定の引き継ぎでコードを入力できない（発行はできる）
+    await sheet.getByRole("button", { name: "閉じる" }).click();
+    await pa.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(pa)).toContainText("ログイン中");
+    await expect(settingsSheet(pa).getByRole("button", { name: "コードを発行" })).toBeVisible();
+    await expect(settingsSheet(pa).getByRole("button", { name: "コードを入力" })).toHaveCount(0);
+    await accountRow(pa).scrollIntoViewIfNeeded();
+    await sheetShot(settingsSheet(pa), "settings-account");
+
+    // 同期したパスキーを持つ別の端末（別のプレイヤーで遊んでいた）でログインする
+    const b = await browser.newContext({ extraHTTPHeaders: headers });
+    const pb = await b.newPage();
+    await copyPasskeys(authA, await addAuthenticator(pb));
+    const other = { id: randomUUID(), name: "別の端末" };
+    await seed(pb, { "sudoku:player": other, "sudoku:stats": { medium: MEDIUM } });
+    const merges: unknown[] = [];
+    pb.on("request", (r) => {
+      if (new URL(r.url()).pathname === "/api/auth/merge") merges.push(r.postDataJSON());
+    });
+    await pb.goto("/");
+    sheet = await openAccount(pb);
+    await sheet.getByRole("button", { name: "ログイン", exact: true }).click();
+    await expect(sheet.getByText("ログインしました")).toBeVisible();
+    await expect(sheet.getByText("1 件")).toBeVisible();
+    // 別の端末で使っていたプレイヤーの今日の一問の履歴を写し、アカウントのプレイヤーになる
+    expect(merges).toEqual([{ fromPlayerId: other.id }]);
+    expect(await stored(pb, "sudoku:player")).toEqual(owner);
+    expect(await stored(pb, "sudoku:stats")).toEqual({ easy: EASY, medium: MEDIUM });
+    const me = await pb.evaluate(() => fetch("/api/auth/me").then((r) => r.json()));
+    expect(me.account).toEqual({
+      playerId: owner.id,
+      name: owner.name,
+      passkeys: 1,
+      stats: { easy: EASY, medium: MEDIUM },
+    });
+
+    // 開き直してもログイン中のまま（同じプレイヤーなので、履歴は写し直さない）
+    const checked = authChecked(pb);
+    await pb.reload();
+    await checked;
+    await pb.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(pb)).toContainText("ログイン中");
+    await expect(settingsSheet(pb).getByText(owner.name)).toBeVisible();
+    expect(merges).toHaveLength(1);
+    await a.close();
+    await b.close();
+  });
+
+  test("ログアウトすると、まだ送っていない記録を送ってから、この端末の記録を消して新しいプレイヤーになる。通知の印は残り、購読は新しいプレイヤーに移す。アカウントの記録は残る", async ({
+    page,
+  }, info) => {
+    test.skip(isIphone(info), CDP_ONLY);
+    await page.context().setExtraHTTPHeaders(ipHeaders(info));
+    await addAuthenticator(page);
+    await fakePush(page, { permission: "granted", subscribed: true, reminder: true, once: true });
+    const sent = await routePush(page);
+    const owner = { id: randomUUID(), name: null };
+    const result = {
+      date: "2026-10-01",
+      difficulty: "easy",
+      timeMs: 100_000,
+      points: 1000,
+      rank: 1,
+      total: 1,
+    };
+    await seed(page, {
+      "sudoku:player": owner,
+      "sudoku:stats": { easy: EASY },
+      "sudoku:result:2026-10-01:easy": result,
+      "sudoku:daily:2026-10-01:easy": { version: 1 },
+    });
+    const registered = page.waitForResponse(isPushApi("POST"));
+    await page.goto("/");
+    await registered;
+    const sheet = await openAccount(page);
+    await createAccount(sheet);
+    // ホームに戻らずに（同期せずに）増えた記録
+    await page.evaluate((s) => localStorage.setItem("sudoku:stats", JSON.stringify(s)), {
+      easy: EASY,
+      medium: MEDIUM,
+    });
+    const order: string[] = [];
+    page.on("request", (r) => {
+      const path = new URL(r.url()).pathname;
+      if (path === "/api/auth/stats" || path === "/api/auth/logout") order.push(`${r.method()} ${path}`);
+    });
+
+    await sheet.getByRole("button", { name: "ログアウト", exact: true }).click();
+    const confirm = page.getByRole("dialog", { name: "ログアウトしますか？" });
+    await expect(confirm.getByText("この端末の記録は消えます。アカウントの記録は残ります。")).toBeVisible();
+    await sheetShot(confirm, "account-logout");
+    const ready = optionsLoaded(page, ["login", "signup"]);
+    const moved = page.waitForResponse(isPushApi("POST"));
+    await confirm.getByRole("button", { name: "ログアウト" }).click();
+    await ready;
+    await expect(sheet.getByRole("button", { name: "アカウントを作成" })).toBeVisible();
+    await moved;
+    const fresh = await stored(page, "sudoku:player");
+    expect(fresh.id).not.toBe(owner.id);
+    expect(fresh.name).toBeNull();
+    expect(await stored(page, "sudoku:stats")).toBeNull();
+    expect(await stored(page, "sudoku:result:2026-10-01:easy")).toBeNull();
+    expect(await stored(page, "sudoku:daily:2026-10-01:easy")).toBeNull();
+    expect(await reminderFlag(page)).toBe("true");
+    expect(sent.map((s) => (s.body as { playerId: string }).playerId)).toEqual([owner.id, fresh.id]);
+    expect(order).toEqual(["PUT /api/auth/stats", "POST /api/auth/logout"]);
+
+    // もう一度ログインすると、アカウントのプレイヤーと記録（ログアウトの前に送った分を含む）に戻る
+    await sheet.getByRole("button", { name: "ログイン", exact: true }).click();
+    await expect(sheet.getByText("ログインしました")).toBeVisible();
+    expect((await stored(page, "sudoku:player")).id).toBe(owner.id);
+    expect(await stored(page, "sudoku:stats")).toEqual({ easy: EASY, medium: MEDIUM });
+  });
+
+  test("パスキーを追加できる。登録済みのパスキーがある認証器には作らない。足したパスキーでもログインできる", async ({
+    browser,
+  }, info) => {
+    test.skip(isIphone(info), CDP_ONLY);
+    const headers = ipHeaders(info);
+    const context = await browser.newContext({ extraHTTPHeaders: headers });
+    const page = await context.newPage();
+    const first = await addAuthenticator(page);
+    await seed(page, { "sudoku:player": { id: randomUUID(), name: null } });
+    await page.goto("/");
+    const sheet = await openAccount(page);
+    const ready = optionsLoaded(page, ["passkeys"]);
+    await createAccount(sheet);
+    await ready;
+
+    await sheet.getByRole("button", { name: "追加" }).click();
+    await expect(sheet.getByText("このパスキーは登録済みです")).toBeVisible();
+    await expect(sheet.getByText("1 件")).toBeVisible();
+
+    // 別の認証器なら足せる（さっきの options をそのまま使う）
+    await first.cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId: first.id });
+    const second = await newAuthenticator(first.cdp);
+    await sheet.getByRole("button", { name: "追加" }).click();
+    await expect(sheet.getByText("追加しました")).toBeVisible();
+    await expect(sheet.getByText("2 件")).toBeVisible();
+    await expect(sheet.getByText("このパスキーは登録済みです")).toHaveCount(0);
+
+    const other = await browser.newContext({ extraHTTPHeaders: headers });
+    const po = await other.newPage();
+    await copyPasskeys(second, await addAuthenticator(po));
+    await po.goto("/");
+    const otherSheet = await openAccount(po);
+    await otherSheet.getByRole("button", { name: "ログイン", exact: true }).click();
+    await expect(otherSheet.getByText("ログインしました")).toBeVisible();
+    await expect(otherSheet.getByText("2 件")).toBeVisible();
+    await context.close();
+    await other.close();
+  });
+
+  test("アカウントを削除すると、そのパスキーではログインできない。端末のプレイヤーと記録は残る", async ({
+    page,
+  }, info) => {
+    test.skip(isIphone(info), CDP_ONLY);
+    await page.context().setExtraHTTPHeaders(ipHeaders(info));
+    await addAuthenticator(page);
+    const owner = { id: randomUUID(), name: null };
+    await seed(page, { "sudoku:player": owner, "sudoku:stats": { easy: EASY } });
+    await page.goto("/");
+    const sheet = await openAccount(page);
+    await createAccount(sheet);
+
+    await sheet.getByRole("button", { name: "アカウントを削除" }).click();
+    const confirm = page.getByRole("dialog", { name: "アカウントを削除しますか？" });
+    await expect(
+      confirm.getByText("パスキーではログインできなくなります。この端末の記録は残ります。"),
+    ).toBeVisible();
+    await sheetShot(confirm, "account-delete");
+    // 削除の応答を止めておき、処理中は閉じられないことを確かめる
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/auth/account", async (route) => {
+      await held;
+      await route.continue();
+    });
+    const ready = optionsLoaded(page, ["login", "signup"]);
+    await confirm.getByRole("button", { name: "削除する" }).click();
+    await expect(confirm.locator(".spinner")).toBeVisible();
+    await expectNotClosable(confirm);
+    release();
+    await ready;
+    await expect(sheet.getByRole("button", { name: "アカウントを作成" })).toBeVisible();
+    expect(await stored(page, "sudoku:player")).toEqual(owner);
+    expect(await stored(page, "sudoku:stats")).toEqual({ easy: EASY });
+
+    await sheet.getByRole("button", { name: "ログイン", exact: true }).click();
+    await expect(sheet.getByText("ログインできませんでした")).toBeVisible();
+    expect(await stored(page, "sudoku:player")).toEqual(owner);
+    await sheet.getByRole("button", { name: "閉じる" }).click();
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(page)).toContainText("ログインしていません");
+  });
+
+  test("アカウントに紐づいたプレイヤーの端末では作成せず、ログインを促す", async ({ browser }, info) => {
+    test.skip(isIphone(info), CDP_ONLY);
+    const headers = ipHeaders(info);
+    const owner = { id: randomUUID(), name: null };
+    const a = await browser.newContext({ extraHTTPHeaders: headers });
+    const pa = await a.newPage();
+    await addAuthenticator(pa);
+    await seed(pa, { "sudoku:player": owner });
+    await pa.goto("/");
+    await createAccount(await openAccount(pa));
+    await a.close();
+
+    // 同じプレイヤー（引き継ぎコードなどで移した）の、ログインしていない端末
+    const b = await browser.newContext({ extraHTTPHeaders: headers });
+    const pb = await b.newPage();
+    const authB = await addAuthenticator(pb);
+    await seed(pb, { "sudoku:player": owner });
+    await pb.goto("/");
+    const sheet = await openAccount(pb);
+    await sheet.getByRole("button", { name: "アカウントを作成" }).click();
+    await expect(sheet.getByText("このプレイヤーのアカウントがあります。ログインしてください")).toBeVisible();
+    await sheetShot(sheet, "account-linked");
+    // パスキーの画面を出さない（パスキーを作らない）
+    expect(await passkeysOf(authB)).toEqual([]);
+    await b.close();
+  });
+
+  test("サーバーにアカウントの設定が無ければ（503）、設定にアカウントの項目を出さない", async ({ page }) => {
+    await page.route("**/api/auth/me", (route) =>
+      route.fulfill({ status: 503, json: { error: "auth unavailable" } }),
+    );
+    const me = authChecked(page);
+    await page.goto("/");
+    await me;
+    await page.getByRole("button", { name: "設定" }).click();
+    const settings = settingsSheet(page);
+    await expect(settings.getByRole("button", { name: "コードを入力" })).toBeVisible();
+    await nextFrames(page);
+    await expect(settings.getByText("アカウント")).toHaveCount(0);
+  });
+
+  test("パスキーを使えない端末では、使えないことを示し、開けない", async ({ page }) => {
+    await page.addInitScript(() =>
+      Object.defineProperty(window, "PublicKeyCredential", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      }),
+    );
+    const me = authChecked(page);
+    await page.goto("/");
+    expect((await me).status()).toBe(200);
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(page)).toContainText("この端末では使えません");
+    await expect(settingsSheet(page).getByRole("button", { name: /アカウント/ })).toHaveCount(0);
+  });
+
+  test("パスキーの画面を閉じた（NotAllowedError）ときは何も示さず、もう一度押せる。続けて押しても画面は 1 回だけ出す", async ({
+    page,
+  }, info) => {
+    await page.context().setExtraHTTPHeaders(ipHeaders(info));
+    // パスキーの画面を閉じたときと同じ失敗を返す（__hold の間は __release まで返さない）。
+    // WebKit のテスト用ブラウザでも、パスキーを使える端末として扱う
+    await page.addInitScript(() => {
+      const w = window as unknown as { __gets: number; __hold: boolean; __release: () => void };
+      w.__gets = 0;
+      w.__hold = false;
+      let held: (() => void)[] = [];
+      w.__release = () => {
+        for (const reject of held) reject();
+        held = [];
+      };
+      if (typeof window.PublicKeyCredential !== "function") {
+        Object.defineProperty(window, "PublicKeyCredential", {
+          configurable: true,
+          writable: true,
+          value: function PublicKeyCredential() {},
+        });
+      }
+      const fail = () => {
+        w.__gets++;
+        const err = new DOMException("The operation either timed out or was not allowed.", "NotAllowedError");
+        if (!w.__hold) return Promise.reject(err);
+        return new Promise((_, reject) => held.push(() => reject(err)));
+      };
+      Object.defineProperty(navigator, "credentials", {
+        configurable: true,
+        value: { get: fail, create: fail },
+      });
+    });
+    await page.goto("/");
+    const sheet = await openAccount(page);
+    const gets = () => page.evaluate(() => (window as unknown as { __gets: number }).__gets);
+    const login = sheet.getByRole("button", { name: "ログイン", exact: true });
+    await login.click();
+    await expect.poll(gets).toBe(1);
+    await expect(login).toBeEnabled();
+    await nextFrames(page);
+    await expect(sheet.getByRole("alert")).toHaveCount(0);
+    await expect(sheet.getByRole("status")).toHaveCount(0);
+    // 同じ options のまま、もう一度パスキーの画面を出せる
+    await login.click();
+    await expect.poll(gets).toBe(2);
+    await expect(login).toBeEnabled();
+    await expect(sheet.getByRole("alert")).toHaveCount(0);
+
+    // パスキーの画面を出している間は押せないので、続けて押しても（ダブルクリック）1 回だけ
+    await page.evaluate(() => ((window as unknown as { __hold: boolean }).__hold = true));
+    await login.dblclick();
+    await expect.poll(gets).toBe(3);
+    await nextFrames(page);
+    expect(await gets()).toBe(3);
+    // 処理中は閉じられない
+    await expectNotClosable(sheet);
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    await expect(login).toBeEnabled();
+    await expect(sheet.getByRole("alert")).toHaveCount(0);
+    // 終われば閉じられる
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+  });
+
+  test("アカウントの項目はホームの設定にだけ出す（ゲームの途中の設定には出さない）", async ({ page }) => {
+    const me = authChecked(page);
+    await page.goto("/");
+    await me;
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(accountRow(page)).toBeVisible();
+    await settingsSheet(page).getByRole("button", { name: "閉じる" }).click();
+
+    await page.locator(".free-easy").click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(settingsSheet(page).getByRole("button", { name: "遊び方" })).toBeVisible();
+    await expect(settingsSheet(page).getByText("アカウント")).toHaveCount(0);
+  });
+
+  test("ログインの状態を確かめている間は、引き継ぎのコードを入力させない", async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/auth/me", async (route) => {
+      await held;
+      await route.continue();
+    });
+    await page.goto("/");
+    await page.getByRole("button", { name: "設定" }).click();
+    const settings = settingsSheet(page);
+    await expect(settings.getByRole("button", { name: "コードを発行" })).toBeVisible();
+    await nextFrames(page);
+    await expect(settings.getByRole("button", { name: "コードを入力" })).toHaveCount(0);
+    const me = authChecked(page);
+    release();
+    await me;
+    await expect(settings.getByRole("button", { name: "コードを入力" })).toBeVisible();
   });
 });

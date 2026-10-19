@@ -44,6 +44,20 @@ export function loadByPrefix<T>(prefix: string): [string, T][] {
   return out;
 }
 
+/** 前方一致するキーをすべて消す（消すと番号がずれるので、先にキーを集める） */
+export function removeByPrefix(prefix: string) {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    for (const key of keys) localStorage.removeItem(key);
+  } catch {
+    /* noop */
+  }
+}
+
 export const KEYS = {
   player: "sudoku:player",
   settings: "sudoku:settings",

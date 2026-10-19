@@ -3,6 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import type { Difficulty } from "@/lib/sudoku/core";
+import {
+  accountError,
+  passkeySupported,
+  prepareLogin,
+  preparePasskey,
+  prepareSignup,
+  type AccountAction,
+  type AccountState,
+} from "@/lib/client/account";
 import { ApiError, describeError } from "@/lib/client/api";
 import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
 import type { Settings } from "@/lib/client/settings";
@@ -37,20 +46,23 @@ function Sheet({
   onClose,
   children,
   top = false,
+  busy = false,
 }: {
   label: string;
   onClose: () => void;
   children: React.ReactNode;
   /** 入力欄のあるシートは上に出し、iPhone のキーボードで隠れないようにする */
   top?: boolean;
+  /** 処理中は閉じさせない（×・Escape・背景のタップ）。閉じた後に処理が終わると、ほかの画面でプレイヤーが替わり、失敗も示せない */
+  busy?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, busy]);
   return (
     <div
       className={`sheet-backdrop${top ? " is-top" : ""}`}
@@ -59,11 +71,17 @@ function Sheet({
       aria-label={label}
       // pointerdown で閉じると、指を離したときの click が下のボタンに届いてしまう
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
       <div className="sheet">
-        <button type="button" className="icon-btn sheet-close" onClick={onClose} aria-label="閉じる">
+        <button
+          type="button"
+          className="icon-btn sheet-close"
+          onClick={onClose}
+          disabled={busy}
+          aria-label="閉じる"
+        >
           <Close />
         </button>
         {children}
@@ -170,6 +188,8 @@ export function SettingsSheet({
   playerName,
   onChange,
   onRename,
+  account,
+  onAccount,
   onCreateTransfer,
   onClaim,
   onHowto,
@@ -180,8 +200,12 @@ export function SettingsSheet({
   playerName: string | null;
   onChange: (s: Settings) => void;
   onRename: () => void;
+  account: AccountState;
+  /** 設定を閉じてアカウントを開く。無ければアカウントの行を出さない */
+  onAccount?: () => void;
   onCreateTransfer: () => Promise<{ code: string; expiresAt: number }>;
-  onClaim: (code: string) => Promise<void>;
+  /** 引き継ぎのコードを使う。無ければコードを入れさせない */
+  onClaim?: (code: string) => Promise<void>;
   /** 設定を閉じて遊び方を開く */
   onHowto: () => void;
   onClose: () => void;
@@ -244,6 +268,7 @@ export function SettingsSheet({
           変更
         </button>
       </div>
+      {onAccount && <AccountRow account={account} onOpen={onAccount} />}
       <Transfer onCreate={onCreateTransfer} onClaim={onClaim} />
       <button type="button" className="settings-link" onClick={onHowto}>
         <span className="toggle-label">遊び方</span>
@@ -399,29 +424,51 @@ export function NameSheet({
   );
 }
 
+/**
+ * 確認のシート。onConfirm が Promise を返すときは、終わるまで押せなくし、失敗したら describe の文言を出す
+ * （describe が null を返す失敗は何も出さない）
+ */
 export function ConfirmSheet({
   title,
   body,
   confirm,
   onConfirm,
+  describe = describeError,
   onClose,
 }: {
   title: string;
   body: string;
   confirm: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
+  describe?: (err: unknown) => string | null;
   onClose: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setError(null);
+    const done = onConfirm();
+    if (!done) return;
+    setBusy(true);
+    try {
+      await done;
+    } catch (err) {
+      setError(describe(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Sheet label={title} onClose={onClose}>
+    <Sheet label={title} onClose={onClose} busy={busy}>
       <h2 className="sheet-title">{title}</h2>
       <p className="muted">{body}</p>
+      {error && <p className="error-text">{error}</p>}
       <div className="result-row">
-        <button type="button" className="btn" onClick={onClose}>
+        <button type="button" className="btn" onClick={onClose} disabled={busy}>
           やめる
         </button>
-        <button type="button" className="btn primary" onClick={onConfirm}>
-          {confirm}
+        <button type="button" className="btn primary" onClick={() => void run()} disabled={busy}>
+          {busy ? <span className="spinner" /> : confirm}
         </button>
       </div>
     </Sheet>
@@ -599,13 +646,13 @@ export function ClaimSheet({
   );
 }
 
-/** 端末の引き継ぎ：コードを発行するか、別の端末で発行したコードを入れる */
+/** 端末の引き継ぎ：コードを発行するか、別の端末で発行したコードを入れる（onClaim が無ければ入れられない） */
 function Transfer({
   onCreate,
   onClaim,
 }: {
   onCreate: () => Promise<{ code: string; expiresAt: number }>;
-  onClaim: (code: string) => Promise<void>;
+  onClaim?: (code: string) => Promise<void>;
 }) {
   const [mode, setMode] = useState<"idle" | "issued" | "enter" | "done">("idle");
   const [code, setCode] = useState("");
@@ -629,6 +676,7 @@ function Transfer({
   };
 
   const claim = async () => {
+    if (!onClaim) return;
     setBusy(true);
     setError(null);
     try {
@@ -650,16 +698,18 @@ function Transfer({
           <button type="button" className="btn small" onClick={issue} disabled={busy}>
             コードを発行
           </button>
-          <button
-            type="button"
-            className="btn small"
-            onClick={() => {
-              sfx.tap();
-              setMode("enter");
-            }}
-          >
-            コードを入力
-          </button>
+          {onClaim && (
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => {
+                sfx.tap();
+                setMode("enter");
+              }}
+            >
+              コードを入力
+            </button>
+          )}
         </div>
       )}
       {mode === "issued" && <IssuedCode code={code} />}
@@ -695,5 +745,170 @@ function Transfer({
       {mode === "done" && <span className="toggle-hint">引き継ぎました</span>}
       {error && <span className="error-text">{error}</span>}
     </div>
+  );
+}
+
+/** 設定のアカウントの行。確かめている途中・使えないサーバー（旧 URL など）では出さない */
+function AccountRow({ account, onOpen }: { account: AccountState; onOpen: () => void }) {
+  if (account.status !== "signed-in" && account.status !== "signed-out") return null;
+  if (account.status === "signed-out" && !passkeySupported()) {
+    return (
+      <div className="settings-link">
+        <span>
+          <span className="toggle-label">アカウント</span>
+          <span className="toggle-hint">この端末では使えません</span>
+        </span>
+      </div>
+    );
+  }
+  return (
+    <button type="button" className="settings-link" onClick={onOpen}>
+      <span>
+        <span className="toggle-label">アカウント</span>
+        <span className="toggle-hint">
+          {account.status === "signed-in" ? "ログイン中" : "ログインしていません"}
+        </span>
+      </span>
+      <ChevronRight size={18} className="row-chevron" />
+    </button>
+  );
+}
+
+/**
+ * アカウント（パスキー）。ログインしていなければログインと作成、ログイン中ならパスキーの追加とログアウト・削除。
+ * パスキーの操作の options は開いたときと操作の後に先取りし、押したら待たずに操作を始める（onLogin・onCreate・onAdd が始める）。
+ * ログインしていない表示は、パスキーを使える端末でだけ開く（AccountRow）
+ */
+export function AccountSheet({
+  account,
+  playerId,
+  onLogin,
+  onCreate,
+  onAdd,
+  onLogoutOthers,
+  onLogout,
+  onDelete,
+  onClose,
+}: {
+  account: Extract<AccountState, { status: "signed-in" | "signed-out" }>;
+  playerId: string;
+  onLogin: () => Promise<void>;
+  onCreate: () => Promise<void>;
+  onAdd: () => Promise<void>;
+  onLogoutOthers: () => Promise<void>;
+  /** 確認のシートを開く */
+  onLogout: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const accountPlayerId = account.status === "signed-in" ? account.account.playerId : null;
+  /** ログイン中に、パスキーを足せるか（パスキーを使えない端末でも、ログイン中ならログアウトなどはできる） */
+  const canAdd = accountPlayerId !== null && passkeySupported();
+  /** 実行中の操作。押せなくするので、続けて押しても 1 回だけ */
+  const [busy, setBusy] = useState<AccountAction | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  /** 操作を終えた回数。終えるたびに options を取り直す（使った challenge は 1 回だけ） */
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    if (accountPlayerId === null) {
+      void prepareLogin();
+      void prepareSignup(playerId);
+    } else if (canAdd) {
+      void preparePasskey(accountPlayerId);
+    }
+  }, [accountPlayerId, canAdd, playerId, attempt]);
+
+  const run = (action: AccountAction, op: () => Promise<void>, success: string) => {
+    if (busy) return;
+    // パスキーの画面は、押した処理の中で最初の await より前に出す（op が始める）ので、ほかの処理より先に呼ぶ
+    const done = op();
+    sfx.tap();
+    setBusy(action);
+    setNotice(null);
+    setError(null);
+    done
+      .then(
+        () => setNotice(success),
+        (err: unknown) => setError(accountError(err, action)),
+      )
+      .finally(() => {
+        setBusy(null);
+        setAttempt((n) => n + 1);
+      });
+  };
+  const label = (action: AccountAction, text: string) =>
+    busy === action ? <span className="spinner" /> : text;
+
+  return (
+    <Sheet label="アカウント" onClose={onClose} busy={busy !== null}>
+      <h2 className="sheet-title">アカウント</h2>
+      {account.status === "signed-in" ? (
+        <>
+          <div className="name-row">
+            <span>
+              <span className="toggle-label">パスキー</span>
+              <span className="toggle-hint">{account.account.passkeys} 件</span>
+            </span>
+            {canAdd && (
+              <button
+                type="button"
+                className="btn small"
+                disabled={busy !== null}
+                onClick={() => run("add", onAdd, "追加しました")}
+              >
+                {label("add", "追加")}
+              </button>
+            )}
+          </div>
+          <div className="account-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== null}
+              onClick={() => run("other", onLogoutOthers, "ほかの端末をログアウトしました")}
+            >
+              {label("other", "ほかの端末をログアウト")}
+            </button>
+            <button type="button" className="btn" disabled={busy !== null} onClick={onLogout}>
+              ログアウト
+            </button>
+            <button type="button" className="btn danger" disabled={busy !== null} onClick={onDelete}>
+              アカウントを削除
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="account-actions">
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy !== null}
+            onClick={() => run("login", onLogin, "ログインしました")}
+          >
+            {label("login", "ログイン")}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null}
+            onClick={() => run("signup", onCreate, "作成しました")}
+          >
+            {label("signup", "アカウントを作成")}
+          </button>
+        </div>
+      )}
+      {notice && (
+        <p className="muted" role="status">
+          {notice}
+        </p>
+      )}
+      {error && (
+        <p className="error-text" role="alert">
+          {error}
+        </p>
+      )}
+    </Sheet>
   );
 }
