@@ -578,6 +578,13 @@ p {
   opacity: 0.8;
 }
 
+/* 旧 URL で開いたときの案内（閉じられない） */
+.move-hint {
+  padding: 6px 6px 6px 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
 /* ---------- ゲーム ---------- */
 
 .game {
@@ -2232,6 +2239,17 @@ p {
   font-family: var(--font-num);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* 新しい URL へ移る */
+.move-url {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.move-steps {
+  padding-left: 1.5em;
 }
 
 .settings-link {

@@ -1,7 +1,11 @@
 import type { Metadata, Viewport } from "next";
+import { SITE_ORIGIN } from "@/lib/site";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  // 旧 URL も同じページを配るので、正規の URL は新しい URL にする
+  metadataBase: new URL(SITE_ORIGIN),
+  alternates: { canonical: "/" },
   title: "ナンプレ",
   description: "置くたびに気持ちいい音が鳴る、シンプルなナンプレ。毎日の一問で点数を競えます。",
   applicationName: "ナンプレ",

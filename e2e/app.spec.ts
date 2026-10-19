@@ -1,5 +1,15 @@
 import { createECDH } from "node:crypto";
-import { expect, test, type Locator, type Page, type Response } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type BrowserContext,
+  type Locator,
+  type Page,
+  type Response,
+  type TestInfo,
+} from "@playwright/test";
+import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
 import { answerOf, practiceItems, startNotes, type PracticeItem } from "../src/lib/sudoku/practice";
 import { PRACTICE_POSITIONS } from "../src/lib/sudoku/practice-data";
@@ -20,6 +30,9 @@ const SHOTS = process.env.E2E_SHOTS;
 async function shot(page: Page, name: string) {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png` });
 }
+
+/** iPhone（WebKit の iPhone 15）のプロジェクトか */
+const isIphone = (info: TestInfo) => /iPhone/.test(info.project.use.userAgent ?? "");
 
 type Saved = {
   puzzle: number[];
@@ -2157,7 +2170,9 @@ const reminderToggle = (page: Page) =>
  * iPhone でも使える端末として扱うよう、ホーム画面に追加したアプリとして開いていることにする。
  * permission は初めの許可、grant は許可を求めたときの答え、subscribed は購読が残っているか、reminder は有効にした印。
  * 購読は、実際のブラウザと同じく userVisibleOnly が true でないと作らず、鍵が公開鍵のバイト列でなければ作らない。
- * 許可を求めた・購読した・外した回数は window.__push に残す
+ * 許可を求めた・購読した・外した回数は window.__push に残す。
+ * host があれば、プレイヤーと有効にした印はそのホスト名の URL にだけ入れる（API の偽物はどの URL でも使う）。
+ * once なら、それらはそのタブで最初に開いたときだけ入れる（読み込み直しても入れ直さない）
  */
 async function fakePush(
   page: Page,
@@ -2166,12 +2181,20 @@ async function fakePush(
     grant?: NotificationPermission;
     subscribed?: boolean;
     reminder?: boolean;
+    host?: string;
+    once?: boolean;
   } = {},
 ) {
   await page.addInitScript(
     ({ o, player, publicKey }) => {
-      localStorage.setItem("sudoku:player", JSON.stringify({ id: player, name: "通知" }));
-      if (o.reminder) localStorage.setItem("sudoku:reminder", "true");
+      if (
+        (!o.host || location.hostname === o.host) &&
+        !(o.once && sessionStorage.getItem("e2e:push-seeded"))
+      ) {
+        localStorage.setItem("sudoku:player", JSON.stringify({ id: player, name: "通知" }));
+        if (o.reminder) localStorage.setItem("sudoku:reminder", "true");
+        if (o.once) sessionStorage.setItem("e2e:push-seeded", "1");
+      }
       const log = { requested: 0, subscribe: 0, unsubscribe: 0 };
       (window as unknown as { __push: typeof log }).__push = log;
       let permission: NotificationPermission = o.permission ?? "default";
@@ -2325,7 +2348,7 @@ test.describe("毎日の通知", () => {
   test("iPhone の Safari のページでは、ホーム画面に追加したアプリで設定できることを示し、押せない", async ({
     page,
   }, info) => {
-    test.skip(!/iPhone/.test(info.project.use.userAgent ?? ""), "iPhone の Safari だけ");
+    test.skip(!isIphone(info), "iPhone の Safari だけ");
     await routePush(page);
     await page.goto("/");
     await page.getByRole("button", { name: "設定" }).click();
@@ -2502,5 +2525,436 @@ test.describe("毎日の通知", () => {
     await expect(toggle).toBeEnabled();
     await expect(toggle).not.toBeChecked();
     expect(sent).toEqual([]);
+  });
+});
+
+const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
+
+/**
+ * 旧 URL と新しい URL への通信を、テストのサーバー（baseURL）に振り向ける。ページからは https の 2 つの URL に見える。
+ * 本文は圧縮せずに受け取る（受け取った本文は展開済みなので、圧縮の印が残るとブラウザが展開し直して壊れる）。
+ * 振り向けた通信（メソッドと URL）を返す
+ */
+async function routeHosts(context: BrowserContext, baseURL: string) {
+  const routed: string[] = [];
+  // 振り向け漏れが本番に届かないよう、テストのサーバー以外への https の通信はすべて止める
+  // （後から登録した route が優先されるので、下の振り向けはそのまま動く）
+  const local = new URL(baseURL).origin;
+  await context.route(
+    (url) => url.protocol === "https:" && url.origin !== local,
+    (route) => route.abort(),
+  );
+  for (const origin of [LEGACY_ORIGIN, SITE_ORIGIN]) {
+    await context.route(`${origin}/**`, async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      routed.push(`${req.method()} ${url.origin}${url.pathname}`);
+      const response = await context.request.fetch(baseURL + url.pathname + url.search, {
+        method: req.method(),
+        data: req.postDataBuffer() ?? undefined,
+        headers: { "content-type": req.headers()["content-type"] ?? "", "accept-encoding": "identity" },
+        maxRedirects: 0,
+      });
+      await route.fulfill({ response });
+    });
+  }
+  return routed;
+}
+
+/** 旧 URL の端末にだけ保存データを入れる（新しい URL の端末は空のまま） */
+async function seedLegacy(page: Page, items: Record<string, unknown>) {
+  await page.addInitScript(
+    ({ host, items }) => {
+      if (location.hostname !== host) return;
+      for (const [k, v] of Object.entries(items)) localStorage.setItem(k, JSON.stringify(v));
+    },
+    { host: LEGACY_HOST, items },
+  );
+}
+
+/** origin の localStorage（開いていない origin の分も読む） */
+async function storageOf(context: BrowserContext, origin: string): Promise<Record<string, string>> {
+  const { origins } = await context.storageState();
+  const found = origins.find((o) => o.origin === origin);
+  return Object.fromEntries((found?.localStorage ?? []).map((e) => [e.name, e.value]));
+}
+
+/** シートの動きが止まってから撮る */
+async function sheetShot(dialog: Locator, name: string) {
+  if (!SHOTS) return;
+  await dialog.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+  await shot(dialog.page(), name);
+}
+
+test.describe("URL の移行", () => {
+  test.skip(!!process.env.E2E_BASE_URL, "旧・新の URL をテストのサーバーに振り向けるので、ローカルだけ");
+  // 本物の Service Worker が登録されると、振り向けた応答を差し替えられないことがある
+  test.use({ serviceWorkers: "block" });
+
+  /** 振り向けた通信（routeHosts） */
+  let routed: string[] = [];
+  test.beforeEach(async ({ context, baseURL }) => {
+    routed = await routeHosts(context, baseURL!);
+  });
+  const claimRequests = () => routed.filter((r) => r === `POST ${SITE_ORIGIN}/api/player/claim`);
+
+  const MOVE_PLAYER = { id: "77777777-7777-4777-8777-777777777777", name: "旧URL" };
+  const MOVE_STATS = {
+    easy: {
+      played: 2,
+      bestMs: 95_000,
+      cleanBestMs: null,
+      bestPoints: 1200,
+      started: 3,
+      trackedClears: 2,
+      totalMs: 200_000,
+      abandonedMs: 30_000,
+    },
+  };
+  const moveSheet = (page: Page) => page.getByRole("dialog", { name: "新しい URL へ移る" });
+  const claimSheet = (page: Page) => page.getByRole("dialog", { name: "引き継ぎ" });
+  const moveBar = (page: Page) => page.getByRole("note").filter({ hasText: "URL が変わりました" });
+  const installHint = (page: Page) => page.getByText("「ホーム画面に追加」でアプリになります");
+  const homeHeading = (page: Page) => page.getByRole("heading", { name: "ナンプレ" });
+  /**
+   * origin のページを開いたときの履歴の取得（/api/player/history）の応答。開く前に作り、ページを離れる前に待つ
+   * （WebKit は、取得の途中でページを離れると、切れた fetch をページのエラーとして報告する）
+   */
+  const historyLoaded = (page: Page, origin = SITE_ORIGIN) =>
+    page.waitForResponse((r) => r.url().startsWith(`${origin}/api/player/history`));
+
+  /** テストのサーバーで MOVE_PLAYER の引き継ぎコードを発行する */
+  async function issueCode(request: APIRequestContext) {
+    const res = await request.post("/api/player/transfer", {
+      data: { playerId: MOVE_PLAYER.id, name: MOVE_PLAYER.name, stats: MOVE_STATS },
+    });
+    expect(res.status()).toBe(200);
+    return ((await res.json()) as { code: string }).code;
+  }
+
+  test("旧 URL で記録のある端末は、開くたびに移る案内を出し、記録を移して新しい URL で引き継げる。旧 URL の記録は残る", async ({
+    page,
+    context,
+  }, info) => {
+    await seedLegacy(page, { "sudoku:player": MOVE_PLAYER, "sudoku:stats": MOVE_STATS });
+    const loaded = historyLoaded(page, LEGACY_ORIGIN);
+    await page.goto(`${LEGACY_ORIGIN}/`);
+    const move = moveSheet(page);
+    await expect(move).toBeVisible();
+    await expect(move.getByText("nanpure-game.vercel.app")).toBeVisible();
+    await sheetShot(move, "move-sheet");
+
+    // 閉じるとホームに閉じられない案内を出し、ホーム画面への追加は案内しない。開き直すとまた出す
+    await move.getByRole("button", { name: "閉じる" }).click();
+    await expect(move).toBeHidden();
+    await expect(moveBar(page)).toBeVisible();
+    await expect(moveBar(page).getByRole("button", { name: "閉じる" })).toHaveCount(0);
+    await expect(installHint(page)).toHaveCount(0);
+    await shot(page, "move-bar");
+    await moveBar(page).getByRole("button", { name: "移る" }).click();
+    await expect(move).toBeVisible();
+    await move.getByRole("button", { name: "閉じる" }).click();
+    await loaded;
+    await page.reload();
+    await expect(move).toBeVisible();
+    await expect(page).toHaveURL(`${LEGACY_ORIGIN}/`);
+
+    await move.getByRole("button", { name: "記録を移して開く" }).click();
+    const claim = claimSheet(page);
+    await expect(claim).toBeVisible();
+    // コードは URL に残さない
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await expect(claim.locator(".code")).toHaveText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    await expect(claim.getByText("この端末のプレイヤーは置き換わります")).toHaveCount(0);
+    await sheetShot(claim, "claim-sheet");
+    await claim.getByRole("button", { name: "引き継ぐ" }).click();
+    await expect(claim.getByText("引き継ぎました")).toBeVisible();
+    await expect(claim.getByText("毎日の通知")).toHaveCount(0);
+    await claim.getByRole("button", { name: "閉じる" }).click();
+    await expect(claim).toBeHidden();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    // 新しい URL では、旧 URL の案内を出さない（iPhone の Safari ならホーム画面への追加を案内する）
+    await expect(moveBar(page)).toHaveCount(0);
+    if (isIphone(info)) await expect(installHint(page)).toBeVisible();
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(page.getByRole("dialog", { name: "設定" }).getByText("旧URL")).toBeVisible();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+
+    const moved = await storageOf(context, SITE_ORIGIN);
+    expect(JSON.parse(moved["sudoku:player"])).toEqual(MOVE_PLAYER);
+    expect(JSON.parse(moved["sudoku:stats"])).toEqual(MOVE_STATS);
+    const legacy = await storageOf(context, LEGACY_ORIGIN);
+    expect(JSON.parse(legacy["sudoku:player"])).toEqual(MOVE_PLAYER);
+    expect(JSON.parse(legacy["sudoku:stats"])).toEqual(MOVE_STATS);
+    // 発行と受け取りはテストのサーバーに届いている
+    expect(routed).toContain(`POST ${LEGACY_ORIGIN}/api/player/transfer`);
+    expect(claimRequests()).toHaveLength(1);
+  });
+
+  test("旧 URL で記録の無い端末は、同じパスとクエリで新しい URL へ移り、旧 URL には何も保存しない", async ({
+    page,
+    context,
+  }) => {
+    await page.goto(`${LEGACY_ORIGIN}/?from=e2e`);
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/?from=e2e`);
+    await expect(homeHeading(page)).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(moveBar(page)).toHaveCount(0);
+    expect(await storageOf(context, LEGACY_ORIGIN)).toEqual({});
+    expect(await storageOf(context, SITE_ORIGIN)).toHaveProperty("sudoku:player");
+  });
+
+  test("iPhone のホーム画面に追加したアプリでは、新しい URL を開かずにコードと手順を出す", async ({
+    page,
+    request,
+  }, info) => {
+    test.skip(!isIphone(info), "iPhone だけ");
+    await seedLegacy(page, { "sudoku:player": MOVE_PLAYER, "sudoku:stats": MOVE_STATS });
+    await page.addInitScript(() =>
+      Object.defineProperty(navigator, "standalone", { configurable: true, value: true }),
+    );
+    await page.goto(`${LEGACY_ORIGIN}/`);
+    const move = moveSheet(page);
+    await expect(move.getByRole("button", { name: "記録を移して開く" })).toHaveCount(0);
+    await move.getByRole("button", { name: "コードを発行" }).click();
+    const code = move.locator(".transfer-code .code");
+    await expect(code).toHaveText(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    await expect(move.getByRole("button", { name: "コピー" })).toBeVisible();
+    await expect(move.getByText("24時間有効・1回だけ使えます")).toBeVisible();
+    await expect(move.getByRole("listitem")).toHaveText([
+      "Safari で nanpure-game.vercel.app を開く",
+      "共有メニューの「ホーム画面に追加」",
+      "追加したアプリの設定で「コードを入力」",
+    ]);
+    await expect(move.getByText("通知は新しい URL で設定し直してください")).toHaveCount(0);
+    await sheetShot(move, "move-sheet-standalone");
+    await expect(page).toHaveURL(`${LEGACY_ORIGIN}/`);
+    // 出したコードは新しい URL の設定で入力して使える
+    const res = await request.post("/api/player/claim", { data: { code: await code.textContent() } });
+    expect(await res.json()).toMatchObject({ playerId: MOVE_PLAYER.id, name: MOVE_PLAYER.name });
+  });
+
+  test("移る途中でページを保存したまま戻ってきたら（ブラウザの戻る）、また押せる", async ({ page }) => {
+    await seedLegacy(page, { "sudoku:player": MOVE_PLAYER });
+    // 発行の応答を止めておき、押した後の状態のままにする
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/api/player/transfer", async (route) => {
+      await held;
+      await route.abort();
+    });
+    await page.goto(`${LEGACY_ORIGIN}/`);
+    const move = moveSheet(page);
+    const button = move.getByRole("button", { name: "記録を移して開く" });
+    await button.click();
+    await expect(move.locator(".spinner")).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+    await expect(button).toBeEnabled();
+    release();
+    await expect(move.getByText("オフラインです")).toBeVisible();
+  });
+
+  test("旧 URL から開いた新しい URL で記録のある端末は、置き換わることを示す。やめるとコードを使わない", async ({
+    page,
+    context,
+    request,
+  }) => {
+    const here = { id: "88888888-8888-4888-8888-888888888888", name: "この端末" };
+    await page.addInitScript((p) => localStorage.setItem("sudoku:player", p), JSON.stringify(here));
+    const code = await issueCode(request);
+    await page.goto(`${SITE_ORIGIN}/#code=${code.toLowerCase()}`, { referer: `${LEGACY_ORIGIN}/` });
+    const claim = claimSheet(page);
+    await expect(claim.locator(".code")).toHaveText(`${code.slice(0, 4)}-${code.slice(4)}`);
+    await expect(claim.getByText("この端末のプレイヤーは置き換わります")).toBeVisible();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await sheetShot(claim, "claim-sheet-replace");
+    await claim.getByRole("button", { name: "やめる" }).click();
+    await expect(claim).toBeHidden();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await page.getByRole("button", { name: "設定" }).click();
+    await expect(page.getByRole("dialog", { name: "設定" }).getByText("この端末")).toBeVisible();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    expect(claimRequests()).toEqual([]);
+    expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:player"])).toEqual(here);
+    // コードはまだ使える
+    const res = await request.post("/api/player/claim", { data: { code } });
+    expect(res.status()).toBe(200);
+  });
+
+  test("旧 URL から開いた使用済みのコードでは、引き継げないことを示し、プレイヤーは変わらない", async ({
+    page,
+    context,
+    request,
+  }) => {
+    const code = await issueCode(request);
+    expect((await request.post("/api/player/claim", { data: { code } })).status()).toBe(200);
+    await page.goto(`${SITE_ORIGIN}/#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    const claim = claimSheet(page);
+    await claim.getByRole("button", { name: "引き継ぐ" }).click();
+    await expect(claim.getByText("コードが見つかりません")).toBeVisible();
+    await expect(claim.getByText("引き継ぎました")).toHaveCount(0);
+    await sheetShot(claim, "claim-sheet-used");
+    const player = JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:player"]);
+    expect(player.id).not.toBe(MOVE_PLAYER.id);
+  });
+
+  test("旧 URL 以外から開いた #code のリンクでは、シートを出さずに URL から消し、コードを使わない", async ({
+    page,
+    context,
+    request,
+  }) => {
+    const here = { id: "99999999-9999-4999-8999-999999999999", name: "この端末" };
+    await page.addInitScript((p) => localStorage.setItem("sudoku:player", p), JSON.stringify(here));
+    const code = await issueCode(request);
+    for (const [i, referer] of [undefined, "https://example.com/", `${SITE_ORIGIN}/`].entries()) {
+      // fragment だけが違う URL ではページを読み直さないので、クエリを変えて開く
+      const loaded = historyLoaded(page);
+      await page.goto(`${SITE_ORIGIN}/?n=${i}#code=${code}&push=1`, { referer });
+      await expect(homeHeading(page)).toBeVisible();
+      await expect(page, String(referer)).toHaveURL(`${SITE_ORIGIN}/?n=${i}`);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await loaded;
+    }
+    expect(claimRequests()).toEqual([]);
+    expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:player"])).toEqual(here);
+    expect((await request.post("/api/player/claim", { data: { code } })).status()).toBe(200);
+  });
+
+  test("旧 URL から開いた後に fragment だけを別のコードに替え、再読み込みや戻るで開き直しても、シートを出さずに URL から消す", async ({
+    page,
+    request,
+  }) => {
+    const code = await issueCode(request);
+    const other = await issueCode(request);
+    // 旧 URL から新しく開いたときはシートを出す
+    let loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    const claim = claimSheet(page);
+    await expect(claim).toBeVisible();
+    await claim.getByRole("button", { name: "やめる" }).click();
+    await expect(claim).toBeHidden();
+    await loaded;
+
+    // 同じページのまま fragment だけを替えて（ページは作り直されない）再読み込みする。referrer は旧 URL のまま
+    await page.evaluate((c) => (location.hash = `code=${c}`), other);
+    loaded = historyLoaded(page);
+    await page.reload();
+    await expect(homeHeading(page)).toBeVisible();
+    expect(await page.evaluate(() => document.referrer)).toBe(`${LEGACY_ORIGIN}/`);
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await loaded;
+
+    // 戻る・進むで開き直したときも出さない
+    await page.evaluate((c) => (location.hash = `code=${c}`), other);
+    loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/?n=1`);
+    await loaded;
+    await page.goBack();
+    await expect(homeHeading(page)).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    expect(claimRequests()).toEqual([]);
+    expect((await request.post("/api/player/claim", { data: { code: other } })).status()).toBe(200);
+  });
+
+  test("形の違うコードのリンクはシートを出さずに URL から消す。旧 URL で受けたコードは使わずに消す", async ({
+    page,
+    request,
+  }) => {
+    const loaded = historyLoaded(page);
+    await page.goto(`${SITE_ORIGIN}/#code=xyz`, { referer: `${LEGACY_ORIGIN}/` });
+    await expect(homeHeading(page)).toBeVisible();
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await loaded;
+
+    await seedLegacy(page, { "sudoku:player": MOVE_PLAYER });
+    const code = await issueCode(request);
+    await page.goto(`${LEGACY_ORIGIN}/#code=${code}`, { referer: `${LEGACY_ORIGIN}/` });
+    await expect(moveSheet(page)).toBeVisible();
+    await expect(claimSheet(page)).toHaveCount(0);
+    await expect(page).toHaveURL(`${LEGACY_ORIGIN}/`);
+    // コードはまだ使える
+    expect((await request.post("/api/player/claim", { data: { code } })).status()).toBe(200);
+  });
+
+  test("旧 URL で通知をオンにしていた端末は、移るときに旧 URL の購読を外し、引き継いだあとに通知の項目を出す", async ({
+    page,
+    context,
+  }, info) => {
+    // iPhone では通知の偽物がホーム画面に追加したアプリとして開くので、新しい URL を開かない
+    test.skip(isIphone(info), "デスクトップだけ");
+    await fakePush(page, { permission: "granted", subscribed: true, reminder: true, host: LEGACY_HOST });
+    const sent = await routePush(page);
+    await page.goto(`${LEGACY_ORIGIN}/`);
+    const deleted = page.waitForResponse(isPushApi("DELETE"));
+    await moveSheet(page).getByRole("button", { name: "記録を移して開く" }).click();
+    await deleted;
+    expect(sent.filter((s) => s.method === "DELETE")).toEqual([
+      { method: "DELETE", body: { playerId: PUSH_PLAYER, endpoint: fakeEndpoint(0) } },
+    ]);
+
+    const claim = claimSheet(page);
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await expect(claim.getByText("この端末のプレイヤーは置き換わります")).toHaveCount(0);
+    await claim.getByRole("button", { name: "引き継ぐ" }).click();
+    await expect(claim.getByText("引き継ぎました")).toBeVisible();
+    await expect(claim.getByRole("checkbox", { name: /毎日の通知/ })).toBeVisible();
+    await sheetShot(claim, "claim-sheet-push");
+    const legacy = await storageOf(context, LEGACY_ORIGIN);
+    expect(legacy).not.toHaveProperty("sudoku:reminder");
+    expect(legacy["sudoku:moved-with-reminder"]).toBe("true");
+  });
+
+  test("通知をオンにしていた端末が、移った先から旧 URL に戻ってもう一度移っても、引き継いだあとに通知の項目を出す", async ({
+    page,
+  }, info) => {
+    test.skip(isIphone(info), "デスクトップだけ");
+    // 通知をオンにした印は最初に開いたときだけ入れる（戻って読み込み直したときは入れ直さない）
+    await fakePush(page, {
+      permission: "granted",
+      subscribed: true,
+      reminder: true,
+      host: LEGACY_HOST,
+      once: true,
+    });
+    const sent = await routePush(page);
+    await page.goto(`${LEGACY_ORIGIN}/`);
+    const deleted = page.waitForResponse(isPushApi("DELETE"));
+    const loaded = historyLoaded(page);
+    await moveSheet(page).getByRole("button", { name: "記録を移して開く" }).click();
+    await deleted;
+    await expect(claimSheet(page)).toBeVisible();
+    await loaded;
+
+    // 受け取らずに旧 URL へ戻る。旧 URL の通知の印は 1 回目で外れている
+    await page.goBack();
+    await expect(page).toHaveURL(`${LEGACY_ORIGIN}/`);
+    const move = moveSheet(page);
+    await expect(move).toBeVisible();
+    expect(await reminderFlag(page)).toBeNull();
+    await move.getByRole("button", { name: "記録を移して開く" }).click();
+
+    const claim = claimSheet(page);
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    await claim.getByRole("button", { name: "引き継ぐ" }).click();
+    await expect(claim.getByText("引き継ぎました")).toBeVisible();
+    await expect(claim.getByRole("checkbox", { name: /毎日の通知/ })).toBeVisible();
+    // 購読を外したのは 1 回目だけ
+    expect(sent.filter((s) => s.method === "DELETE")).toHaveLength(1);
+  });
+
+  test("ローカルやプレビューの URL では、記録があっても移る案内を出さない", async ({
+    page,
+    baseURL,
+  }, info) => {
+    await page.addInitScript((p) => localStorage.setItem("sudoku:player", p), JSON.stringify(MOVE_PLAYER));
+    await page.goto("/");
+    await expect(homeHeading(page)).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(moveBar(page)).toHaveCount(0);
+    if (isIphone(info)) await expect(installHint(page)).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/`);
   });
 });

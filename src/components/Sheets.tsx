@@ -6,6 +6,8 @@ import type { Difficulty } from "@/lib/sudoku/core";
 import { ApiError, describeError } from "@/lib/client/api";
 import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
 import type { Settings } from "@/lib/client/settings";
+import { SITE_HOST } from "@/lib/site";
+import { formatCode } from "@/lib/transfer-code";
 import { ChevronRight, Close } from "./icons";
 
 /** 各難易度で必要になる手筋（問題の作り方と同じ基準） */
@@ -426,6 +428,177 @@ export function ConfirmSheet({
   );
 }
 
+/** 引き継ぎコードを使えなかったときの文言 */
+function claimError(err: unknown): string {
+  return err instanceof ApiError && (err.status === 404 || err.status === 400)
+    ? "コードが見つかりません"
+    : describeError(err);
+}
+
+/** 発行した引き継ぎコードとコピーのボタン */
+function IssuedCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  const pretty = formatCode(code);
+  return (
+    <div className="transfer-code">
+      <span className="code mono">{pretty}</span>
+      <button
+        type="button"
+        className="btn small"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(pretty);
+            setCopied(true);
+          } catch {
+            /* 選んでコピーしてもらう */
+          }
+        }}
+      >
+        {copied ? "コピーしました" : "コピー"}
+      </button>
+      <span className="toggle-hint">24時間有効・1回だけ使えます</span>
+    </div>
+  );
+}
+
+/**
+ * 旧 URL から新しい URL へ移る。ふつうはコードを付けて新しい URL を開き（onIssue が開く）、
+ * iOS のホーム画面に追加したアプリでは開かずに、コードと手順を出す
+ */
+export function MoveSheet({
+  standalone,
+  onIssue,
+  onClose,
+}: {
+  /** iOS のホーム画面に追加したアプリか */
+  standalone: boolean;
+  /** コードを発行する。push は通知をオンにしていたか（オンなら旧 URL の通知を止めてある） */
+  onIssue: () => Promise<{ code: string; push: boolean }>;
+  onClose: () => void;
+}) {
+  const [issued, setIssued] = useState<{ code: string; push: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 移った先からブラウザの戻るで（ページを保存したまま）戻ってきたら、また押せるようにする
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setBusy(false);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
+
+  const issue = async () => {
+    sfx.tap();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await onIssue();
+      // 新しい URL を開いた（onIssue が開く）ときは busy のまま返し、移るまで押せないままにする
+      if (!standalone) return;
+      setIssued(res);
+    } catch (err) {
+      setError(describeError(err));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <Sheet label="新しい URL へ移る" onClose={onClose}>
+      <h2 className="sheet-title">新しい URL へ移る</h2>
+      <p className="move-url">{SITE_HOST}</p>
+      {issued ? (
+        <>
+          <IssuedCode code={issued.code} />
+          <ol className="howto-list move-steps">
+            <li>Safari で {SITE_HOST} を開く</li>
+            <li>共有メニューの「ホーム画面に追加」</li>
+            <li>追加したアプリの設定で「コードを入力」</li>
+          </ol>
+          {issued.push && <p className="muted small">通知は新しい URL で設定し直してください</p>}
+        </>
+      ) : (
+        <button type="button" className="btn primary" onClick={issue} disabled={busy}>
+          {busy ? <span className="spinner" /> : standalone ? "コードを発行" : "記録を移して開く"}
+        </button>
+      )}
+      {error && <p className="error-text">{error}</p>}
+    </Sheet>
+  );
+}
+
+/**
+ * 新しい URL で、旧 URL から付けてきたコードを受け取る。開いただけでは使わず、「引き継ぐ」を押したときに使う
+ * （知らないリンクで勝手にプレイヤーが替わったり、コードを使い切ったりしないように）
+ */
+export function ClaimSheet({
+  code,
+  push,
+  replace,
+  playerId,
+  onClaim,
+  onClose,
+}: {
+  code: string;
+  /** 旧 URL で通知をオンにしていたか（引き継いだあとに通知の項目を出す） */
+  push: boolean;
+  /** この端末に記録があるか（プレイヤーが置き換わることを示す） */
+  replace: boolean;
+  playerId: string;
+  onClaim: (code: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const claim = async () => {
+    sfx.tap();
+    setState("busy");
+    setError(null);
+    try {
+      await onClaim(code);
+      setState("done");
+      sfx.ranked();
+    } catch (err) {
+      setError(claimError(err));
+      setState("idle");
+    }
+  };
+
+  return (
+    <Sheet label="引き継ぎ" onClose={onClose}>
+      <h2 className="sheet-title">引き継ぎ</h2>
+      <div className="transfer-code">
+        <span className="code mono">{formatCode(code)}</span>
+      </div>
+      {state === "done" ? (
+        <>
+          <p className="muted">引き継ぎました</p>
+          {push && (
+            <div className="toggle-list">
+              <Reminder playerId={playerId} />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {replace && <p className="muted small">この端末のプレイヤーは置き換わります</p>}
+          {error && <p className="error-text">{error}</p>}
+          <div className="result-row">
+            <button type="button" className="btn" onClick={onClose}>
+              やめる
+            </button>
+            <button type="button" className="btn primary" onClick={claim} disabled={state === "busy"}>
+              {state === "busy" ? <span className="spinner" /> : "引き継ぐ"}
+            </button>
+          </div>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
 /** 端末の引き継ぎ：コードを発行するか、別の端末で発行したコードを入れる */
 function Transfer({
   onCreate,
@@ -439,7 +612,6 @@ function Transfer({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const issue = async () => {
     sfx.tap();
@@ -464,17 +636,11 @@ function Transfer({
       setMode("done");
       sfx.ranked();
     } catch (err) {
-      setError(
-        err instanceof ApiError && (err.status === 404 || err.status === 400)
-          ? "コードが見つかりません"
-          : describeError(err),
-      );
+      setError(claimError(err));
     } finally {
       setBusy(false);
     }
   };
-
-  const pretty = code ? `${code.slice(0, 4)}-${code.slice(4)}` : "";
 
   return (
     <div className="transfer">
@@ -496,26 +662,7 @@ function Transfer({
           </button>
         </div>
       )}
-      {mode === "issued" && (
-        <div className="transfer-code">
-          <span className="code mono">{pretty}</span>
-          <button
-            type="button"
-            className="btn small"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(pretty);
-                setCopied(true);
-              } catch {
-                /* 選んでコピーしてもらう */
-              }
-            }}
-          >
-            {copied ? "コピーしました" : "コピー"}
-          </button>
-          <span className="toggle-hint">24時間有効・1回だけ使えます</span>
-        </div>
-      )}
+      {mode === "issued" && <IssuedCode code={code} />}
       {mode === "enter" && (
         <form
           className="transfer-form"

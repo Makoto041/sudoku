@@ -62,4 +62,9 @@ export const KEYS = {
   achievements: "sudoku:achievements",
   /** 毎日の通知を有効にしたか（端末内だけ。true のときだけ有効。引き継ぎには含めない） */
   reminder: "sudoku:reminder",
+  /**
+   * 旧 URL で、通知をオンにしたまま新しい URL へ移るコードを発行したか（旧 URL の端末内だけ。true のときだけ有効。
+   * 引き継ぎには含めない）。発行し直したときも、新しい URL で通知の項目を出すのに使う
+   */
+  movedWithReminder: "sudoku:moved-with-reminder",
 };
