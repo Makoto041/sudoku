@@ -2,7 +2,16 @@ import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } fr
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SITE_HOST, SITE_ORIGIN } from "@/lib/site";
-import { loginOptions, loginVerify, signupOptions, signupVerify, simpleWebAuthn } from "./auth";
+import {
+  loginOptions,
+  loginVerify,
+  passkeyOptions,
+  passkeyVerify,
+  sessionFromToken,
+  signupOptions,
+  signupVerify,
+  simpleWebAuthn,
+} from "./auth";
 import {
   ALICE,
   attestationObject,
@@ -102,12 +111,28 @@ class Authenticator {
 // webauthn を渡さないので、ライブラリの本物の検証を使う
 const setup = () => memorySetup();
 
-/** 登録してアカウントを作る。userHandle（user.id の base64url）を返す */
+/** 本物の検証を、呼ばれたかを数えて使う。外部への通信（fetch）も数える（実際には通信しない） */
+function spiedSetup() {
+  const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("no network in tests"));
+  const verifyRegistration = vi.fn(simpleWebAuthn.verifyRegistration);
+  return { fetch, verifyRegistration, s: memorySetup({ ...simpleWebAuthn, verifyRegistration }) };
+}
+
+/** 証明書の連鎖を検証させる attestation の形式（受け付けない） */
+const CERT_FORMATS = ["android-key", "packed", "tpm", "fido-u2f", "apple", "android-safetynet"];
+/** 自作の証明書（中身は問わない）を x5c に入れた attStmt */
+const CERT_ATT_STMT = new Map<string, CBOR>([
+  ["alg", -7],
+  ["sig", new Uint8Array(randomBytes(64))],
+  ["x5c", [new Uint8Array(randomBytes(300)), new Uint8Array(randomBytes(300))]],
+]);
+
+/** 登録してアカウントを作る。userHandle（user.id の base64url）と、ログインしたセッションを返す */
 async function register(s: ReturnType<typeof setup>, a: Authenticator) {
   const { options } = await signupOptions(s.deps(), { playerId: ALICE });
   const res = await signupVerify(s.deps(), { response: a.create(options.challenge) });
   expect(res.account).toMatchObject({ playerId: ALICE, passkeys: 1 });
-  return options.user.id;
+  return { userHandle: options.user.id, session: await sessionFromToken(s.deps(), res.token) };
 }
 
 afterEach(() => {
@@ -118,7 +143,7 @@ describe("WebAuthn の検証（ライブラリの本物）", () => {
   it("登録してアカウントを作り、そのパスキーでログインできる", async () => {
     const s = setup();
     const a = new Authenticator();
-    const userHandle = await register(s, a);
+    const { userHandle } = await register(s, a);
     expect(await s.auth.getCredential(a.id)).toMatchObject({
       id: a.id,
       counter: 0,
@@ -145,7 +170,7 @@ describe("WebAuthn の検証（ライブラリの本物）", () => {
       400,
       "verification failed",
     );
-    const userHandle = await register(s, a);
+    const { userHandle } = await register(s, a);
     const { options } = await loginOptions(s.deps());
     await expectError(
       loginVerify(s.deps(), { response: a.get(options.challenge, userHandle, bad) }),
@@ -155,20 +180,12 @@ describe("WebAuthn の検証（ライブラリの本物）", () => {
   });
 
   it("attestation が none 以外（証明書の連鎖を検証させる形式）は、ライブラリに渡さず外部へも通信せずに 400", async () => {
-    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("no network in tests"));
-    const verifyRegistration = vi.fn(simpleWebAuthn.verifyRegistration);
-    const s = memorySetup({ ...simpleWebAuthn, verifyRegistration });
+    const { fetch, verifyRegistration, s } = spiedSetup();
     const a = new Authenticator();
-    // 自作の証明書（中身は問わない）を x5c に入れた attStmt
-    const attStmt = new Map<string, CBOR>([
-      ["alg", -7],
-      ["sig", new Uint8Array(randomBytes(64))],
-      ["x5c", [new Uint8Array(randomBytes(300)), new Uint8Array(randomBytes(300))]],
-    ]);
-    for (const fmt of ["android-key", "packed", "tpm", "fido-u2f", "apple", "android-safetynet"]) {
+    for (const fmt of CERT_FORMATS) {
       const { options } = await signupOptions(s.deps(), { playerId: ALICE });
       await expectError(
-        signupVerify(s.deps(), { response: a.create(options.challenge, { fmt, attStmt }) }),
+        signupVerify(s.deps(), { response: a.create(options.challenge, { fmt, attStmt: CERT_ATT_STMT }) }),
         400,
         "verification failed",
       );
@@ -182,10 +199,52 @@ describe("WebAuthn の検証（ライブラリの本物）", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("パスキーを足すと、足したパスキーでもログインできる（user.id はアカウント ID のまま）", async () => {
+    const s = setup();
+    const a = new Authenticator();
+    const { userHandle, session } = await register(s, a);
+    const b = new Authenticator();
+    const { options } = await passkeyOptions(s.deps(), session);
+    expect(options.user.id).toBe(userHandle);
+    expect(options.excludeCredentials?.map((c) => c.id)).toEqual([a.id]);
+    const added = await passkeyVerify(s.deps(), session, { response: b.create(options.challenge) });
+    expect(added.account.passkeys).toBe(2);
+    const login = await loginOptions(s.deps());
+    const res = await loginVerify(s.deps(), { response: b.get(login.options.challenge, options.user.id) });
+    expect(res.account.playerId).toBe(ALICE);
+    expect((await s.auth.getCredential(b.id))?.counter).toBe(1);
+  });
+
+  it("パスキーを足すときも、attestation が none 以外はライブラリに渡さず外部へも通信せずに 400", async () => {
+    const { fetch, verifyRegistration, s } = spiedSetup();
+    const { session } = await register(s, new Authenticator());
+    verifyRegistration.mockClear();
+    const b = new Authenticator();
+    for (const fmt of CERT_FORMATS) {
+      const { options } = await passkeyOptions(s.deps(), session);
+      await expectError(
+        passkeyVerify(s.deps(), session, {
+          response: b.create(options.challenge, { fmt, attStmt: CERT_ATT_STMT }),
+        }),
+        400,
+        "verification failed",
+      );
+    }
+    expect(verifyRegistration).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(s.auth.counts()).toMatchObject({ accounts: 1, credentials: 1 });
+    // none ならライブラリで検証して足せる
+    const { options } = await passkeyOptions(s.deps(), session);
+    await passkeyVerify(s.deps(), session, { response: b.create(options.challenge) });
+    expect(verifyRegistration).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(s.auth.counts()).toMatchObject({ credentials: 2 });
+  });
+
   it("counter が前回以下（巻き戻り）なら 401", async () => {
     const s = setup();
     const a = new Authenticator();
-    const userHandle = await register(s, a);
+    const { userHandle } = await register(s, a);
     const attempt = async (counter: number) => {
       const { options } = await loginOptions(s.deps());
       return loginVerify(s.deps(), { response: a.get(options.challenge, userHandle, { counter }) });
@@ -213,7 +272,7 @@ describe("WebAuthn の検証（ライブラリの本物）", () => {
   it("署名を書き換えた応答と、別の鍵で署名した応答（同じ credential ID）は 401", async () => {
     const s = setup();
     const a = new Authenticator();
-    const userHandle = await register(s, a);
+    const { userHandle } = await register(s, a);
     const attempt = async (make: (challenge: string) => ReturnType<Authenticator["get"]>) => {
       const { options } = await loginOptions(s.deps());
       return loginVerify(s.deps(), { response: make(options.challenge) });

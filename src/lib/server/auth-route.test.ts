@@ -31,14 +31,20 @@ vi.mock("@simplewebauthn/server", async (importOriginal) => {
 });
 
 import { verifyRegistrationResponse } from "@simplewebauthn/server";
+import * as accountRoute from "@/app/api/auth/account/route";
 import * as loginOptionsRoute from "@/app/api/auth/login/options/route";
 import * as loginVerifyRoute from "@/app/api/auth/login/verify/route";
 import * as logoutRoute from "@/app/api/auth/logout/route";
 import * as meRoute from "@/app/api/auth/me/route";
+import * as mergeRoute from "@/app/api/auth/merge/route";
+import * as passkeysOptionsRoute from "@/app/api/auth/passkeys/options/route";
+import * as passkeysVerifyRoute from "@/app/api/auth/passkeys/verify/route";
 import * as signupOptionsRoute from "@/app/api/auth/signup/options/route";
 import * as signupVerifyRoute from "@/app/api/auth/signup/verify/route";
+import * as statsRoute from "@/app/api/auth/stats/route";
 import { SITE_HOST, SITE_ORIGIN } from "@/lib/site";
 import { attestationObject, b64, clientData, unb64 } from "./auth-test-helpers";
+import { getStore } from "./store";
 
 const LOCAL = "http://localhost:3000";
 
@@ -54,6 +60,7 @@ const next = () => {
 };
 
 type Opts = {
+  method?: string;
   origin?: string | null;
   contentType?: string | null;
   cookie?: string;
@@ -61,7 +68,8 @@ type Opts = {
   base?: string;
 };
 
-function post(path: string, body: unknown, opts: Opts = {}) {
+/** GET 以外の要求（既定は POST） */
+function write(path: string, body: unknown, opts: Opts = {}) {
   const base = opts.base ?? SITE_ORIGIN;
   const headers: Record<string, string> = {};
   const origin = opts.origin === undefined ? base : opts.origin;
@@ -73,7 +81,7 @@ function post(path: string, body: unknown, opts: Opts = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
   // 文字列の本文は Content-Type が自動で付くので、バイト列で渡す
   return new Request(`${base}/api/auth/${path}`, {
-    method: "POST",
+    method: opts.method ?? "POST",
     body: new TextEncoder().encode(text),
     headers,
   });
@@ -86,13 +94,21 @@ function get(path: string, opts: Opts & { host?: string } = {}) {
   return new Request(`${opts.base ?? SITE_ORIGIN}/api/auth/${path}`, { headers });
 }
 
-const POSTS = {
-  "signup/options": signupOptionsRoute.POST,
-  "signup/verify": signupVerifyRoute.POST,
-  "login/options": loginOptionsRoute.POST,
-  "login/verify": loginVerifyRoute.POST,
-  logout: logoutRoute.POST,
-} as const;
+type Handler = (req: Request) => Promise<Response>;
+
+/** GET 以外の API（パス → メソッド・route の関数・ログインが必要か） */
+const WRITES: Record<string, { method: string; handler: Handler; signedIn: boolean }> = {
+  "signup/options": { method: "POST", handler: signupOptionsRoute.POST, signedIn: false },
+  "signup/verify": { method: "POST", handler: signupVerifyRoute.POST, signedIn: false },
+  "login/options": { method: "POST", handler: loginOptionsRoute.POST, signedIn: false },
+  "login/verify": { method: "POST", handler: loginVerifyRoute.POST, signedIn: false },
+  logout: { method: "POST", handler: logoutRoute.POST, signedIn: true },
+  "passkeys/options": { method: "POST", handler: passkeysOptionsRoute.POST, signedIn: true },
+  "passkeys/verify": { method: "POST", handler: passkeysVerifyRoute.POST, signedIn: true },
+  account: { method: "DELETE", handler: accountRoute.DELETE, signedIn: true },
+  stats: { method: "PUT", handler: statsRoute.PUT, signedIn: true },
+  merge: { method: "POST", handler: mergeRoute.POST, signedIn: true },
+};
 
 /** 応答の本文を読む。secrets（トークンなど）を含まないことも確かめる */
 async function read(res: Response, secrets: string[] = []) {
@@ -106,6 +122,12 @@ const setCookies = (res: Response) => res.headers.getSetCookie();
 const tokenIn = (setCookie: string, name: string) =>
   new RegExp(`^${name}=([^;]*)`).exec(setCookie)?.[1] ?? null;
 
+/** 応答の Set-Cookie から、https のログインの Cookie（要求に付ける形）とトークンを取り出す */
+function cookieOf(res: Response) {
+  const token = tokenIn(setCookies(res)[0], "__Secure-sdk_auth")!;
+  return { cookie: `__Secure-sdk_auth=${token}`, token };
+}
+
 /** https の Cookie を消す Set-Cookie が 1 つだけ付いている（Path と Secure をそろえ、期限を過去にする） */
 function expectCleared(res: Response) {
   const [cleared, ...rest] = setCookies(res);
@@ -116,26 +138,29 @@ function expectCleared(res: Response) {
   expect(cleared).toMatch(/; Secure(;|$)/);
 }
 
+/** 登録の応答（検証は偽物なので、形だけそろえる） */
+const createResponse = (credId: string, challenge: string, origin = SITE_ORIGIN) => ({
+  id: credId,
+  rawId: credId,
+  type: "public-key",
+  response: {
+    clientDataJSON: clientData("webauthn.create", challenge, origin),
+    attestationObject: attestationObject(),
+  },
+});
+
 async function signup(p: ReturnType<typeof next>, base = SITE_ORIGIN) {
   const opts = await signupOptionsRoute.POST(
-    post("signup/options", { playerId: p.playerId }, { ip: p.ip, base }),
+    write("signup/options", { playerId: p.playerId }, { ip: p.ip, base }),
   );
   const { options } = (await read(opts)).body as { options: { challenge: string; user: { id: string } } };
-  const response = {
-    id: p.credId,
-    rawId: p.credId,
-    type: "public-key",
-    response: {
-      clientDataJSON: clientData("webauthn.create", options.challenge, base),
-      attestationObject: attestationObject(),
-    },
-  };
-  const res = await signupVerifyRoute.POST(post("signup/verify", { response }, { ip: p.ip, base }));
+  const response = createResponse(p.credId, options.challenge, base);
+  const res = await signupVerifyRoute.POST(write("signup/verify", { response }, { ip: p.ip, base }));
   return { res, accountId: unb64(options.user.id) };
 }
 
 async function login(p: ReturnType<typeof next>, accountId: string, opts: Opts = {}) {
-  const res = await loginOptionsRoute.POST(post("login/options", {}, { ip: p.ip, ...opts }));
+  const res = await loginOptionsRoute.POST(write("login/options", {}, { ip: p.ip, ...opts }));
   const { options } = (await read(res)).body as { options: { challenge: string } };
   const response = {
     id: p.credId,
@@ -148,7 +173,7 @@ async function login(p: ReturnType<typeof next>, accountId: string, opts: Opts =
       userHandle: b64(accountId),
     },
   };
-  return loginVerifyRoute.POST(post("login/verify", { response }, { ip: p.ip, ...opts }));
+  return loginVerifyRoute.POST(write("login/verify", { response }, { ip: p.ip, ...opts }));
 }
 
 beforeEach(() => {
@@ -181,16 +206,21 @@ describe("アカウントの API", () => {
       loginOptionsRoute,
       loginVerifyRoute,
       logoutRoute,
+      passkeysOptionsRoute,
+      passkeysVerifyRoute,
+      accountRoute,
+      statsRoute,
+      mergeRoute,
     ]) {
       expect([route.dynamic, route.runtime]).toEqual(["force-dynamic", "nodejs"]);
     }
   });
 
-  it("POST は Origin が無い・違えば 403、Content-Type が application/json でなければ 415（本文を読む前に）", async () => {
+  it("GET 以外は Origin が無い・違えば 403、Content-Type が application/json でなければ 415（本文を読む前に）", async () => {
     const p = next();
-    for (const [path, handler] of Object.entries(POSTS)) {
+    for (const [path, { method, handler }] of Object.entries(WRITES)) {
       for (const origin of [null, "https://sudoku-xi-five.vercel.app", "null", `${SITE_ORIGIN}/`, LOCAL]) {
-        const res = await read(await handler(post(path, "not json", { origin, ip: p.ip })));
+        const res = await read(await handler(write(path, "not json", { method, origin, ip: p.ip })));
         expect([path, origin, res]).toEqual([
           path,
           origin,
@@ -203,7 +233,7 @@ describe("アカウントの API", () => {
         "application/x-www-form-urlencoded",
         "application/jsonx",
       ]) {
-        const res = await read(await handler(post(path, "not json", { contentType, ip: p.ip })));
+        const res = await read(await handler(write(path, "not json", { method, contentType, ip: p.ip })));
         expect([path, contentType, res]).toEqual([
           path,
           contentType,
@@ -212,7 +242,7 @@ describe("アカウントの API", () => {
       }
       // JSON なら charset などの付け足しや大文字でも通り、本文の読み取りに進む
       for (const contentType of ["application/json; charset=utf-8", "Application/JSON"]) {
-        const res = await read(await handler(post(path, "not json", { contentType, ip: p.ip })));
+        const res = await read(await handler(write(path, "not json", { method, contentType, ip: p.ip })));
         expect([path, res]).toEqual([path, { status: 400, body: { error: "invalid json" } }]);
       }
     }
@@ -255,7 +285,7 @@ describe("アカウントの API", () => {
       body: { account: { playerId: p.playerId, name: null, passkeys: 1, stats: null } },
     });
     const others = await logoutRoute.POST(
-      post("logout", { scope: "others" }, { cookie: `__Secure-sdk_auth=${other}`, ip: p.ip }),
+      write("logout", { scope: "others" }, { cookie: `__Secure-sdk_auth=${other}`, ip: p.ip }),
     );
     expect(setCookies(others)).toEqual([]);
     expect(await read(others, [other])).toEqual({ status: 200, body: { ok: true } });
@@ -265,7 +295,7 @@ describe("アカウントの API", () => {
 
     // この端末のログアウトは Cookie も消す
     const out = await logoutRoute.POST(
-      post("logout", {}, { cookie: `__Secure-sdk_auth=${other}`, ip: p.ip }),
+      write("logout", {}, { cookie: `__Secure-sdk_auth=${other}`, ip: p.ip }),
     );
     expectCleared(out);
     expect(await read(out)).toEqual({ status: 200, body: { ok: true } });
@@ -296,15 +326,17 @@ describe("アカウントの API", () => {
 
   it("ログインが必要な API は、Cookie が無い・無効なら 401 not signed in で、Cookie を消す", async () => {
     const p = next();
-    for (const cookie of [
-      undefined,
-      "__Secure-sdk_auth=",
-      `__Secure-sdk_auth=${"A".repeat(43)}`,
-      "sdk_auth=x",
-    ]) {
-      const res = await logoutRoute.POST(post("logout", {}, { cookie, ip: p.ip }));
-      expectCleared(res);
-      expect(await read(res)).toEqual({ status: 401, body: { error: "not signed in" } });
+    for (const [path, { method, handler }] of Object.entries(WRITES).filter(([, r]) => r.signedIn)) {
+      for (const cookie of [
+        undefined,
+        "__Secure-sdk_auth=",
+        `__Secure-sdk_auth=${"A".repeat(43)}`,
+        "sdk_auth=x",
+      ]) {
+        const res = await handler(write(path, {}, { method, cookie, ip: p.ip }));
+        expectCleared(res);
+        expect([path, await read(res)]).toEqual([path, { status: 401, body: { error: "not signed in" } }]);
+      }
     }
   });
 
@@ -337,8 +369,8 @@ describe("アカウントの API", () => {
       status: 503,
       body: { error: "auth unavailable" },
     });
-    for (const [path, handler] of Object.entries(POSTS)) {
-      const res = await read(await handler(post(path, {}, { ip: p.ip })));
+    for (const [path, { method, handler }] of Object.entries(WRITES)) {
+      const res = await read(await handler(write(path, {}, { method, ip: p.ip })));
       expect([path, res]).toEqual([path, { status: 503, body: { error: "auth unavailable" } }]);
     }
   });
@@ -360,24 +392,101 @@ describe("アカウントの API", () => {
     const p = next();
     const big = (bytes: number) => JSON.stringify({ pad: "x".repeat(bytes - 10) });
     expect(
-      (await read(await signupVerifyRoute.POST(post("signup/verify", big(16 * 1024 + 1), { ip: p.ip }))))
+      (await read(await signupVerifyRoute.POST(write("signup/verify", big(16 * 1024 + 1), { ip: p.ip }))))
         .status,
     ).toBe(413);
     expect(
-      (await read(await loginVerifyRoute.POST(post("login/verify", big(16 * 1024 + 1), { ip: p.ip }))))
+      (await read(await loginVerifyRoute.POST(write("login/verify", big(16 * 1024 + 1), { ip: p.ip }))))
         .status,
     ).toBe(413);
     expect(
-      (await read(await signupVerifyRoute.POST(post("signup/verify", big(16 * 1024), { ip: p.ip })))).status,
+      (await read(await signupVerifyRoute.POST(write("signup/verify", big(16 * 1024), { ip: p.ip })))).status,
     ).toBe(400);
     expect(
-      (await read(await loginOptionsRoute.POST(post("login/options", big(1025), { ip: p.ip })))).status,
+      (await read(await loginOptionsRoute.POST(write("login/options", big(1025), { ip: p.ip })))).status,
     ).toBe(413);
     expect(
-      (await read(await loginOptionsRoute.POST(post("login/options", big(1024), { ip: p.ip })))).status,
+      (await read(await loginOptionsRoute.POST(write("login/options", big(1024), { ip: p.ip })))).status,
     ).toBe(200);
     expect(
-      (await read(await signupOptionsRoute.POST(post("signup/options", big(1025), { ip: p.ip })))).status,
+      (await read(await signupOptionsRoute.POST(write("signup/options", big(1025), { ip: p.ip })))).status,
     ).toBe(413);
+    // ログインが必要な API も、本文の上限はセッションより先に確かめる
+    const limits: [string, number][] = [
+      ["passkeys/verify", 16 * 1024],
+      ["stats", 8 * 1024],
+      ["passkeys/options", 1024],
+      ["account", 1024],
+      ["merge", 1024],
+    ];
+    for (const [path, max] of limits) {
+      const { method, handler } = WRITES[path];
+      const over = await read(await handler(write(path, big(max + 1), { method, ip: p.ip })));
+      const within = await read(await handler(write(path, big(max), { method, ip: p.ip })));
+      expect([path, over.status, within.status]).toEqual([path, 413, 401]);
+    }
+  });
+});
+
+describe("アカウントの管理の API", () => {
+  it("記録の同期・パスキーの追加・履歴の取り込みは Cookie のセッションで動き、トークンを本文に出さない。同期した記録はログイン状態の確認でも返る", async () => {
+    const p = next();
+    const { res: created } = await signup(p);
+    const { cookie, token } = cookieOf(created);
+    const opts = { cookie, ip: p.ip };
+
+    const stats = { easy: { played: 2, bestMs: 70_000, cleanBestMs: null, bestPoints: 500 } };
+    const put = await statsRoute.PUT(write("stats", { stats }, { method: "PUT", ...opts }));
+    expect(setCookies(put)).toEqual([]);
+    expect(await read(put, [token])).toEqual({ status: 200, body: { stats } });
+    expect((await read(await meRoute.GET(get("me", { cookie })), [token])).body).toEqual({
+      account: { playerId: p.playerId, name: null, passkeys: 1, stats },
+    });
+
+    const optionsRes = await read(await passkeysOptionsRoute.POST(write("passkeys/options", {}, opts)), [
+      token,
+    ]);
+    const { options } = optionsRes.body as {
+      options: { challenge: string; excludeCredentials: { id: string }[] };
+    };
+    expect(options.excludeCredentials.map((c) => c.id)).toEqual([p.credId]);
+    const response = createResponse(b64(`${p.credId}-added`), options.challenge);
+    const added = await passkeysVerifyRoute.POST(write("passkeys/verify", { response }, opts));
+    expect(setCookies(added)).toEqual([]);
+    expect(await read(added, [token])).toEqual({
+      status: 200,
+      body: { account: { playerId: p.playerId, name: null, passkeys: 2, stats } },
+    });
+
+    const from = next().playerId;
+    await getStore()!.addHistory(from, {
+      date: "2026-10-18",
+      difficulty: "easy",
+      points: 100,
+      timeMs: 60_000,
+    });
+    const merged = await mergeRoute.POST(write("merge", { fromPlayerId: from }, opts));
+    expect(await read(merged, [token])).toEqual({ status: 200, body: { merged: 1 } });
+    expect(await getStore()!.getHistory(p.playerId)).toHaveLength(1);
+  });
+
+  it("アカウントの削除は本文 {} が要り、Cookie を消す。削除後はログインできず、ログイン状態の確認は null", async () => {
+    const p = next();
+    const { res: created, accountId } = await signup(p);
+    const { cookie } = cookieOf(created);
+    const empty = await accountRoute.DELETE(write("account", "", { method: "DELETE", cookie, ip: p.ip }));
+    expect(await read(empty)).toEqual({ status: 400, body: { error: "invalid json" } });
+
+    const res = await accountRoute.DELETE(write("account", {}, { method: "DELETE", cookie, ip: p.ip }));
+    expectCleared(res);
+    expect(await read(res)).toEqual({ status: 200, body: { ok: true } });
+    expect((await read(await meRoute.GET(get("me", { cookie })))).body).toEqual({ account: null });
+    const again = await login(p, accountId);
+    expect(setCookies(again)).toEqual([]);
+    expect(await read(again)).toEqual({ status: 401, body: { error: "login failed" } });
+    // 消えたセッションの Cookie では、ログインが必要な API は 401
+    const stale = await accountRoute.DELETE(write("account", {}, { method: "DELETE", cookie, ip: p.ip }));
+    expectCleared(stale);
+    expect((await read(stale)).status).toBe(401);
   });
 });

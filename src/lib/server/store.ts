@@ -127,6 +127,8 @@ const NAMES_KEY = `${PREFIX}:names`;
 const puzzleKey = (date: string, difficulty: Difficulty) => `${PREFIX}:puzzle:${date}:${difficulty}`;
 const PUZZLE_TTL_SEC = 7 * 24 * 60 * 60;
 const historyKey = (playerId: string) => `${PREFIX}:hist:${playerId}`;
+/** 履歴のフィールド名（日付と難易度。同じ日・難易度は 1 つ） */
+export const historyField = (e: Pick<HistoryEntry, "date" | "difficulty">) => `${e.date}:${e.difficulty}`;
 const HISTORY_TTL_SEC = 800 * 24 * 60 * 60;
 const transferKey = (code: string) => `${PREFIX}:xfer:${code}`;
 // 購読は最後の登録から 400 日で消える（アプリを開くたびに端末が登録し直して延ばす）
@@ -273,11 +275,7 @@ export class RedisStore implements RankingStore {
   async addHistory(playerId: string, entry: HistoryEntry) {
     const key = historyKey(playerId);
     const p = this.redis.pipeline();
-    p.hsetnx(
-      key,
-      `${entry.date}:${entry.difficulty}`,
-      JSON.stringify({ points: entry.points, timeMs: entry.timeMs }),
-    );
+    p.hsetnx(key, historyField(entry), JSON.stringify({ points: entry.points, timeMs: entry.timeMs }));
     p.expire(key, HISTORY_TTL_SEC);
     await p.exec();
   }
@@ -376,8 +374,8 @@ export class RedisStore implements RankingStore {
   }
 
   async clearedOn(playerId: string, date: string) {
-    // 履歴のフィールドは `${date}:${difficulty}`。全部読まずに、その日の 6 難易度だけを見る
-    const fields = DIFFICULTIES.map((d) => `${date}:${d}`);
+    // 全部読まずに、その日の 6 難易度のフィールドだけを見る
+    const fields = DIFFICULTIES.map((difficulty) => historyField({ date, difficulty }));
     const raw = (await this.redis.hmget(historyKey(playerId), ...fields)) as unknown;
     const values = Array.isArray(raw) ? raw : Object.values((raw as Record<string, unknown> | null) ?? {});
     return values.some((v) => v !== null && v !== undefined);
@@ -490,7 +488,7 @@ export class MemoryStore implements RankingStore {
   async addHistory(playerId: string, entry: HistoryEntry) {
     let h = this.history.get(playerId);
     if (!h) this.history.set(playerId, (h = new Map()));
-    const field = `${entry.date}:${entry.difficulty}`;
+    const field = historyField(entry);
     if (!h.has(field)) h.set(field, JSON.stringify({ points: entry.points, timeMs: entry.timeMs }));
   }
 
@@ -585,7 +583,7 @@ export class MemoryStore implements RankingStore {
 
   async clearedOn(playerId: string, date: string) {
     const h = this.history.get(playerId);
-    return DIFFICULTIES.some((d) => h?.has(`${date}:${d}`) ?? false);
+    return DIFFICULTIES.some((difficulty) => h?.has(historyField({ date, difficulty })) ?? false);
   }
 
   async incrRateWindow(name: string, windowSec: number, now: number) {

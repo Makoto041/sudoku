@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { generateAuthenticationOptions, generateRegistrationOptions } from "@simplewebauthn/server";
 import type { Redis } from "@upstash/redis";
 import { describe, expect, it, vi } from "vitest";
 import { SITE_HOST, SITE_ORIGIN } from "@/lib/site";
@@ -15,8 +14,6 @@ import {
   sessionFromToken,
   signupOptions,
   signupVerify,
-  type AuthDeps,
-  type WebAuthnVerifier,
 } from "./auth";
 import { RP_NAME, authConfig, servedHere } from "./auth-config";
 import {
@@ -34,8 +31,12 @@ import {
   attestationObject,
   b64,
   clientData,
+  createResponse,
   expectError,
-  memorySetup,
+  fakeSetup,
+  getResponse,
+  login,
+  signup,
   unb64,
 } from "./auth-test-helpers";
 import { RankingError } from "./ranking";
@@ -54,117 +55,9 @@ function statusOf(fn: () => unknown): number | null {
   }
 }
 
-/** 検証の結果を決められる WebAuthn（options の生成はライブラリのまま） */
-function fakeWebAuthn() {
-  const state = {
-    verified: true,
-    throws: false,
-    newCounter: 1,
-    /** 登録で認証器のデータから取れる id（null なら応答の id と同じ） */
-    authDataId: null as string | null,
-    /** 登録で認証器のデータから取れる公開鍵 */
-    publicKey: new Uint8Array([1, 2, 3]),
-  };
-  const calls: { verifyRegistration: unknown[]; verifyAuthentication: unknown[] } = {
-    verifyRegistration: [],
-    verifyAuthentication: [],
-  };
-  const webauthn: WebAuthnVerifier = {
-    registrationOptions: generateRegistrationOptions,
-    authenticationOptions: generateAuthenticationOptions,
-    verifyRegistration: (async (opts) => {
-      calls.verifyRegistration.push(opts);
-      if (state.throws)
-        throw new Error(`Unexpected registration response challenge ${opts.expectedChallenge}`);
-      if (!state.verified) return { verified: false };
-      return {
-        verified: true,
-        registrationInfo: {
-          fmt: "none",
-          aaguid: "00000000-0000-0000-0000-000000000000",
-          credential: {
-            id: state.authDataId ?? opts.response.id,
-            publicKey: state.publicKey,
-            counter: 0,
-            transports: opts.response.response.transports,
-          },
-          credentialType: "public-key",
-          attestationObject: new Uint8Array(),
-          userVerified: true,
-          credentialDeviceType: "multiDevice",
-          credentialBackedUp: false,
-          origin: SITE_ORIGIN,
-          rpID: SITE_HOST,
-        },
-      };
-    }) as WebAuthnVerifier["verifyRegistration"],
-    verifyAuthentication: (async (opts) => {
-      calls.verifyAuthentication.push(opts);
-      if (state.throws) throw new Error(`Unexpected authentication response origin ${opts.expectedOrigin}`);
-      return {
-        verified: state.verified,
-        authenticationInfo: {
-          credentialID: opts.credential.id,
-          newCounter: state.newCounter,
-          userVerified: true,
-          credentialDeviceType: "multiDevice",
-          credentialBackedUp: true,
-          origin: SITE_ORIGIN,
-          rpID: SITE_HOST,
-        },
-      };
-    }) as WebAuthnVerifier["verifyAuthentication"],
-  };
-  return { state, calls, webauthn };
-}
-
-function setup() {
-  const fake = fakeWebAuthn();
-  return { ...memorySetup(fake.webauthn), fake };
-}
-
-const createResponse = (challenge: string, credId = b64("cred-1")) => ({
-  id: credId,
-  rawId: credId,
-  type: "public-key",
-  response: {
-    clientDataJSON: clientData("webauthn.create", challenge),
-    attestationObject: attestationObject(),
-    transports: ["internal", "hybrid"],
-  },
-  clientExtensionResults: {},
-});
-
-const getResponse = (challenge: string, credId: string, userHandle: string | undefined) => ({
-  id: credId,
-  rawId: credId,
-  type: "public-key",
-  response: {
-    clientDataJSON: clientData("webauthn.get", challenge),
-    authenticatorData: b64("authenticator-data"),
-    signature: b64("signature"),
-    userHandle,
-  },
-  clientExtensionResults: {},
-});
-
-type Setup = ReturnType<typeof setup>;
-
-/** アカウントを作ってログインする */
-async function signup(s: Setup, playerId: string, credId: string, over: Partial<AuthDeps> = {}) {
-  const { options } = await signupOptions(s.deps(over), { playerId });
-  const res = await signupVerify(s.deps(over), { response: createResponse(options.challenge, credId) });
-  return { ...res, accountId: unb64(options.user.id) };
-}
-
-async function login(s: Setup, credId: string, accountId: string, over: Partial<AuthDeps> = {}) {
-  const { options } = await loginOptions(s.deps(over));
-  return loginVerify(s.deps(over), { response: getResponse(options.challenge, credId, b64(accountId)) });
-}
-
 describe("アカウントの作成", () => {
   it("playerId を新しいアカウントに紐づけてログインする。パスキーの user.id は accountId で、名前はランキングの名前", async () => {
-    const s = setup();
+    const s = fakeSetup();
     await s.store.setName(ALICE, "アリス");
     const { options } = await signupOptions(s.deps(), { playerId: ALICE });
     const accountId = unb64(options.user.id);
@@ -211,20 +104,20 @@ describe("アカウントの作成", () => {
   });
 
   it("ランキングの名前が無ければ「プレイヤー」", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { options } = await signupOptions(s.deps(), { playerId: ALICE });
     expect(options.user).toMatchObject({ name: "プレイヤー", displayName: "プレイヤー" });
   });
 
   it("playerId の形が違えば 400", async () => {
-    const s = setup();
+    const s = fakeSetup();
     for (const playerId of [undefined, "nope", 1, "AAAAAAAA-1111-4111-8111-111111111111"]) {
       await expectError(signupOptions(s.deps(), { playerId }), 400, "invalid player id");
     }
   });
 
   it("紐づけ済みの playerId は、options も検証も 409 already linked", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const early = await signupOptions(s.deps(), { playerId: ALICE });
     await signup(s, ALICE, b64("cred-1"));
     await expectError(signupOptions(s.deps(), { playerId: ALICE }), 409, "already linked");
@@ -237,7 +130,7 @@ describe("アカウントの作成", () => {
   });
 
   it("同じ playerId の options を 2 回取って両方を検証すると、2 つ目は 409 で、アカウントもパスキーも残さない", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const a = await signupOptions(s.deps(), { playerId: ALICE });
     const b = await signupOptions(s.deps(), { playerId: ALICE });
     const results = await Promise.allSettled([
@@ -254,7 +147,7 @@ describe("アカウントの作成", () => {
   });
 
   it("登録済みのパスキーで別の playerId のアカウントを作ると 409 credential exists", async () => {
-    const s = setup();
+    const s = fakeSetup();
     await signup(s, ALICE, b64("cred-1"));
     await expectError(signup(s, BOB, b64("cred-1")), 409, "credential exists");
     expect(await s.auth.accountOfPlayer(BOB)).toBeNull();
@@ -262,7 +155,7 @@ describe("アカウントの作成", () => {
   });
 
   it("検証に失敗したら 400 verification failed で、エラーの文言（challenge）は返さない", async () => {
-    const s = setup();
+    const s = fakeSetup();
     s.fake.state.verified = false;
     await expectError(signup(s, ALICE, b64("cred-1")), 400, "verification failed");
     s.fake.state.verified = true;
@@ -276,7 +169,7 @@ describe("アカウントの作成", () => {
   });
 
   it("attestation が none でない・読めない応答は、ライブラリに渡さずに 400 verification failed", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const cases = [
       attestationObject(undefined, "packed"),
       attestationObject(undefined, "android-key"),
@@ -297,7 +190,7 @@ describe("アカウントの作成", () => {
   });
 
   it("保存する公開鍵は 1KB まで（超えたら 400 verification failed）", async () => {
-    const s = setup();
+    const s = fakeSetup();
     s.fake.state.publicKey = new Uint8Array(1025);
     await expectError(signup(s, ALICE, b64("cred-1")), 400, "verification failed");
     expect(s.auth.counts()).toMatchObject({ accounts: 0, credentials: 0 });
@@ -307,7 +200,7 @@ describe("アカウントの作成", () => {
   });
 
   it("アカウントが上限に達していれば、options も検証も 503 too many accounts", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const early = await signupOptions(s.deps(), { playerId: ALICE });
     const count = vi.spyOn(s.auth, "countAccounts").mockResolvedValue(AUTH_MAX_ACCOUNTS);
     await expectError(signupOptions(s.deps(), { playerId: BOB }), 503, "too many accounts");
@@ -324,7 +217,7 @@ describe("アカウントの作成", () => {
 
 describe("challenge", () => {
   it("1 回しか使えない（同じ応答の再送は 400 challenge expired）", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { options } = await signupOptions(s.deps(), { playerId: ALICE });
     const response = createResponse(options.challenge);
     await signupVerify(s.deps(), { response });
@@ -332,7 +225,7 @@ describe("challenge", () => {
   });
 
   it("300 秒を過ぎたら 400 challenge expired（保存先が消さなくても時刻で確かめる）", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { options } = await signupOptions(s.deps(), { playerId: ALICE });
     await expectError(
       signupVerify(s.deps({ now: T0 + AUTH_CHALLENGE_TTL_SEC * 1000 + 1 }), {
@@ -357,7 +250,7 @@ describe("challenge", () => {
   });
 
   it("発行していない challenge は 400 challenge expired、用途の違う challenge は 400 invalid challenge", async () => {
-    const s = setup();
+    const s = fakeSetup();
     await expectError(
       signupVerify(s.deps(), { response: createResponse(b64("x".repeat(32))) }),
       400,
@@ -383,7 +276,7 @@ describe("challenge", () => {
 
 describe("パスキーの応答の検査", () => {
   it("形の違う応答は、challenge を使わずに 400 invalid response", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { options } = await signupOptions(s.deps(), { playerId: ALICE });
     const ok = createResponse(options.challenge);
     const longId = "A".repeat(1367);
@@ -437,7 +330,7 @@ describe("パスキーの応答の検査", () => {
 
 describe("回数制限", () => {
   it("challenge の発行は IP ごとに 1 時間 60 回まで（signup と login を合わせて数える）", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { limit, windowSec } = AUTH_RATE_LIMITS.chal;
     expect([limit, windowSec]).toEqual([60, 3600]);
     const at = Math.floor(T0 / 3_600_000) * 3_600_000;
@@ -455,8 +348,18 @@ describe("回数制限", () => {
     await loginOptions(s.deps({ now: at + 3_600_000 }));
   });
 
+  it("紐づき済みの playerId への options も、409 を返す前に数える（紐づいているかを回数の制限なしに調べられない）", async () => {
+    const s = fakeSetup();
+    await signup(s, ALICE, b64("cred-1"));
+    // アカウントの作成で 1 回数えている
+    for (let i = 1; i < AUTH_RATE_LIMITS.chal.limit; i++) {
+      await expectError(signupOptions(s.deps(), { playerId: ALICE }), 409, "already linked");
+    }
+    await expectError(signupOptions(s.deps(), { playerId: ALICE }), 429, "rate limited");
+  });
+
   it("アカウントの作成は IP ごとに 1 時間 5 件まで。検証に失敗したものと、数える前に確かめる紐づけ済みの playerId（409）は数えない", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { limit, windowSec } = AUTH_RATE_LIMITS.signup;
     expect([limit, windowSec]).toEqual([5, 3600]);
     s.fake.state.verified = false;
@@ -478,7 +381,7 @@ describe("回数制限", () => {
 
 describe("ログイン", () => {
   it("パスキーでログインし、counter・最終使用日時・バックアップの状態を更新する", async () => {
-    const s = setup();
+    const s = fakeSetup();
     await s.store.setName(ALICE, "アリス");
     const credId = b64("cred-1");
     const { accountId, token: first } = await signup(s, ALICE, credId);
@@ -507,7 +410,7 @@ describe("ログイン", () => {
   });
 
   it("知らないパスキー・userHandle の違い・検証の失敗は、どれも 401 login failed", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const credId = b64("cred-1");
     const { accountId } = await signup(s, ALICE, credId);
     const bob = await signup(s, BOB, b64("cred-bob"));
@@ -533,7 +436,7 @@ describe("ログイン", () => {
 
 describe("セッション", () => {
   it("期限を過ぎたら無効。ログイン状態を確かめるたびに 90 日延ばす", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { token, accountId } = await signup(s, ALICE, b64("cred-1"));
     const at = (now: number) => sessionFromToken(s.deps({ now }), token);
     expect(await at(T0 + 90 * DAY - 1)).not.toBeNull();
@@ -547,7 +450,7 @@ describe("セッション", () => {
   });
 
   it("トークンの形が違えば引かない。アカウントが無ければ null", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { token, accountId } = await signup(s, ALICE, b64("cred-1"));
     for (const t of [null, "", token.slice(1), `${token}A`, token.replace(/.$/, "+")]) {
       expect(await sessionFromToken(s.deps(), t)).toBeNull();
@@ -559,7 +462,7 @@ describe("セッション", () => {
   });
 
   it(`1 アカウント ${AUTH_MAX_SESSIONS} 件まで。超えたら期限の近いものから消す`, async () => {
-    const s = setup();
+    const s = fakeSetup();
     const credId = b64("cred-1");
     const { token: first, accountId } = await signup(s, ALICE, credId);
     const tokens = [first];
@@ -579,7 +482,7 @@ describe("セッション", () => {
   });
 
   it("ログアウト：this はこの端末、others はこの端末以外。消したセッションは延ばしても戻らない", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const credId = b64("cred-1");
     const { token: a, accountId } = await signup(s, ALICE, credId);
     const b = (await login(s, credId, accountId)).token;
@@ -609,7 +512,7 @@ describe("セッション", () => {
   });
 
   it("ログアウトの scope が違えば 400、セッションが無ければ 401", async () => {
-    const s = setup();
+    const s = fakeSetup();
     const { token } = await signup(s, ALICE, b64("cred-1"));
     const session = await sessionFromToken(s.deps(), token);
     for (const scope of ["all", 1, null]) {
@@ -623,6 +526,8 @@ describe("セッション", () => {
 /** RedisAuthStore のテスト用。使うコマンドだけを、Redis と同じ意味でメモリに持つ（期限は持たない） */
 class FakeRedis {
   data = new Map<string, string | Set<string> | Map<string, number>>();
+  /** pipeline でこのコマンドを実行しようとしたら失敗させる（途中で失敗したときの確認用） */
+  failInPipeline: string | null = null;
   private of<T>(key: string, make: () => T): T {
     if (!this.data.has(key)) this.data.set(key, make() as never);
     return this.data.get(key) as T;
@@ -709,6 +614,7 @@ class FakeRedis {
     const run = async () => {
       const out: unknown[] = [];
       for (const [name, args] of ops) {
+        if (name === this.failInPipeline) throw new Error(`${name} failed`);
         out.push(await (this as unknown as Record<string, (...a: unknown[]) => unknown>)[name](...args));
       }
       return out;
@@ -770,17 +676,48 @@ describe.each([
     expect((await auth.listCredentials(ACCOUNT.id)).map((c) => c.id)).toEqual(["c1"]);
   });
 
-  it("パスキーの追加は id が重なれば false。更新は消えたパスキーを書き戻さない", async () => {
-    const { auth } = make();
+  it("パスキーの追加は id が重なれば exists、上限に達していれば full（足さない）。更新は消えたパスキーを書き戻さない", async () => {
+    const { auth, keys } = make();
     await auth.createAccount(ACCOUNT, cred("c1"));
-    expect(await auth.addCredential(cred("c1"))).toBe(false);
-    expect(await auth.addCredential(cred("c2"))).toBe(true);
+    expect(await auth.addCredential(cred("c1"), 10)).toBe("exists");
+    expect(await auth.addCredential(cred("c2"), 2)).toBe("ok");
+    expect(await auth.addCredential(cred("c3"), 2)).toBe("full");
+    expect(await auth.getCredential("c3")).toBeNull();
+    if (keys) expect(keys.has("sdk:cred:c3")).toBe(false);
     expect((await auth.listCredentials(ACCOUNT.id)).map((c) => c.id).sort()).toEqual(["c1", "c2"]);
     await auth.updateCredential({ ...cred("c1"), counter: 5 });
     expect((await auth.getCredential("c1"))?.counter).toBe(5);
     await auth.deleteAccount(ACCOUNT.id);
     await auth.updateCredential(cred("c1"));
     expect(await auth.getCredential("c1")).toBeNull();
+  });
+
+  it("同時に足しても、パスキーは上限を超えず、足さなかったものは残さない", async () => {
+    const { auth } = make();
+    await auth.createAccount(ACCOUNT, cred("c0"));
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => auth.addCredential(cred(`n${i}`), 10)),
+    );
+    const ids = (await auth.listCredentials(ACCOUNT.id)).map((c) => c.id);
+    expect(ids.length).toBeLessThanOrEqual(10);
+    expect(results.filter((r) => r === "ok").length).toBe(ids.length - 1);
+    for (let i = 0; i < 12; i++) {
+      const kept = ids.includes(`n${i}`);
+      expect([i, results[i], (await auth.getCredential(`n${i}`)) !== null]).toEqual([
+        i,
+        kept ? "ok" : "full",
+        kept,
+      ]);
+    }
+  });
+
+  it("同期した記録はアカウントごとに保存し、上書きする", async () => {
+    const { auth } = make();
+    expect(await auth.getStats(ACCOUNT.id)).toBeNull();
+    await auth.putStats(ACCOUNT.id, '{"easy":{"played":1}}');
+    await auth.putStats(ACCOUNT.id, '{"easy":{"played":2}}');
+    expect(await auth.getStats(ACCOUNT.id)).toBe('{"easy":{"played":2}}');
+    expect(await auth.getStats(OTHER.id)).toBeNull();
   });
 
   it("challenge は 1 回だけ取り出せる", async () => {
@@ -816,7 +753,7 @@ describe.each([
   it("アカウントを消すと、パスキー・セッション・記録・紐づけ・一覧から消える", async () => {
     const { auth, keys } = make();
     await auth.createAccount(ACCOUNT, cred("c1"));
-    await auth.addCredential(cred("c2"));
+    await auth.addCredential(cred("c2"), 10);
     await auth.putSession("h1", session(ACCOUNT.id, T0 + 10), T0, 20);
     await auth.putStats(ACCOUNT.id, "{}");
     await auth.deleteAccount(ACCOUNT.id);
@@ -829,6 +766,29 @@ describe.each([
     expect(await auth.countAccounts()).toBe(0);
     if (keys) expect([...keys.keys()]).toEqual([]);
   });
+});
+
+it("Redis：アカウントの削除が途中で失敗しても、紐づけは先に消えていて、その playerId でまた作れる。もう一度消せば残りも消える", async () => {
+  const redis = new FakeRedis();
+  const auth = new RedisAuthStore(redis as unknown as Redis);
+  const account = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", playerId: ALICE, createdAt: T0 };
+  await auth.createAccount(account, {
+    id: "c1",
+    accountId: account.id,
+    publicKey: "AQID",
+    counter: 0,
+    transports: [],
+    deviceType: "singleDevice",
+    backedUp: false,
+    createdAt: T0,
+    lastUsedAt: T0,
+  });
+  redis.failInPipeline = "srem";
+  await expect(auth.deleteAccount(account.id)).rejects.toThrow("srem failed");
+  expect(await auth.accountOfPlayer(ALICE)).toBeNull();
+  redis.failInPipeline = null;
+  await auth.deleteAccount(account.id);
+  expect([...redis.data.keys()]).toEqual([]);
 });
 
 it("Redis：アカウントを消すとき、紐づけが別のアカウントを指していれば残す", async () => {
