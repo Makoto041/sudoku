@@ -12,7 +12,7 @@ import {
   type AccountAction,
   type AccountState,
 } from "@/lib/client/account";
-import { ApiError, describeError } from "@/lib/client/api";
+import { ApiError, describeError, describeIssueError } from "@/lib/client/api";
 import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
 import type { Settings } from "@/lib/client/settings";
 import { SITE_HOST } from "@/lib/site";
@@ -546,7 +546,7 @@ export function MoveSheet({
       if (!standalone) return;
       setIssued(res);
     } catch (err) {
-      setError(describeError(err));
+      setError(describeIssueError(err));
     }
     setBusy(false);
   };
@@ -669,7 +669,7 @@ function Transfer({
       setCode(res.code);
       setMode("issued");
     } catch (err) {
-      setError(describeError(err));
+      setError(describeIssueError(err));
     } finally {
       setBusy(false);
     }

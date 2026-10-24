@@ -37,6 +37,15 @@ async function shot(page: Page, name: string) {
 /** iPhone（WebKit の iPhone 15）のプロジェクトか */
 const isIphone = (info: TestInfo) => /iPhone/.test(info.project.use.userAgent ?? "");
 
+/**
+ * テストごとに回数制限の枠を分ける（引き継ぎコードの発行は IP ごとに 1 時間 10 回、アカウントの作成は 5 件など。
+ * サーバーは実行の間ずっと同じなので、iPhone とデスクトップでも分ける）。呼ぶたびに次の IP
+ */
+let ipCount = 0;
+const ipHeaders = (info: TestInfo) => ({
+  "x-forwarded-for": `${isIphone(info) ? "198.51.100" : "203.0.113"}.${++ipCount}`,
+});
+
 type Saved = {
   puzzle: number[];
   solution: number[] | null;
@@ -693,7 +702,7 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
   await shot(page, "records");
 });
 
-test("引き継ぎコードで別の端末に同じプレイヤーとフリープレイの記録を移せる", async ({ browser }) => {
+test("引き継ぎコードで別の端末に同じプレイヤーとフリープレイの記録を移せる", async ({ browser }, info) => {
   const stats = {
     easy: {
       played: 2,
@@ -706,7 +715,7 @@ test("引き継ぎコードで別の端末に同じプレイヤーとフリー�
       abandonedMs: 30_000,
     },
   };
-  const a = await browser.newContext();
+  const a = await browser.newContext({ extraHTTPHeaders: ipHeaders(info) });
   const pa = await a.newPage();
   await pa.addInitScript((s) => {
     localStorage.setItem(
@@ -739,7 +748,8 @@ test("引き継ぎコードで別の端末に同じプレイヤーとフリー�
 
 test("記録の保存データに余計な項目が残る端末でも、検証した記録だけを送って引き継ぎコードを発行できる", async ({
   page,
-}) => {
+}, info) => {
+  await page.context().setExtraHTTPHeaders(ipHeaders(info));
   // 旧版や手で書き換えた保存データ。そのまま送るとサーバーの上限（4096 バイト）を超える
   const dirty = {
     easy: {
@@ -3063,9 +3073,10 @@ const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 /**
  * 旧 URL と新しい URL への通信を、テストのサーバー（baseURL）に振り向ける。ページからは https の 2 つの URL に見える。
  * 本文は圧縮せずに受け取る（受け取った本文は展開済みなので、圧縮の印が残るとブラウザが展開し直して壊れる）。
+ * headers は振り向けた通信に足す（x-forwarded-for で回数制限の枠を分ける）。
  * 振り向けた通信（メソッドと URL）と、テストの終わり（afterEach）に呼ぶ end を返す
  */
-async function routeHosts(context: BrowserContext, baseURL: string) {
+async function routeHosts(context: BrowserContext, baseURL: string, headers: Record<string, string> = {}) {
   const routed: string[] = [];
   let ended = false;
   // 振り向け漏れが本番に届かないよう、テストのサーバー以外への https の通信はすべて止める
@@ -3084,7 +3095,11 @@ async function routeHosts(context: BrowserContext, baseURL: string) {
         const response = await context.request.fetch(baseURL + url.pathname + url.search, {
           method: req.method(),
           data: req.postDataBuffer() ?? undefined,
-          headers: { "content-type": req.headers()["content-type"] ?? "", "accept-encoding": "identity" },
+          headers: {
+            ...headers,
+            "content-type": req.headers()["content-type"] ?? "",
+            "accept-encoding": "identity",
+          },
           maxRedirects: 0,
         });
         await route.fulfill({ response });
@@ -3138,8 +3153,11 @@ test.describe("URL の移行", () => {
   /** 振り向けた通信（routeHosts） */
   let routed: string[] = [];
   let endRouting = () => {};
-  test.beforeEach(async ({ context, baseURL }) => {
-    ({ routed, end: endRouting } = await routeHosts(context, baseURL!));
+  /** このテストの要求元（ページからの通信と issueCode で同じ IP にする） */
+  let ip: Record<string, string> = {};
+  test.beforeEach(async ({ context, baseURL }, info) => {
+    ip = ipHeaders(info);
+    ({ routed, end: endRouting } = await routeHosts(context, baseURL!, ip));
   });
   // afterEach は後片付け（context.close）より前に必ず走る
   test.afterEach(() => endRouting());
@@ -3178,6 +3196,7 @@ test.describe("URL の移行", () => {
   async function issueCode(request: APIRequestContext) {
     const res = await request.post("/api/player/transfer", {
       data: { playerId: MOVE_PLAYER.id, name: MOVE_PLAYER.name, stats: MOVE_STATS },
+      headers: ip,
     });
     expect(res.status()).toBe(200);
     return ((await res.json()) as { code: string }).code;
@@ -3708,15 +3727,6 @@ test.describe("アカウント（パスキー）", () => {
     totalMs: 300_000,
   };
   const CDP_ONLY = "仮想の認証器（CDP）は Chromium だけ";
-
-  /**
-   * テストごとに回数制限の枠を分ける（アカウントの作成は IP ごとに 1 時間 5 件、options の取得は 60 回。
-   * サーバーは実行の間ずっと同じなので、iPhone とデスクトップでも分ける）。呼ぶたびに次の IP
-   */
-  let ipCount = 0;
-  const ipHeaders = (info: TestInfo) => ({
-    "x-forwarded-for": `${isIphone(info) ? "198.51.100" : "203.0.113"}.${++ipCount}`,
-  });
 
   /** タブで初めて開いたときだけ保存データを入れる（読み込み直しても入れ直さない） */
   async function seed(page: Page, items: Record<string, unknown>) {

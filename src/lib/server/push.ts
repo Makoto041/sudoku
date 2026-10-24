@@ -5,6 +5,7 @@ import { BlockList, isIP, type LookupFunction } from "node:net";
 import { parse as legacyParse } from "node:url";
 import webpush from "web-push";
 import { jstDateKey } from "@/lib/sudoku/generator";
+import { ipv6Words, withinIpLimit } from "./ip";
 import { RankingError, assertPlayerId } from "./ranking";
 import type { PushSub, RankingStore } from "./store";
 
@@ -215,36 +216,16 @@ function sameAuth(stored: string, given: string): boolean {
  * 1 人 PUSH_MAX_PER_PLAYER 件の上限とは別に、使い捨ての登録を繰り返して全体の上限を埋めるのを遅らせる
  */
 export const PUSH_RATE_LIMITS = {
-  /** 登録元の IP ごと */
+  /** 登録元の IP ごと（IPv6 は /64 と、その 8 倍の /48。ip.ts の withinIpLimit） */
   ip: { limit: 20, windowSec: 60 * 60 },
   /** プレイヤーごと */
   player: { limit: 10, windowSec: 24 * 60 * 60 },
 } as const;
 
-/**
- * 回数制限のカウンタの名前にする IP。生の IP を保存しないよう SHA-256 にする。IPv6 は /64 ごとにまとめる
- * （1 つの回線に /64 が割り当てられることが多く、アドレスを変えるだけで制限を回避できるため）。
- * IPv4 射影（::ffff:a.b.c.d）は IPv4 として扱う。取れなければ固定の unknown（ヘッダーを外して回避させない）
- */
-export function ipRateName(ip: string | null): string {
-  if (!ip || !isIP(ip)) return "ip:unknown";
-  let bucket = ip.toLowerCase();
-  const words = isIP(ip) === 6 ? ipv6Words(ip) : null;
-  if (words && words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) {
-    bucket = `${words[6] >> 8}.${words[6] & 0xff}.${words[7] >> 8}.${words[7] & 0xff}`;
-  } else if (words) {
-    const prefix = words.slice(0, 4).map((w) => w.toString(16));
-    bucket = `${prefix.join(":")}::/64`;
-  }
-  return `ip:${createHash("sha256").update(bucket).digest("hex")}`;
-}
-
 /** 新規登録を 1 回数え、上限を超えたら 429。IP を先に数え、IP で超えたらプレイヤーの分は数えない */
 async function limitNewSubscription(store: RankingStore, ip: string | null, playerId: string, now: number) {
   const { ip: byIp, player: byPlayer } = PUSH_RATE_LIMITS;
-  if ((await store.incrRateWindow(ipRateName(ip), byIp.windowSec, now)) > byIp.limit) {
-    throw new RankingError(429, "rate limited");
-  }
+  if (!(await withinIpLimit(store, "", ip, byIp, now))) throw new RankingError(429, "rate limited");
   if ((await store.incrRateWindow(`player:${playerId}`, byPlayer.windowSec, now)) > byPlayer.limit) {
     throw new RankingError(429, "rate limited");
   }
@@ -342,30 +323,6 @@ for (const [net, prefix] of [
   ["ff00::", 8], // マルチキャスト
 ] as const) {
   BLOCKED_IPV6.addSubnet(net, prefix, "ipv6");
-}
-
-/** IPv6 アドレスを 16 ビットずつ 8 つに分ける。読めないもの（ゾーン ID 付きなど）は null */
-function ipv6Words(address: string): number[] | null {
-  if (isIP(address) !== 6 || address.includes("%")) return null;
-  let text = address;
-  const tail: number[] = [];
-  // 末尾の IPv4 の表記（::ffff:1.2.3.4 など）は 16 ビット 2 つにする
-  const dotted = /:(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
-  if (dotted) {
-    const [a, b, c, d] = dotted.slice(1).map(Number);
-    tail.push((a << 8) | b, (c << 8) | d);
-    text = text.slice(0, dotted.index + 1);
-    if (!text.endsWith("::")) text = text.slice(0, -1);
-  }
-  const groups = (s: string) => (s === "" ? [] : s.split(":").map((h) => parseInt(h, 16)));
-  const halves = text.split("::");
-  const head = groups(halves[0]);
-  const rest = halves.length === 2 ? groups(halves[1]) : [];
-  const zeros = halves.length === 2 ? 8 - head.length - rest.length - tail.length : 0;
-  const words = [...head, ...Array<number>(Math.max(0, zeros)).fill(0), ...rest, ...tail];
-  return words.length === 8 && words.every((w) => Number.isInteger(w) && w >= 0 && w <= 0xffff)
-    ? words
-    : null;
 }
 
 /**

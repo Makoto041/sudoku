@@ -5,27 +5,21 @@ export const dynamic = "force-dynamic";
 
 /** 購読に使う公開鍵（公開してよい値）。通知の設定がそろっていなければ 503 で、端末は通知の項目を出さない */
 export function GET() {
-  return handle(async () => ({ publicKey: requirePushConfig().publicKey }), { redactErrors: true });
+  return handle(async () => ({ publicKey: requirePushConfig().publicKey }));
 }
 
 /** 新規の登録は、登録元の IP とプレイヤーごとに回数を制限する（既存の購読の更新は制限しない） */
 export function POST(req: Request) {
-  return handle(
-    async (store) => {
-      requirePushConfig();
-      const input = await readJson(req, { maxBytes: PUSH_MAX_BODY_BYTES });
-      return subscribePush(store, input, Date.now(), { ip: clientIp(req.headers) });
-    },
-    { redactErrors: true },
-  );
+  return handle(async (store) => {
+    requirePushConfig();
+    const input = await readJson(req, { maxBytes: PUSH_MAX_BODY_BYTES });
+    return subscribePush(store, input, Date.now(), { ip: clientIp(req.headers) });
+  });
 }
 
 export function DELETE(req: Request) {
-  return handle(
-    async (store) => {
-      requirePushConfig();
-      return unsubscribePush(store, await readJson(req, { maxBytes: PUSH_MAX_BODY_BYTES }));
-    },
-    { redactErrors: true },
-  );
+  return handle(async (store) => {
+    requirePushConfig();
+    return unsubscribePush(store, await readJson(req, { maxBytes: PUSH_MAX_BODY_BYTES }));
+  });
 }
