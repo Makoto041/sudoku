@@ -4075,12 +4075,15 @@ test.describe("表示の設定", () => {
     });
   /** アプリの JS のファイル（止めると React が動かず、<head> のスクリプトだけが動く） */
   const isAppScript = (url: URL) => url.pathname.startsWith("/_next/static/") && url.pathname.endsWith(".js");
-  /** 画面の左右からはみ出している要素と、ページを横にスクロールできる幅。横にスクロールする難易度のタブの中身は除く */
+  /**
+   * 画面の左右からはみ出している要素と、ページを横にスクロールできる幅。横にスクロールする難易度のタブの中身と、
+   * iPhone の触覚に使う見えないチェックボックス（src/lib/haptics.ts。わざと画面の外に固定で置く）は除く
+   */
   const horizontalOverflow = (page: Page) =>
     page.evaluate(() => {
       const width = document.documentElement.clientWidth;
       const out = [...document.body.querySelectorAll("*")]
-        .filter((el) => !el.closest(".diff-tabs, .sr-only"))
+        .filter((el) => !el.closest('.diff-tabs, .sr-only, label[for="haptic-switch"]'))
         .filter((el) => {
           const r = el.getBoundingClientRect();
           return r.width > 0 && (r.left < -0.5 || r.right > width + 0.5);
