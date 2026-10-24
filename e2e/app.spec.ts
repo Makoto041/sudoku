@@ -2878,7 +2878,7 @@ test.describe("共有した盤面", () => {
     const g = await savedGame(page, "sudoku:free");
     expect(g.puzzle).toEqual(gridOf(SHARED_PUZZLE));
     expect(g.solution).toEqual(solve(gridOf(SHARED_PUZZLE)));
-    await expect(page.getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 1");
+    await expect(page.getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 最初から 1");
     await expect(page.getByRole("gridcell").nth(1)).toHaveAccessibleName("1行2列 空き");
     expect((await storedStats(page)).extreme.started).toBe(1);
 
