@@ -1088,6 +1088,8 @@ test("色を ON にすると数字パッドが色に変わり、選んだマス�
   await expect(colorTool).toHaveAttribute("aria-pressed", "true");
   await expect(pad).toHaveClass(/is-colors/);
   await expect(pad.locator(".swatch")).toHaveCount(9);
+  // 色相だけに頼らないよう、色には番号を添える
+  await expect(pad.locator(".swatch-num")).toHaveText(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
   await expect(pad.locator(".pad-digit")).toHaveCount(0);
   await page.getByRole("button", { name: "色3", exact: true }).click();
   await expect(mark(a)).toHaveAttribute("data-color", "3");
@@ -1160,7 +1162,7 @@ test("今日の一問でも色が使え、手の記録は増えない", async ({
   expect(saved.values).toEqual(g.values);
 });
 
-test("色を付けたマスでも、間違い・手筋ヒント・複数選択の基準のマスが分かるよう、色の上に印を描く", async ({
+test("色を付けたマスでも、間違い・手筋ヒント・複数選択の基準のマスが分かるよう、色の上に印を描く。間違いの数字には色によらず下線を引く", async ({
   page,
 }) => {
   await page.goto("/");
@@ -1209,6 +1211,15 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
         color: getComputedStyle(el).color,
         weight: Number(getComputedStyle(el).fontWeight),
       }));
+  /** 数字の下線（間違いの印） */
+  const underlineOf = (i: number) =>
+    cells
+      .nth(i)
+      .locator(".digit")
+      .evaluate((el) => ({
+        line: getComputedStyle(el).textDecorationLine,
+        style: getComputedStyle(el).textDecorationStyle,
+      }));
 
   // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない
   await page.keyboard.press("h");
@@ -1238,10 +1249,11 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
   await shot(page, "colors-hint");
   await page.getByRole("button", { name: "ヒントを閉じる" }).click();
 
-  // 間違えた数字のマスは、色で赤い背景が隠れても、角の三角と濃く太い数字で分かる
-  const [a, b] = g.puzzle.flatMap((v, i) => (v || i === focus || i === target ? [] : [i]));
+  // 間違えた数字のマスは、色で赤い背景が隠れても、角の三角と濃く太い数字で分かる。
+  // 赤が見分けにくくても分かるよう、色の有無によらず数字に波線の下線を引く（c には色を付けない）
+  const [a, b, c] = g.puzzle.flatMap((v, i) => (v || i === focus || i === target ? [] : [i]));
   await page.keyboard.press("c");
-  for (const i of [a, b]) {
+  for (const i of [a, b, c]) {
     await press(i);
     await page.keyboard.press(`Digit${(g.solution![i] % 9) + 1}`);
   }
@@ -1264,10 +1276,14 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
     expect(parseFloat(flag.width)).toBeGreaterThan((await cells.nth(i).boundingBox())!.width * 0.2);
     expect(await digitOf(i)).toEqual({ color: danger, weight: 700 });
   }
+  await expect(cells.nth(c)).toHaveClass(/wrong/);
+  await expect(mark(c)).toHaveCount(0);
+  for (const i of [a, b, c]) expect(await underlineOf(i)).toEqual({ line: "underline", style: "wavy" });
 
   // 複数選択では、基準のマスの枠を他の選択マスより太くする。基準のマスに色が無くても同じ
   // （色の無い基準のマスは、行き詰まりにならない最初から入っているマスで確かめる）
   const plain = g.puzzle.findIndex((v, i) => v !== 0 && i !== focus);
+  expect((await underlineOf(plain)).line).toBe("none");
   await press(plain);
   await press(a, { shiftKey: true });
   await expect(cells.nth(a)).toHaveClass(/multi/);
@@ -1291,6 +1307,11 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
   // マスの背景の切り替え（transition）が終わってから撮る
   await page.waitForTimeout(300);
   await shot(page, "colors-marks-dark");
+
+  // コントラストを上げる設定では、色の無いマスでも間違いの数字を濃く太くする
+  await page.emulateMedia({ colorScheme: "light", contrast: "more" });
+  expect(await digitOf(c)).toEqual({ color: await resolve("var(--danger-on-mark)"), weight: 700 });
+  expect(await underlineOf(c)).toEqual({ line: "underline", style: "wavy" });
 });
 
 /**

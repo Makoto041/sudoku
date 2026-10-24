@@ -934,8 +934,16 @@ p {
   white-space: nowrap;
 }
 
+/*
+ * 間違い・重複の数字には、赤が見分けにくくても分かるよう波線の下線を引く。色を付けたマスでも同じ。
+ * 数字の下の余白に収まる位置にする。太くすると波の幅も広がり、数字の幅に 1 山しか入らなくなるので細めにする
+ */
 .cell.wrong .digit {
   color: var(--danger);
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.14em;
 }
 
 .digit.pop {
@@ -1016,7 +1024,7 @@ p {
 }
 
 /*
- * 間違い・重複の赤い背景も色で隠れるので、色の上に角の三角を描き、数字を濃く太くする。
+ * 間違い・重複の赤い背景も色で隠れるので、色の上に角の三角を描き、数字（と下線）を濃く太くする。
  * 行き詰まりの枠と見分けられるよう、枠ではなく三角にする
  */
 .cell.wrong .mark::after {
@@ -1049,6 +1057,18 @@ p {
 
 .cell.hint-focus .mark::before {
   border-style: dotted;
+}
+
+/* コントラストを上げる設定では、色の無いマスでも間違いの数字（と下線）を濃く太くし、色の上の三角を大きくする */
+@media (prefers-contrast: more) {
+  .cell.wrong .digit {
+    color: var(--danger-on-mark);
+    font-weight: 700;
+  }
+  .cell.wrong .mark::after {
+    width: 40%;
+    height: 40%;
+  }
 }
 
 .cell-flash {
@@ -1310,6 +1330,25 @@ p {
   height: var(--d);
   border-radius: 50%;
   box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* 色の番号。数字モードの残りの数と同じ高さにして、キーの中の位置をそろえる */
+.swatch-num {
+  height: 12px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 12px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-contrast: more) {
+  .swatch {
+    box-shadow: inset 0 0 0 1.5px var(--ink-2);
+  }
+  .swatch-num {
+    color: var(--ink);
+  }
 }
 
 .result-reopen {
