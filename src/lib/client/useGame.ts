@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
+import { announcementOf } from "@/lib/game/a11y";
 import { elapsedOf, persisted, reduce, type Action, type Effect, type GameState } from "@/lib/game/state";
 import { haptic } from "@/lib/haptics";
 import { KEYS, save } from "./storage";
@@ -15,11 +16,13 @@ export type Fx = {
   solvedKey: number | null;
   /** マスの上に浮かべる得点（直近のものだけ残す） */
   popups: Popup[];
+  /** 盤面の読み上げ欄に出す知らせ。同じ文でも読み直すよう、知らせるたびに key を変える */
+  say: { text: string; key: number } | null;
 };
 
 export type Popup = { id: number; cell: number; text: string; kind: "gain" | "bonus" | "loss" };
 
-const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, popups: [] };
+const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, popups: [], say: null };
 
 /** 保存先のキー。練習は保存しないので null */
 export function storageKeyFor(s: GameState): string | null {
@@ -91,7 +94,7 @@ function playEffects(effects: Effect[]) {
 }
 
 /**
- * ゲームの状態と入力。入力ごとに音・触覚・アニメーションを出し、localStorage に保存する（練習は保存しない）。
+ * ゲームの状態と入力。入力ごとに音・触覚・アニメーション・読み上げの知らせを出し、localStorage に保存する（練習は保存しない）。
  * フリープレイの時計はここで進め、画面が隠れたら自動で一時停止する。
  */
 export function useGame(initial: GameState, options: { showMistakes: boolean; autoClearNotes: boolean }) {
@@ -122,8 +125,10 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
         ),
       );
       const key = ++fxKey.current;
+      const say = announcementOf(effects, next, options.showMistakes);
       setFx((prev) => {
         const out: Fx = { ...prev };
+        if (say) out.say = { text: say, key };
         const popups: Popup[] = [];
         for (const e of effects) {
           if (e.kind === "place" && e.points !== 0) {
@@ -218,5 +223,11 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
     };
   }, []);
 
-  return { game, fx, dispatch };
+  /** 入力の結果のほかに、盤面の読み上げ欄で知らせる（ヒント・練習の正解） */
+  const announce = useCallback((text: string) => {
+    const key = ++fxKey.current;
+    setFx((prev) => ({ ...prev, say: { text, key } }));
+  }, []);
+
+  return { game, fx, dispatch, announce };
 }
