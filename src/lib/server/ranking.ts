@@ -2,8 +2,8 @@ import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficult
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { CODE_ALPHABET, CODE_LENGTH, normalizeCode } from "@/lib/transfer-code";
-import { ipRateName } from "./push";
-import type { BoardKey, RankingStore, Session } from "./store";
+import { countIp, ipCountsWithin, withinIpLimit } from "./ip";
+import { rateWindowResetSec, type BoardKey, type RankingStore, type Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
 export const MIN_PLAUSIBLE_MS = 15_000;
@@ -21,25 +21,42 @@ export const TRANSFER_MAX_BODY_BYTES = 8 * 1024;
 export const SUBMIT_MAX_BODY_BYTES = 64 * 1024;
 
 /**
- * 回数制限（固定窓）。超えたら 429。IP の扱いは通知の購読と同じ（ipRateName）。
+ * 回数制限（固定窓）。超えたら 429。IP ごとの枠は通知の購読と同じ（withinIpLimit。IPv6 は /64 と、その 8 倍の /48）。
  * 数えるのは形の検査を通ったあと、保存先を読み書きする前。今日の一問の送信と名前の変更は数えない
  * （数えること自体が保存先のコマンドを使う。送信には有効なセッションが要る）
  */
 export const RANKING_RATE_LIMITS = {
   /** 今日の一問の開始。IP ごと */
   start: { limit: 240, windowSec: 60 * 60 },
-  /** 引き継ぎコードの発行。IP ごと */
-  transfer: { limit: 100, windowSec: 60 * 60 },
+  /** 引き継ぎコードの発行。IP ごと（正当な利用は 1〜2 回で足りる） */
+  transfer: { limit: 10, windowSec: 60 * 60 },
+  /**
+   * 引き継ぎコードの発行。全体の TRANSFER_BUSY_AT 回目より後の発行での IP ごと（transfer と同じカウンタの回数で判定する。
+   * IPv6 の /48 は 8 倍）
+   */
+  transferBusy: { limit: 2, windowSec: 60 * 60 },
   /** 引き継ぎコードの発行。playerId ごと（playerId は端末が選べるので、主な歯止めは IP ごとの制限） */
   transferPlayer: { limit: 100, windowSec: 24 * 60 * 60 },
+  /**
+   * 引き継ぎコードの発行。全体（超えたら 429 でなく 503 と Retry-After）。コードは 1 件 約 4KB で 24 時間残るので、
+   * 多数の IP からの発行で保存先の容量を埋めさせない（代わりに、超えると窓が変わるまで誰も発行できない）
+   */
+  transferTotal: { limit: 300, windowSec: 60 * 60 },
   /** 引き継ぎコードの使用（形の正しいコードだけ。見つからないコードも数える）。IP ごと */
   claim: { limit: 100, windowSec: 60 * 60 },
 } as const;
+
+/** 窓の中で全体のこの回数目（全体の上限の 7 割）より後の発行は、IP ごとの上限を transferBusy に下げる */
+export const TRANSFER_BUSY_AT = 210;
+/** 全体の発行の回数のカウンタの名前 */
+export const TRANSFER_TOTAL_COUNTER = "xfer:total";
 
 export class RankingError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** 応答の Retry-After（秒）。無ければ付けない */
+    readonly retryAfterSec?: number,
   ) {
     super(message);
   }
@@ -48,13 +65,16 @@ export class RankingError extends Error {
 /** 要求元。route は必ず渡す（渡さなければ回数を数えない） */
 export type Client = { ip: string | null };
 
-async function limit(
-  store: RankingStore,
-  name: string,
-  rule: { limit: number; windowSec: number },
-  now: number,
-) {
+type Rule = { limit: number; windowSec: number };
+
+async function limit(store: RankingStore, name: string, rule: Rule, now: number) {
   if ((await store.incrRateWindow(name, rule.windowSec, now)) > rule.limit) {
+    throw new RankingError(429, "rate limited");
+  }
+}
+
+async function limitIp(store: RankingStore, prefix: string, client: Client, rule: Rule, now: number) {
+  if (!(await withinIpLimit(store, prefix, client.ip, rule, now))) {
     throw new RankingError(429, "rate limited");
   }
 }
@@ -132,7 +152,7 @@ export async function startDaily(
   const playerId = assertPlayerId(input.playerId);
   const difficulty = assertDifficulty(input.difficulty);
   // 問題の固定（dailyPuzzle）も保存先に書くので、その前に数える
-  if (client) await limit(store, `daily:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.start, now);
+  if (client) await limitIp(store, "daily:", client, RANKING_RATE_LIMITS.start, now);
   const date = jstDateKey(new Date(now));
   const session = await store.startSession({
     id: crypto.randomUUID(),
@@ -308,8 +328,13 @@ function newCode(): string {
 
 /**
  * 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える。保存する中身は UTF-8 で MAX_STATS_BYTES まで。
- * client を渡すと（route は必ず渡す）、IP ごと・playerId ごとの回数を制限する。IP を先に数え、IP で超えたら
- * playerId の分は数えない
+ * client を渡すと（route は必ず渡す）、IP ごと・playerId ごと・全体の回数を制限する。この順に数え、先の制限で
+ * 断った分は後の回数に数えない（1 つの IP が 429 を受けながら全体の枠を使い切れないように）。
+ * 全体の TRANSFER_BUSY_AT 回目より後は、IP ごとの上限を transferBusy に下げる（少ない IP で全体の枠の残りを使い切らせない）。
+ * 混雑かどうかは全体の INCR の戻り値で決める（読んでから数えると、同時に来た要求がそろって混雑の前と読む）ので、
+ * 判定は全体を数えたあと。全体を数えたあとで断った要求（混雑の段の 429・全体の上限の 503）は、playerId と全体の回数から
+ * 戻す（IP の回数にだけ残る）。全体に残るのは発行した分だけになり、断った要求で窓が閉じない。playerId も戻すのは、
+ * 混雑や満杯はその利用者のせいではなく、試し直すたびに 1 日の枠を減らさないため
  */
 export async function createTransfer(
   store: RankingStore,
@@ -323,8 +348,28 @@ export async function createTransfer(
   const payload = JSON.stringify({ playerId, name, stats });
   if (Buffer.byteLength(payload) > MAX_STATS_BYTES) throw new RankingError(400, "too large");
   if (client) {
-    await limit(store, `xfer:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.transfer, now);
-    await limit(store, `xfer:player:${playerId}`, RANKING_RATE_LIMITS.transferPlayer, now);
+    const { transfer, transferBusy, transferPlayer, transferTotal: total } = RANKING_RATE_LIMITS;
+    const ip = await countIp(store, "xfer:", client.ip, transfer, now);
+    if (!ip.within) throw new RankingError(429, "rate limited");
+    const player = `xfer:player:${playerId}`;
+    await limit(store, player, transferPlayer, now);
+    const nth = await store.incrRateWindow(TRANSFER_TOTAL_COUNTER, total.windowSec, now);
+    // ここから先で断る要求は、全体と playerId の回数から戻す（全体に残るのは発行した分だけにし、実際に全体の上限まで
+    // 発行するまで窓を閉じない）。同時に戻して、戻す前の超えた回数が見える間を短くする
+    const undo = () =>
+      Promise.all([
+        store.decrRateWindow(TRANSFER_TOTAL_COUNTER, total.windowSec, now),
+        store.decrRateWindow(player, transferPlayer.windowSec, now),
+      ]);
+    // 混雑の段を全体の上限より先に見る（全体を超えていても、混雑の段で断る要求は 429）
+    if (nth > TRANSFER_BUSY_AT && !ipCountsWithin(ip.counts, transferBusy.limit)) {
+      await undo();
+      throw new RankingError(429, "rate limited");
+    }
+    if (nth > total.limit) {
+      await undo();
+      throw new RankingError(503, "too many codes", rateWindowResetSec(total.windowSec, now));
+    }
   }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = newCode();
@@ -347,7 +392,7 @@ export async function claimTransfer(
 ) {
   const code = normalizeCode(input.code);
   if (!code) throw new RankingError(400, "invalid code");
-  if (client) await limit(store, `claim:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.claim, now);
+  if (client) await limitIp(store, "claim:", client, RANKING_RATE_LIMITS.claim, now);
   const raw = await store.takeTransfer(code);
   if (!raw) throw new RankingError(404, "code not found");
   const data = JSON.parse(raw) as { playerId: string; name: string | null; stats: unknown };

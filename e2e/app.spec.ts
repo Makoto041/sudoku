@@ -12,6 +12,8 @@ import {
 } from "@playwright/test";
 import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
+import { TECHNIQUE_NAME } from "../src/lib/sudoku/hint";
+import { candidatesOf, findAllSteps } from "../src/lib/sudoku/logic";
 import { answerOf, practiceItems, startNotes, type PracticeItem } from "../src/lib/sudoku/practice";
 import { PRACTICE_POSITIONS } from "../src/lib/sudoku/practice-data";
 import { solve } from "../src/lib/sudoku/solver";
@@ -34,6 +36,15 @@ async function shot(page: Page, name: string) {
 
 /** iPhone（WebKit の iPhone 15）のプロジェクトか */
 const isIphone = (info: TestInfo) => /iPhone/.test(info.project.use.userAgent ?? "");
+
+/**
+ * テストごとに回数制限の枠を分ける（引き継ぎコードの発行は IP ごとに 1 時間 10 回、アカウントの作成は 5 件など。
+ * サーバーは実行の間ずっと同じなので、iPhone とデスクトップでも分ける）。呼ぶたびに次の IP
+ */
+let ipCount = 0;
+const ipHeaders = (info: TestInfo) => ({
+  "x-forwarded-for": `${isIphone(info) ? "198.51.100" : "203.0.113"}.${++ipCount}`,
+});
 
 type Saved = {
   puzzle: number[];
@@ -118,6 +129,66 @@ test("フリープレイを最後まで解け、記録画面の始めた数・�
   await expect(metric(page, "フリープレイ", "最速")).toHaveText(/^\d{2}:\d{2}$/);
   // 途中で間違えたので、ノーミス最速は無い
   await expect(metric(page, "フリープレイ", "ノーミス最速")).toHaveText("-");
+});
+
+/** クリアの結果の「最初の誤り」の欄 */
+const firstMistakeRegion = (page: Page) =>
+  page.getByRole("dialog", { name: "クリア" }).getByRole("region", { name: "最初の誤り", exact: true });
+
+test("結果に最初の誤りを出す。間違いの表示がオフでも記録し、戻すで消しても、開き直しても残る", async ({
+  page,
+}) => {
+  // 間違いの表示をオフにする（再読み込みでは入れ直さない）
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("sudoku:settings"))
+      localStorage.setItem("sudoku:settings", JSON.stringify({ showMistakes: false }));
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const solution = g.solution!;
+  const cells = page.getByRole("gridcell");
+  // 2 マスに正しく置いてから、重複しない違う数字を入れられるマス（候補が 2 つ以上）に入れる（3 手目）。
+  // その盤面でシングルで決まるマス（ヒドゥンシングル）があればそこにする
+  const values = g.puzzle.slice();
+  for (const i of g.puzzle.flatMap((v, i) => (v ? [] : [i])).slice(0, 2)) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${solution[i]}`);
+    values[i] = solution[i];
+  }
+  const cands = candidatesOf(values);
+  const open = (i: number) => values[i] === 0 && digitsOf(cands[i]).length >= 2;
+  const step = findAllSteps(values, cands).find((s) => s.placement && open(s.placement.cell));
+  const cell = step ? step.placement!.cell : values.findIndex((_, i) => open(i));
+  const wrong = digitsOf(cands[cell]).find((d) => d !== solution[cell])!;
+  await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${wrong}`);
+  // 重複していないので、間違いの表示がオフなら「間違い」と読まない
+  await expect(cells.nth(cell)).toHaveAttribute("aria-label", `${cellAt(cell)} ${wrong}`);
+  // 戻すで盤面から消し、開き直す
+  await page.keyboard.press("KeyZ");
+  await expect.poll(async () => (await savedGame(page, "sudoku:free")).values[cell]).toBe(0);
+  await page.reload();
+  await page.getByRole("button", { name: /続きから/ }).click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  await fill(page, values, solution);
+
+  const region = firstMistakeRegion(page);
+  await expect(region).toBeVisible();
+  await expect(
+    region.getByText(`3手目 ${cellAt(cell)} ${wrong}（正解 ${solution[cell]}）`, { exact: true }),
+  ).toBeVisible();
+  const techniqueLine = region.getByText(/^その時点で確定できた手筋: /);
+  if (step)
+    await expect(techniqueLine).toHaveText(
+      `その時点で確定できた手筋: ${TECHNIQUE_NAME[step.trace.technique]}`,
+    );
+  else await expect(techniqueLine).toHaveCount(0);
+  await shot(page, "result-first-mistake");
 });
 
 test("途中のフリープレイを上書きして始めると、開始数と途中でやめた時間を記録する", async ({ page }) => {
@@ -290,6 +361,8 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   await page.keyboard.press(`Digit${solution[last]}`);
   await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
   await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  // ミスなしで解いたので、最初の誤りは出さない
+  await expect(firstMistakeRegion(page)).toHaveCount(0);
   await shot(page, "result-daily");
 
   await page.getByRole("button", { name: "ランキングを見る" }).click();
@@ -585,7 +658,9 @@ test("極の問題を作って遊び始められる", async ({ page }) => {
   await expect(page.locator(".bar-main")).toHaveText("極");
 });
 
-test("今日の一問を解くと連続日数が付き、記録画面のカレンダーに残る", async ({ page }, info) => {
+test("今日の一問を解くと連続日数が付き、記録画面のカレンダーに残る。結果に最初の誤りを出す", async ({
+  page,
+}, info) => {
   test.setTimeout(120_000);
   await page.goto("/");
   await page.locator(".daily-row").first().click();
@@ -597,6 +672,14 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
   );
   const g = await savedGame(page, key);
   const solution = solve(g.puzzle)!;
+  // 1 手目に違う数字を入れておく（解くときに正しい数字で上書きする）
+  const first = g.puzzle.indexOf(0);
+  const wrong = (solution[first] % 9) + 1;
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${wrong}`);
   const last = await fill(page, g.puzzle, solution, true);
   await page.waitForTimeout(15_500);
   await page
@@ -605,6 +688,11 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
     .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
   await page.keyboard.press(`Digit${solution[last]}`);
   await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  await expect(
+    firstMistakeRegion(page).getByText(`1手目 ${cellAt(first)} ${wrong}（正解 ${solution[first]}）`, {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "ホーム", exact: true }).click();
   await expect(page.locator(".streak-chip")).toHaveText("1日連続");
   await page.getByRole("button", { name: "記録" }).click();
@@ -614,7 +702,7 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
   await shot(page, "records");
 });
 
-test("引き継ぎコードで別の端末に同じプレイヤーとフリープレイの記録を移せる", async ({ browser }) => {
+test("引き継ぎコードで別の端末に同じプレイヤーとフリープレイの記録を移せる", async ({ browser }, info) => {
   const stats = {
     easy: {
       played: 2,
@@ -627,7 +715,7 @@ test("引き継ぎコードで別の端末に同じプレイヤーとフリー�
       abandonedMs: 30_000,
     },
   };
-  const a = await browser.newContext();
+  const a = await browser.newContext({ extraHTTPHeaders: ipHeaders(info) });
   const pa = await a.newPage();
   await pa.addInitScript((s) => {
     localStorage.setItem(
@@ -660,7 +748,8 @@ test("引き継ぎコードで別の端末に同じプレイヤーとフリー�
 
 test("記録の保存データに余計な項目が残る端末でも、検証した記録だけを送って引き継ぎコードを発行できる", async ({
   page,
-}) => {
+}, info) => {
+  await page.context().setExtraHTTPHeaders(ipHeaders(info));
   // 旧版や手で書き換えた保存データ。そのまま送るとサーバーの上限（4096 バイト）を超える
   const dirty = {
     easy: {
@@ -2313,6 +2402,8 @@ test("実績：フリープレイの合計 100 問目をヒントもミスもな
   const line = result.getByText("実績: ノーミスクリア、100問クリア", { exact: true });
   await expect(line).toBeVisible();
   await expectWithin(line, 320);
+  // ミスなしで解いたので、最初の誤りは出さない
+  await expect(firstMistakeRegion(page)).toHaveCount(0);
   await shot(page, "result-achievement-320");
 
   await result.getByRole("button", { name: "ホーム", exact: true }).click();
@@ -2982,9 +3073,10 @@ const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 /**
  * 旧 URL と新しい URL への通信を、テストのサーバー（baseURL）に振り向ける。ページからは https の 2 つの URL に見える。
  * 本文は圧縮せずに受け取る（受け取った本文は展開済みなので、圧縮の印が残るとブラウザが展開し直して壊れる）。
+ * headers は振り向けた通信に足す（x-forwarded-for で回数制限の枠を分ける）。
  * 振り向けた通信（メソッドと URL）と、テストの終わり（afterEach）に呼ぶ end を返す
  */
-async function routeHosts(context: BrowserContext, baseURL: string) {
+async function routeHosts(context: BrowserContext, baseURL: string, headers: Record<string, string> = {}) {
   const routed: string[] = [];
   let ended = false;
   // 振り向け漏れが本番に届かないよう、テストのサーバー以外への https の通信はすべて止める
@@ -3003,7 +3095,11 @@ async function routeHosts(context: BrowserContext, baseURL: string) {
         const response = await context.request.fetch(baseURL + url.pathname + url.search, {
           method: req.method(),
           data: req.postDataBuffer() ?? undefined,
-          headers: { "content-type": req.headers()["content-type"] ?? "", "accept-encoding": "identity" },
+          headers: {
+            ...headers,
+            "content-type": req.headers()["content-type"] ?? "",
+            "accept-encoding": "identity",
+          },
           maxRedirects: 0,
         });
         await route.fulfill({ response });
@@ -3057,8 +3153,11 @@ test.describe("URL の移行", () => {
   /** 振り向けた通信（routeHosts） */
   let routed: string[] = [];
   let endRouting = () => {};
-  test.beforeEach(async ({ context, baseURL }) => {
-    ({ routed, end: endRouting } = await routeHosts(context, baseURL!));
+  /** このテストの要求元（ページからの通信と issueCode で同じ IP にする） */
+  let ip: Record<string, string> = {};
+  test.beforeEach(async ({ context, baseURL }, info) => {
+    ip = ipHeaders(info);
+    ({ routed, end: endRouting } = await routeHosts(context, baseURL!, ip));
   });
   // afterEach は後片付け（context.close）より前に必ず走る
   test.afterEach(() => endRouting());
@@ -3097,6 +3196,7 @@ test.describe("URL の移行", () => {
   async function issueCode(request: APIRequestContext) {
     const res = await request.post("/api/player/transfer", {
       data: { playerId: MOVE_PLAYER.id, name: MOVE_PLAYER.name, stats: MOVE_STATS },
+      headers: ip,
     });
     expect(res.status()).toBe(200);
     return ((await res.json()) as { code: string }).code;
@@ -3627,15 +3727,6 @@ test.describe("アカウント（パスキー）", () => {
     totalMs: 300_000,
   };
   const CDP_ONLY = "仮想の認証器（CDP）は Chromium だけ";
-
-  /**
-   * テストごとに回数制限の枠を分ける（アカウントの作成は IP ごとに 1 時間 5 件、options の取得は 60 回。
-   * サーバーは実行の間ずっと同じなので、iPhone とデスクトップでも分ける）。呼ぶたびに次の IP
-   */
-  let ipCount = 0;
-  const ipHeaders = (info: TestInfo) => ({
-    "x-forwarded-for": `${isIphone(info) ? "198.51.100" : "203.0.113"}.${++ipCount}`,
-  });
 
   /** タブで初めて開いたときだけ保存データを入れる（読み込み直しても入れ直さない） */
   async function seed(page: Page, items: Record<string, unknown>) {

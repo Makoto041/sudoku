@@ -1922,6 +1922,14 @@ p {
   color: var(--ink-2);
 }
 
+/* 最初の誤りの 1 行（何手目・マス・数字）。要る手筋の札と同じ大きさにする */
+.result-mistake {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
 .result-actions {
   width: 100%;
   display: flex;

@@ -331,8 +331,7 @@ describe("パスキーの応答の検査", () => {
 describe("回数制限", () => {
   it("challenge の発行は IP ごとに 1 時間 60 回まで（signup と login を合わせて数える）", async () => {
     const s = fakeSetup();
-    const { limit, windowSec } = AUTH_RATE_LIMITS.chal;
-    expect([limit, windowSec]).toEqual([60, 3600]);
+    const limit = 60;
     const at = Math.floor(T0 / 3_600_000) * 3_600_000;
     for (let i = 0; i < limit; i++) {
       const p =
@@ -360,8 +359,7 @@ describe("回数制限", () => {
 
   it("アカウントの作成は IP ごとに 1 時間 5 件まで。検証に失敗したものと、数える前に確かめる紐づけ済みの playerId（409）は数えない", async () => {
     const s = fakeSetup();
-    const { limit, windowSec } = AUTH_RATE_LIMITS.signup;
-    expect([limit, windowSec]).toEqual([5, 3600]);
+    const limit = 5;
     s.fake.state.verified = false;
     for (let i = 0; i < 10; i++) await expectError(signup(s, player(100 + i), b64(`bad-${i}`)), 400);
     s.fake.state.verified = true;

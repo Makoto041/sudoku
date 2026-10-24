@@ -94,6 +94,8 @@ export interface RankingStore {
    * キーに窓の番号を入れる（窓が変われば別のカウンタになる）。カウンタは最後に数えてから windowSec で消える
    */
   incrRateWindow(name: string, windowSec: number, now: number): Promise<number>;
+  /** incrRateWindow で数えた 1 回を戻す（数えたあとで断った要求を、回数に残さないため） */
+  decrRateWindow(name: string, windowSec: number, now: number): Promise<void>;
 }
 
 /** 通知の購読。endpoint は検査して正規化したもの、鍵は base64url */
@@ -147,6 +149,12 @@ const PUSH_FAIL_TTL_MS = PUSH_FAIL_TTL_SEC * 1000;
 // 回数制限のカウンタ。name は "ip:{IP の SHA-256}" など（生の IP は入れない）
 const rateKey = (name: string, windowSec: number, now: number) =>
   `${PREFIX}:push:rl:${name}:${Math.floor(now / (windowSec * 1000))}`;
+
+/** 回数制限の窓（rateKey の区切り）が変わるまでの秒数（1 以上。Retry-After に使う） */
+export function rateWindowResetSec(windowSec: number, now: number): number {
+  const windowMs = windowSec * 1000;
+  return Math.ceil((windowMs - (now % windowMs)) / 1000);
+}
 
 function toPushSub(raw: string | null): PushSub | null {
   if (!raw) return null;
@@ -388,6 +396,12 @@ export class RedisStore implements RankingStore {
     const [count] = await this.redis.pipeline().incr(key).expire(key, windowSec).exec();
     return Number(count);
   }
+
+  async decrRateWindow(name: string, windowSec: number, now: number) {
+    // キーは直前に数えたもので期限も付いているが、無かったとき（追い出しなど）に期限なしで残さないよう付け直す
+    const key = rateKey(name, windowSec, now);
+    await this.redis.pipeline().decr(key).expire(key, windowSec).exec();
+  }
 }
 
 /** ローカル開発・テスト用。プロセスが落ちると消える */
@@ -595,6 +609,11 @@ export class MemoryStore implements RankingStore {
     v.expiresAt = now + windowSec * 1000;
     this.rateWindows.set(key, v);
     return v.count;
+  }
+
+  async decrRateWindow(name: string, windowSec: number, now: number) {
+    const v = this.rateWindows.get(rateKey(name, windowSec, now));
+    if (v && v.expiresAt > now) v.count--;
   }
 
   /** テスト用：回数制限のカウンタのキー */
