@@ -12,7 +12,7 @@ import {
   type LogicLevel,
   type TechniqueId,
 } from "./logic";
-import { countSolutions, solve } from "./solver";
+import { countSolutions, countSolutionsWithin, solve } from "./solver";
 
 // 極は作るのに時間がかかるので、まとめて回すテストからは外し、下で個別に確かめる
 const BANDED = DIFFICULTIES.filter((d) => d !== "extreme");
@@ -37,6 +37,18 @@ describe("solver", () => {
     const broken = CLASSIC.slice();
     broken[2] = 5; // 同じ行に 5 が 2 つ
     expect(countSolutions(broken)).toBe(0);
+  });
+
+  it("置く回数の上限までに数え終われば countSolutions と同じ数、終わらなければ null", () => {
+    const broken = CLASSIC.slice();
+    broken[2] = 5;
+    for (const grid of [CLASSIC, Array(81).fill(0), broken]) {
+      expect(countSolutionsWithin(grid, 2, 100_000)).toBe(countSolutions(grid, 2));
+    }
+    // CLASSIC は 51 回置いて確かめ終わる
+    expect(countSolutionsWithin(CLASSIC, 2, 51)).toBe(1);
+    expect(countSolutionsWithin(CLASSIC, 2, 50)).toBeNull();
+    expect(countSolutionsWithin(CLASSIC, 2, 0)).toBeNull();
   });
 });
 

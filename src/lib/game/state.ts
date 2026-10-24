@@ -29,7 +29,7 @@ export type GameState = {
   version: 1;
   mode: Mode;
   difficulty: Difficulty;
-  /** フリープレイのシード、または日次の日付 */
+  /** フリープレイのシード（共有された盤面は shared:盤面）、または日次の日付 */
   seed: string;
   puzzle: Grid;
   /**

@@ -44,6 +44,7 @@ import {
   navigationAllowsClaim,
   parseMoveHash,
 } from "@/lib/client/move";
+import { parseShared, withoutShared, type SharedPuzzle } from "@/lib/client/sharedPuzzle";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -73,7 +74,8 @@ type SheetState =
   | { kind: "settings" }
   | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
-  | { kind: "confirmFree"; difficulty: Difficulty }
+  /** shared は共有された盤面を始めるとき */
+  | { kind: "confirmFree"; difficulty: Difficulty; shared?: SharedPuzzle }
   | { kind: "move" }
   | { kind: "claim"; code: string; push: boolean; replace: boolean }
   | { kind: "account" }
@@ -104,6 +106,12 @@ function loadGame(key: string): GameState | null {
   return g && g.version === 1 && Array.isArray(g.values) && g.values.length === 81 ? g : null;
 }
 
+/** 途中のフリープレイがあるか（1 手以上進めて、解き終えていない）。新しく始めるときは確かめる */
+function freeInProgress(): boolean {
+  const cur = loadGame(KEYS.free);
+  return !!cur && cur.status !== "solved" && cur.history.length > 0;
+}
+
 export function App() {
   const [mounted, setMounted] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -123,6 +131,8 @@ export function App() {
   const [account, setAccount] = useState<AccountState>({ status: "loading" });
   /** 旧 URL のページから開かれたときの引き継ぎのリンク（受け取るシートを開く前） */
   const [claimLink, setClaimLink] = useState<{ code: string; push: boolean; replace: boolean } | null>(null);
+  /** 開いた URL の共有された盤面（始める前） */
+  const [sharedLink, setSharedLink] = useState<SharedPuzzle | null>(null);
 
   useEffect(() => {
     // 記録があるかは、開いたときに作る保存データ（プレイヤー・実績など）を書く前に見る
@@ -138,6 +148,18 @@ export function App() {
     // （ほかのページから送られたリンクで、1 回のタップでプレイヤーを差し替えられないように。ほかは設定から入力する）
     const link = parseMoveHash(location.hash);
     if (link) history.replaceState(history.state, "", location.pathname + location.search);
+    // 共有された盤面（?p=）も通信の前に読み、URL から消す（履歴やリファラに盤面を残さない。ほかのパラメータは残す）。
+    // 旧 URL では読まない（移る案内を出す。共有の URL は新しい URL で作る）
+    const shared = onLegacy ? null : parseShared(location.search);
+    if (shared) {
+      history.replaceState(
+        history.state,
+        "",
+        location.pathname + withoutShared(location.search) + location.hash,
+      );
+      if (shared.ok) setSharedLink(shared.puzzle);
+      else setError("読み込めない盤面です");
+    }
     const [navigation] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
     if (onLegacy) {
       setLegacy({ standalone: iosStandalone() });
@@ -324,6 +346,16 @@ export function App() {
   // 問題を作っている間は新しく始めない。続けて押されると、先に作った問題を途中の問題として開始数を二重に数える
   // （state はボタンを描き直すまで反映されないので ref で止める）
   const generatingRef = useRef(false);
+  /** フリープレイを始める。途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない） */
+  const beginFree = useCallback(
+    (game: GameState) => {
+      const prev = loadGame(KEYS.free);
+      recordFreeStart(game.difficulty, prev && prev.status !== "solved" ? prev : null);
+      save(KEYS.free, game);
+      openGame(game);
+    },
+    [openGame],
+  );
   const startFree = useCallback(
     (difficulty: Difficulty) => {
       if (generatingRef.current) return;
@@ -339,31 +371,37 @@ export function App() {
             difficulty === "extreme"
               ? await generateExtremeAsync(freeSeed(), 24)
               : generatePuzzle(freeSeed(), difficulty);
-          const game = newGame({
-            mode: "free",
-            difficulty,
-            seed: p.seed,
-            puzzle: p.puzzle,
-            solution: p.solution,
-          });
-          // 途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない）
-          const prev = loadGame(KEYS.free);
-          recordFreeStart(difficulty, prev && prev.status !== "solved" ? prev : null);
-          save(KEYS.free, game);
-          openGame(game);
+          beginFree(
+            newGame({
+              mode: "free",
+              difficulty,
+              seed: p.seed,
+              puzzle: p.puzzle,
+              solution: p.solution,
+            }),
+          );
         } finally {
           generatingRef.current = false;
           setGenerating(null);
         }
       }, 30);
     },
-    [openGame],
+    [beginFree],
+  );
+
+  /** 共有された盤面をフリープレイとして始める（記録・実績にも数える） */
+  const startShared = useCallback(
+    (shared: SharedPuzzle) => {
+      if (generatingRef.current) return;
+      setSheet(null);
+      beginFree(newGame({ mode: "free", ...shared }));
+    },
+    [beginFree],
   );
 
   const requestFree = useCallback(
     (difficulty: Difficulty) => {
-      const cur = loadGame(KEYS.free);
-      if (cur && cur.status !== "solved" && cur.history.length > 0) {
+      if (freeInProgress()) {
         sfx.tap();
         setSheet({ kind: "confirmFree", difficulty });
       } else {
@@ -372,6 +410,16 @@ export function App() {
     },
     [startFree],
   );
+
+  // 開いた URL の共有された盤面は、途中のフリープレイがあれば確かめてから始める
+  // （開いただけなので音は鳴らさない。鳴らすと、最初に触れたときに遅れて鳴る）
+  useEffect(() => {
+    if (!sharedLink) return;
+    setSharedLink(null);
+    if (freeInProgress())
+      setSheet({ kind: "confirmFree", difficulty: sharedLink.difficulty, shared: sharedLink });
+    else startShared(sharedLink);
+  }, [sharedLink, startShared]);
 
   // 手筋の練習。局面のデータは一覧を開くときに読む（最初の読み込みに含めない）
   const [practice, setPractice] = useState<PracticeItem[] | null>(null);
@@ -801,7 +849,12 @@ export function App() {
           title="新しい問題を始めますか？"
           body="途中のフリープレイは消えます。"
           confirm="新しく始める"
-          onConfirm={() => startFree(sheet.difficulty)}
+          onConfirm={() => {
+            if (sheet.shared) {
+              sfx.tap();
+              startShared(sheet.shared);
+            } else startFree(sheet.difficulty);
+          }}
           onClose={() => setSheet(null)}
         />
       )}
