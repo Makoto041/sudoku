@@ -1,5 +1,7 @@
 // オフラインでもフリープレイを遊べるようにするための Service Worker
-const CACHE = "sudoku-v2";
+// 版を上げると、この Service Worker が入れ替わり、保存済みの応答（ヘッダーごと保存する）を取り直す。
+// v3: セキュリティヘッダー（CSP など）を付けた。前の版で保存したトップには CSP が付いていない
+const CACHE = "sudoku-v3";
 const PRECACHE = [
   "/",
   "/manifest.webmanifest",
