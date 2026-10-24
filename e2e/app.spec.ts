@@ -1221,8 +1221,10 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
         style: getComputedStyle(el).textDecorationStyle,
       }));
 
-  // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない
-  await page.keyboard.press("h");
+  // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない。
+  // ヒントはボタンで開く（キーを受け付けるのは盤面を描いた後の useEffect からなので、描いた直後の H キーは
+  // 取りこぼすことがある。H キーは「ヒントの前に確認」のテストで確かめる）
+  await page.getByRole("button", { name: "ヒント", exact: true }).click();
   await expect(page.locator(".cell.hint-focus").first()).toBeVisible();
   const focus = Number(await page.locator(".cell.hint-focus").first().getAttribute("data-i"));
   await press(focus);
@@ -2575,10 +2577,11 @@ const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 /**
  * 旧 URL と新しい URL への通信を、テストのサーバー（baseURL）に振り向ける。ページからは https の 2 つの URL に見える。
  * 本文は圧縮せずに受け取る（受け取った本文は展開済みなので、圧縮の印が残るとブラウザが展開し直して壊れる）。
- * 振り向けた通信（メソッドと URL）を返す
+ * 振り向けた通信（メソッドと URL）と、テストの終わり（afterEach）に呼ぶ end を返す
  */
 async function routeHosts(context: BrowserContext, baseURL: string) {
   const routed: string[] = [];
+  let ended = false;
   // 振り向け漏れが本番に届かないよう、テストのサーバー以外への https の通信はすべて止める
   // （後から登録した route が優先されるので、下の振り向けはそのまま動く）
   const local = new URL(baseURL).origin;
@@ -2591,16 +2594,29 @@ async function routeHosts(context: BrowserContext, baseURL: string) {
       const req = route.request();
       const url = new URL(req.url());
       routed.push(`${req.method()} ${url.origin}${url.pathname}`);
-      const response = await context.request.fetch(baseURL + url.pathname + url.search, {
-        method: req.method(),
-        data: req.postDataBuffer() ?? undefined,
-        headers: { "content-type": req.headers()["content-type"] ?? "", "accept-encoding": "identity" },
-        maxRedirects: 0,
-      });
-      await route.fulfill({ response });
+      try {
+        const response = await context.request.fetch(baseURL + url.pathname + url.search, {
+          method: req.method(),
+          data: req.postDataBuffer() ?? undefined,
+          headers: { "content-type": req.headers()["content-type"] ?? "", "accept-encoding": "identity" },
+          maxRedirects: 0,
+        });
+        await route.fulfill({ response });
+      } catch (e) {
+        // 後片付けの context.close() は、ページを閉じる前に context.request を破棄し、受け取った本文も消す。
+        // テストが待たずに終えた通信（最後に開いたページの履歴の取得など）が振り向けの途中だと、
+        // fetch や fulfill が失敗する（Fetch response has been disposed）。テストの後なので失敗にしない。
+        // unrouteAll({ behavior: "ignoreErrors" }) と同じだが、route は外さない（外すと残りの通信が本番に届く）
+        if (!ended) throw e;
+      }
     });
   }
-  return routed;
+  return {
+    routed,
+    end: () => {
+      ended = true;
+    },
+  };
 }
 
 /** 旧 URL の端末にだけ保存データを入れる（新しい URL の端末は空のまま） */
@@ -2635,9 +2651,12 @@ test.describe("URL の移行", () => {
 
   /** 振り向けた通信（routeHosts） */
   let routed: string[] = [];
+  let endRouting = () => {};
   test.beforeEach(async ({ context, baseURL }) => {
-    routed = await routeHosts(context, baseURL!);
+    ({ routed, end: endRouting } = await routeHosts(context, baseURL!));
   });
+  // afterEach は後片付け（context.close）より前に必ず走る
+  test.afterEach(() => endRouting());
   const claimRequests = () => routed.filter((r) => r === `POST ${SITE_ORIGIN}/api/player/claim`);
 
   const MOVE_PLAYER = { id: "77777777-7777-4777-8777-777777777777", name: "旧URL" };
