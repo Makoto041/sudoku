@@ -155,6 +155,7 @@ export function describeError(err: unknown): string {
     if (err.status === 404) return "記録の期限が切れています";
     if (err.status === 409) return "記録済みです";
     if (err.status === 422) return "記録できませんでした";
+    if (err.status === 429) return "しばらくしてからもう一度試してください";
   }
   return "通信に失敗しました";
 }

@@ -1,8 +1,10 @@
 import { handle, readJson } from "@/lib/server/http";
-import { submitDaily } from "@/lib/server/ranking";
+import { SUBMIT_MAX_BODY_BYTES, submitDaily } from "@/lib/server/ranking";
 
 export const dynamic = "force-dynamic";
 
 export function POST(req: Request) {
-  return handle(async (store) => submitDaily(store, await readJson(req)));
+  return handle(async (store) =>
+    submitDaily(store, await readJson(req, { maxBytes: SUBMIT_MAX_BODY_BYTES })),
+  );
 }

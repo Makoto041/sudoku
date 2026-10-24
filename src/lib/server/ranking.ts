@@ -2,6 +2,7 @@ import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficult
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { CODE_ALPHABET, CODE_LENGTH, normalizeCode } from "@/lib/transfer-code";
+import { ipRateName } from "./push";
 import type { BoardKey, RankingStore, Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
@@ -9,12 +10,52 @@ export const MIN_PLAUSIBLE_MS = 15_000;
 export const LEADERBOARD_LIMIT = 50;
 export const NAME_MAX = 12;
 
+/** 本文の上限（今日の一問の開始・名前の変更・引き継ぎコードの使用） */
+export const RANKING_MAX_BODY_BYTES = 1024;
+/** 本文の上限（引き継ぎコードの発行。保存する中身は MAX_STATS_BYTES まで） */
+export const TRANSFER_MAX_BODY_BYTES = 8 * 1024;
+/**
+ * 本文の上限（今日の一問の送信）。端末は手の時刻を整数の ms で送る。手の記録が MAX_MOVES 手で、時刻がすべて
+ * 安全な整数の最も長い形（-9007199254740991）でも、本文は約 50KB に収まる
+ */
+export const SUBMIT_MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * 回数制限（固定窓）。超えたら 429。IP の扱いは通知の購読と同じ（ipRateName）。
+ * 数えるのは形の検査を通ったあと、保存先を読み書きする前。今日の一問の送信と名前の変更は数えない
+ * （数えること自体が保存先のコマンドを使う。送信には有効なセッションが要る）
+ */
+export const RANKING_RATE_LIMITS = {
+  /** 今日の一問の開始。IP ごと */
+  start: { limit: 240, windowSec: 60 * 60 },
+  /** 引き継ぎコードの発行。IP ごと */
+  transfer: { limit: 100, windowSec: 60 * 60 },
+  /** 引き継ぎコードの発行。playerId ごと（playerId は端末が選べるので、主な歯止めは IP ごとの制限） */
+  transferPlayer: { limit: 100, windowSec: 24 * 60 * 60 },
+  /** 引き継ぎコードの使用（形の正しいコードだけ。見つからないコードも数える）。IP ごと */
+  claim: { limit: 100, windowSec: 60 * 60 },
+} as const;
+
 export class RankingError extends Error {
   constructor(
     readonly status: number,
     message: string,
   ) {
     super(message);
+  }
+}
+
+/** 要求元。route は必ず渡す（渡さなければ回数を数えない） */
+export type Client = { ip: string | null };
+
+async function limit(
+  store: RankingStore,
+  name: string,
+  rule: { limit: number; windowSec: number },
+  now: number,
+) {
+  if ((await store.incrRateWindow(name, rule.windowSec, now)) > rule.limit) {
+    throw new RankingError(429, "rate limited");
   }
 }
 
@@ -81,13 +122,17 @@ export async function dailyPuzzle(
   return puzzle;
 }
 
+/** 今日の一問を始める。client を渡すと（route は必ず渡す）、IP ごとの回数を RANKING_RATE_LIMITS.start で制限する */
 export async function startDaily(
   store: RankingStore,
   input: { playerId?: unknown; difficulty?: unknown },
   now = Date.now(),
+  client?: Client,
 ) {
   const playerId = assertPlayerId(input.playerId);
   const difficulty = assertDifficulty(input.difficulty);
+  // 問題の固定（dailyPuzzle）も保存先に書くので、その前に数える
+  if (client) await limit(store, `daily:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.start, now);
   const date = jstDateKey(new Date(now));
   const session = await store.startSession({
     id: crypto.randomUUID(),
@@ -160,7 +205,7 @@ export async function submitDaily(
   };
 }
 
-const MAX_MOVES = 2000;
+export const MAX_MOVES = 2000;
 
 /** 手の記録 [開始からの ms, マス, 数字][] を検査する。無ければ空（古い端末から） */
 function parseMoves(value: unknown): MoveLog {
@@ -261,17 +306,26 @@ function newCode(): string {
   return [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
 }
 
-/** 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える */
+/**
+ * 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える。保存する中身は UTF-8 で MAX_STATS_BYTES まで。
+ * client を渡すと（route は必ず渡す）、IP ごと・playerId ごとの回数を制限する。IP を先に数え、IP で超えたら
+ * playerId の分は数えない
+ */
 export async function createTransfer(
   store: RankingStore,
   input: { playerId?: unknown; name?: unknown; stats?: unknown },
   now = Date.now(),
+  client?: Client,
 ) {
   const playerId = assertPlayerId(input.playerId);
   const name = input.name === null || input.name === undefined ? null : sanitizeName(input.name);
   const stats = input.stats ?? null;
   const payload = JSON.stringify({ playerId, name, stats });
-  if (payload.length > MAX_STATS_BYTES) throw new RankingError(400, "too large");
+  if (Buffer.byteLength(payload) > MAX_STATS_BYTES) throw new RankingError(400, "too large");
+  if (client) {
+    await limit(store, `xfer:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.transfer, now);
+    await limit(store, `xfer:player:${playerId}`, RANKING_RATE_LIMITS.transferPlayer, now);
+  }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = newCode();
     if (await store.putTransfer(code, payload, TRANSFER_TTL_SEC)) {
@@ -281,10 +335,19 @@ export async function createTransfer(
   throw new RankingError(500, "could not create code");
 }
 
-/** 引き継ぎコードを使う。プレイヤー ID・名前・端末の記録を返し、コードは消える */
-export async function claimTransfer(store: RankingStore, input: { code?: unknown }) {
+/**
+ * 引き継ぎコードを使う。プレイヤー ID・名前・端末の記録を返し、コードは消える。
+ * client を渡すと（route は必ず渡す）、形の正しいコードの使用を IP ごとに制限する（見つからないコードも数える）
+ */
+export async function claimTransfer(
+  store: RankingStore,
+  input: { code?: unknown },
+  now = Date.now(),
+  client?: Client,
+) {
   const code = normalizeCode(input.code);
   if (!code) throw new RankingError(400, "invalid code");
+  if (client) await limit(store, `claim:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.claim, now);
   const raw = await store.takeTransfer(code);
   if (!raw) throw new RankingError(404, "code not found");
   const data = JSON.parse(raw) as { playerId: string; name: string | null; stats: unknown };
