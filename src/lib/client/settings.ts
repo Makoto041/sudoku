@@ -1,3 +1,4 @@
+import { parseTextSize, parseTheme, type TextSize, type Theme } from "./display";
 import { KEYS, load, save } from "./storage";
 
 export type Settings = {
@@ -17,6 +18,10 @@ export type Settings = {
   unitFx: boolean;
   /** ヒントを開く前に確認する（ヒントを使うとコンボが切れる） */
   confirmHint: boolean;
+  /** テーマ。開いたときは <head> のスクリプトもこの値を読む（display.ts） */
+  theme: Theme;
+  /** 文字サイズ。テーマと同じく <head> のスクリプトも読む */
+  textSize: TextSize;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -29,10 +34,14 @@ export const DEFAULT_SETTINGS: Settings = {
   autoClearNotes: true,
   unitFx: true,
   confirmHint: false,
+  theme: "auto",
+  textSize: "normal",
 };
 
 export function loadSettings(): Settings {
-  return { ...DEFAULT_SETTINGS, ...(load<Partial<Settings>>(KEYS.settings) ?? {}) };
+  const settings = { ...DEFAULT_SETTINGS, ...(load<Partial<Settings>>(KEYS.settings) ?? {}) };
+  // テーマと文字サイズは <html> の属性にするので、決まった値だけを通す（ほかは既定にする）
+  return { ...settings, theme: parseTheme(settings.theme), textSize: parseTextSize(settings.textSize) };
 }
 
 export function saveSettings(settings: Settings) {

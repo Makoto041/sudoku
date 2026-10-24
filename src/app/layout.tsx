@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { DISPLAY_SCRIPT, THEME_COLORS } from "@/lib/client/display";
 import { SITE_ORIGIN } from "@/lib/site";
 import "./globals.css";
 
@@ -20,21 +21,26 @@ export const metadata: Metadata = {
   },
 };
 
+// ピンチで拡大できるようにする（maximumScale・userScalable は付けない）。
+// ダブルタップでの拡大は、ゲームの画面とボタンの touch-action で止める（globals.css）
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   viewportFit: "cover",
+  // テーマが自動のときの色。テーマを選んだときは、その色の theme-color を先頭に足す（display.ts）
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f5f4f0" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f0f11" },
+    { media: "(prefers-color-scheme: light)", color: THEME_COLORS.light },
+    { media: "(prefers-color-scheme: dark)", color: THEME_COLORS.dark },
   ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ja">
+    // <html> の data-theme・data-text-size は、描画の前に下のスクリプトが付ける（サーバーの HTML には無い）
+    <html lang="ja" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: DISPLAY_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );

@@ -39,6 +39,7 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
   - iPhone のホーム画面に追加したアプリは Safari と保存場所が別なので、記録もログインも別になる。両方でログインすれば同じプレイヤーで遊べる。
   - パスキーを失うと、アカウントに戻る手段は無い。
 - 設定: 効果音・振動、間違いの表示、同じ数字や行・列・ブロックの強調、残りの数の表示、揃ったときの光、周りのメモの自動消去、ヒントの前の確認を、それぞれオン／オフできます。点数には影響しません。
+- **表示**: 設定の「テーマ」で自動（端末の設定に従う）・ライト・ダーク、「文字サイズ」で標準・大・特大を選べる。端末ごとの設定で、引き継ぎ・アカウントの対象外。ピンチで拡大できる（盤面の上を除く）。しくみは「表示の設定」を参照。
 - **毎日の通知**: 設定の「毎日の通知」でオンにすると、今日の一問を 1 問もクリアしていない日の 20 時（日本時間）に通知が届く。iPhone・iPad では、ホーム画面に追加したアプリ（iOS 16.4 以降）でだけ設定できる。端末にはオンにしたことだけを保存する（引き継ぎの対象外）。サーバーに保存するものは「リマインド通知（Web Push）」を参照。
 
 ## URL の移行
@@ -89,6 +90,20 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 | `src/lib/server/`    | ランキング API・通知の購読・アカウント（パスキー）の中身。保存先は Upstash Redis（ローカルとテストはメモリ）   |
 | `src/app/api/`       | Route Handlers（`/api/daily/*`, `/api/leaderboard`, `/api/player`, `/api/push`, `/api/cron/*`, `/api/auth/*`） |
 | `public/sw.js`       | Service Worker。静的ファイルをキャッシュし、オフラインでもフリープレイを開ける。毎日の通知を表示する           |
+
+### 表示の設定
+
+- 保存先は設定（`sudoku:settings`）の `theme`（`auto`・`light`・`dark`）と `textSize`（`normal`・`large`・`xlarge`）。決まった値でなければ既定（自動・標準）にする。サーバーには送らない。
+- `<html>` の `data-theme`・`data-text-size` で効かせる（既定では付けない）。開いたときは `<head>` のインラインのスクリプト（`src/lib/client/display.ts` の `DISPLAY_SCRIPT`）が最初の描画の前に付けるので、既定の見た目が一瞬出ることはない。設定を変えたときは `applyDisplay` で付け直す。localStorage が使えない・値が壊れているときは何も付けない（例外は出さない）。
+- テーマ:
+  - ダークの色は、`@media (prefers-color-scheme: dark)` の中の `:root:not([data-theme="light"])` と `:root[data-theme="dark"]` の 2 か所に同じ値を書く（`src/lib/client/display.test.ts` で同じか確かめる）。テーマを選んだときは `color-scheme` もそのテーマにする。
+  - theme-color は、自動では端末の設定に合わせた 2 つ（`src/app/layout.tsx` の `viewport`）。テーマを選んだときは、その色の theme-color（`#theme-color-fixed`）を `<head>` の先頭に足す（先頭の当てはまるものが使われる）。その値は大文字で書く（React は hydration で `<meta>` を name と content で探すので、同じ文字列だと端末の設定に合わせたものと取り違える）。manifest の `theme_color` はライトの色のまま。
+- 文字サイズ:
+  - 文字の大きさは rem で書き、ルートの大きさを `--text-scale`（標準 1・大 1.15・特大 1.3）で変える。標準はブラウザの既定の大きさ（ふつう 16px）のまま。
+  - 盤面の大きさは画面で決まるので変えない。盤面の数字には同じ倍率を、メモには 1.2 倍までを掛ける（3×3 の枠に収まるように）。
+  - フリープレイと練習のツールの名前は、並びの幅に合わせた大きさを超えない。ロゴ・結果の見出しと点数・連続日数・引き継ぎコード・ツールのバッジは大きくしない。
+- 拡大: viewport に `maximum-scale`・`user-scalable` を付けない。ゲームの画面（`.game`）とボタンは `touch-action: manipulation` でダブルタップの拡大を止める。盤面は `touch-action: none`（なぞって選ぶため。盤面の上ではピンチでも拡大しない）。
+- 既知の限界: 実機の iOS Safari とホーム画面に追加したアプリで、ダブルタップで拡大しないこと・ピンチで拡大できること・ステータスバーなどの色が選んだテーマに合うことは確かめていない。
 
 ### スコア
 
@@ -162,7 +177,7 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 ### セキュリティヘッダー
 
 - 全パス（ページ・API・静的ファイル・`/sw.js`）に付ける（`next.config.ts` の `headers()`。中身は `src/lib/security-headers.ts`）。
-- CSP: スクリプト・画像・通信などの先は同じ origin だけ。nonce は使わず、インラインの `<script>` とスタイルは `'unsafe-inline'` で許す（nonce にするとページを毎回サーバーで描画することになり、関数の実行が増える）。属性のハンドラ（`onclick` など）は使っていないので `script-src-attr 'none'` で止める。`'unsafe-eval'` は `next dev` のときだけ足す（`next.config.ts` の phase で見る）。外部のスクリプト・画像・通信先を使うときは CSP にも足す（足さないと読み込めない）。
+- CSP: スクリプト・画像・通信などの先は同じ origin だけ。nonce は使わず、インラインの `<script>` とスタイルは `'unsafe-inline'` で許す（nonce にするとページを毎回サーバーで描画することになり、関数の実行が増える）。表示の設定を最初の描画の前に付ける `<head>` のスクリプトも、これで動く。属性のハンドラ（`onclick` など）は使っていないので `script-src-attr 'none'` で止める。`'unsafe-eval'` は `next dev` のときだけ足す（`next.config.ts` の phase で見る）。外部のスクリプト・画像・通信先を使うときは CSP にも足す（足さないと読み込めない）。
 - iframe への埋め込みは `frame-ancestors 'none'` と `X-Frame-Options: DENY` で止める。
 - `Referrer-Policy: strict-origin-when-cross-origin`。`no-referrer` などにしない（新しい URL は旧 URL から開かれたかを `document.referrer` で見る。「URL の移行」を参照）。
 - ほか: `X-Content-Type-Options: nosniff`、`Cross-Origin-Opener-Policy: same-origin`（ポップアップと `window.opener` は使っていない）、`Permissions-Policy` でカメラ・マイク・位置情報だけを止める（触覚・通知・パスキー・共有は止めない）。

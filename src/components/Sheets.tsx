@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import type { Difficulty } from "@/lib/sudoku/core";
 import {
@@ -14,6 +14,7 @@ import {
 } from "@/lib/client/account";
 import { ApiError, describeError, describeIssueError } from "@/lib/client/api";
 import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
+import type { TextSize, Theme } from "@/lib/client/display";
 import type { Settings } from "@/lib/client/settings";
 import { SITE_HOST } from "@/lib/site";
 import { formatCode } from "@/lib/transfer-code";
@@ -123,6 +124,57 @@ function Toggle({
   );
 }
 
+const THEME_OPTIONS: [Theme, string][] = [
+  ["auto", "自動"],
+  ["light", "ライト"],
+  ["dark", "ダーク"],
+];
+
+const TEXT_SIZE_OPTIONS: [TextSize, string][] = [
+  ["normal", "標準"],
+  ["large", "大"],
+  ["xlarge", "特大"],
+];
+
+/** いくつかから 1 つを選ぶ項目（ラジオボタン。矢印キーでも選べる） */
+function Choice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: [T, string][];
+  onChange: (v: T) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="choice-row" role="radiogroup" aria-labelledby={id}>
+      <span id={id} className="toggle-label">
+        {label}
+      </span>
+      <div className="segmented">
+        {options.map(([v, text]) => (
+          <label key={v} className={v === value ? "is-active" : undefined}>
+            <input
+              type="radio"
+              name={id}
+              value={v}
+              checked={v === value}
+              onChange={() => {
+                onChange(v);
+                sfx.tap();
+              }}
+            />
+            {text}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** 毎日の通知の注記。届く条件は src/lib/server/push.ts の sendReminders と vercel.json の cron に合わせる */
 const REMINDER_NOTES: Record<Exclude<PushState, "unavailable">, string> = {
   on: "今日の一問を 1 問もクリアしていない日の 20 時（日本時間）",
@@ -219,6 +271,18 @@ export function SettingsSheet({
         <Toggle label="効果音" checked={settings.sound} onChange={(v) => set({ sound: v })} />
         <Toggle label="振動" checked={settings.haptics} onChange={(v) => set({ haptics: v })} />
         <h3 className="toggle-heading">表示</h3>
+        <Choice
+          label="テーマ"
+          value={settings.theme}
+          options={THEME_OPTIONS}
+          onChange={(v) => set({ theme: v })}
+        />
+        <Choice
+          label="文字サイズ"
+          value={settings.textSize}
+          options={TEXT_SIZE_OPTIONS}
+          onChange={(v) => set({ textSize: v })}
+        />
         <Toggle
           label="間違いをすぐ表示"
           checked={settings.showMistakes}
