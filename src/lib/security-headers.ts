@@ -6,7 +6,7 @@
 type Header = { key: string; value: string };
 
 /**
- * CSP。nonce は使わず、インラインのスクリプト（Next の __next_f）とスタイル（style 属性）は 'unsafe-inline' で許す
+ * CSP。nonce は使わず、インラインの <script>（Next の __next_f）とスタイル（style 属性）は 'unsafe-inline' で許す
  * （nonce にすると毎回サーバーで描画することになる）。通信・読み込み先は同じ origin だけ。
  * 旧 URL も同じデプロイが配るので、'self' は開いている origin（新旧どちらか）になる。
  * 'unsafe-eval' は next dev だけ（React が開発時のエラー表示に eval を使う。本番のビルドには要らない）
@@ -15,6 +15,8 @@ export function contentSecurityPolicy({ dev }: { dev: boolean }): string {
   const directives: string[][] = [
     ["default-src", "'self'"],
     ["script-src", "'self'", "'unsafe-inline'", ...(dev ? ["'unsafe-eval'"] : [])],
+    // onclick="…" などの属性のハンドラは使っていない（React は addEventListener で付ける）ので止める
+    ["script-src-attr", "'none'"],
     ["style-src", "'self'", "'unsafe-inline'"],
     // 画像はアイコンだけ（同じ origin の相対 URL）。data: と blob: の画像・フォントは使っていないので許さない
     ["img-src", "'self'"],

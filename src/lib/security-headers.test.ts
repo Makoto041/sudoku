@@ -1,3 +1,4 @@
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from "next/constants";
 import { unstable_getResponseFromNextConfig } from "next/experimental/testing/server";
 import { describe, expect, it } from "vitest";
 import nextConfig from "../../next.config";
@@ -21,6 +22,11 @@ describe("CSP", () => {
   it("本番では 'unsafe-eval' を許さず、next dev だけ許す", () => {
     expect(contentSecurityPolicy({ dev: false })).not.toContain("'unsafe-eval'");
     expect(directives(contentSecurityPolicy({ dev: true }))["script-src"]).toContain("'unsafe-eval'");
+  });
+
+  it("onclick などの属性のハンドラは、インラインの <script> を許していても止める（dev も）", () => {
+    expect(prod["script-src-attr"]).toEqual(["'none'"]);
+    expect(directives(contentSecurityPolicy({ dev: true }))["script-src-attr"]).toEqual(["'none'"]);
   });
 
   it("iframe への埋め込み・<base>・<object> を止める", () => {
@@ -77,11 +83,26 @@ describe("ほかのヘッダー", () => {
 });
 
 describe("next.config.ts の headers()", () => {
+  // next build の phase で読む（unstable_getResponseFromNextConfig は PHASE_PRODUCTION_BUILD を渡す）
   const responseOf = (path: string) =>
     unstable_getResponseFromNextConfig({ url: `https://nanpure-game.vercel.app${path}`, nextConfig });
 
+  /** phase で読んだ設定の、全パスの項目の CSP */
+  async function cspOf(phase: string) {
+    const rules = await nextConfig(phase).headers!();
+    return rules
+      .find((r) => r.source === "/:path*")!
+      .headers.find((h) => h.key === "Content-Security-Policy")!.value;
+  }
+
+  it("'unsafe-eval' を足すのは next dev の phase だけ（NODE_ENV によらない）", async () => {
+    expect(await cspOf(PHASE_DEVELOPMENT_SERVER)).toBe(contentSecurityPolicy({ dev: true }));
+    expect(await cspOf(PHASE_PRODUCTION_BUILD)).toBe(contentSecurityPolicy({ dev: false }));
+    expect(await cspOf(PHASE_PRODUCTION_SERVER)).toBe(contentSecurityPolicy({ dev: false }));
+  });
+
   it.each(["/", "/sw.js", "/api/leaderboard?scope=daily&difficulty=easy", "/_next/static/chunks/a.js"])(
-    "%s にセキュリティヘッダーを付ける（テストは本番の CSP）",
+    "%s にセキュリティヘッダーを付ける（本番の CSP）",
     async (path) => {
       const res = await responseOf(path);
       for (const { key, value } of securityHeaders({ dev: false })) {
