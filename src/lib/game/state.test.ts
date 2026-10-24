@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PEERS, bitCount, candidatesAt, digitsOf, findConflicts, parseGrid } from "@/lib/sudoku/core";
 import { generatePuzzle } from "@/lib/sudoku/generator";
 import { createRng } from "@/lib/sudoku/rng";
-import { countSolutions } from "@/lib/sudoku/solver";
+import { countSolutions, countSolutionsWithin } from "@/lib/sudoku/solver";
 import { scoreMoves } from "./score";
 import {
   elapsedOf,
@@ -14,6 +14,7 @@ import {
   newGame,
   persisted,
   reduce,
+  REWIND_MAX_NODES,
   selectedCells,
   stuckCells,
   withSolution,
@@ -237,6 +238,37 @@ describe("行き詰まり", () => {
     expect(effects[0]).toMatchObject({ kind: "rewind" });
     expect(back.future).toEqual([]);
     expect(run(back, { type: "redo" }).effects[0].kind).toBe("blocked");
+  });
+
+  it("解けるか確かめ終わらない盤面まで戻したら、そこで止め、それより前の手は消さない", () => {
+    // 解が無いことを確かめるのに何百万回も置く盤面（1 行目に 1 を置けない。重複は無い）
+    const HEAVY = parseGrid(
+      "000000002010000000000010000690500100070000000000001030035020010700000000100000670",
+    );
+    const { s } = run(
+      newGame({ mode: "free", difficulty: "master", seed: "x", puzzle: HEAVY, solution: null }),
+      // 1 手目は重複の無い数字、2 手目は同じ行の 1 手目と重なる
+      { type: "select", cell: 73 },
+      { type: "input", digit: 2 },
+      { type: "select", cell: 74 },
+      { type: "input", digit: 2 },
+    );
+    expect(
+      countSolutionsWithin(
+        s.values.map((v, i) => (i === 74 ? 0 : v)),
+        1,
+        REWIND_MAX_NODES,
+      ),
+    ).toBeNull();
+    const t = performance.now();
+    const [back, effects] = reduce(s, { type: "rewind" });
+    expect(performance.now() - t).toBeLessThan(2000);
+    expect(effects[0]).toEqual({ kind: "rewind", steps: 1 });
+    expect(back.history).toHaveLength(1);
+    expect(back.values[73]).toBe(2);
+    expect(back.values[74]).toBe(0);
+    // 止めた盤面でもう一度押しても、確かめ終わらないので何もしない
+    expect(reduce(back, { type: "rewind" })[1][0].kind).toBe("blocked");
   });
 
   it("行き詰まっていなければ何も返さない", () => {

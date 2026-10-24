@@ -11,6 +11,9 @@ class Search {
   private boxes = new Int32Array(9);
   readonly grid: Grid;
   ok = true;
+  /** count で数字を置ける残りの回数。使い切ったら探索をやめる（aborted） */
+  private budget = Infinity;
+  aborted = false;
 
   constructor(grid: readonly number[]) {
     this.grid = grid.slice();
@@ -72,12 +75,23 @@ class Search {
     let total = 0;
     for (let v = 1; v <= 9; v++) {
       if (!(mask & (1 << v))) continue;
+      if (--this.budget < 0) {
+        this.aborted = true;
+        break;
+      }
       this.place(index, v);
       total += this.count(limit - total);
       this.unplace(index, v);
-      if (total >= limit) break;
+      if (total >= limit || this.aborted) break;
     }
     return total;
+  }
+
+  /** count を、数字を置く回数 maxNodes までで打ち切る */
+  countWithin(limit: number, maxNodes: number): number | null {
+    this.budget = maxNodes;
+    const n = this.count(limit);
+    return this.aborted ? null : n;
   }
 
   /** 解を 1 つ見つけて grid に残す。rng があれば候補順をランダムにする */
@@ -101,6 +115,20 @@ export function countSolutions(grid: readonly number[], limit = 2): number {
   const s = new Search(grid);
   if (!s.ok) return 0;
   return s.count(limit);
+}
+
+/**
+ * 解の個数（limit で打ち切り）。数字を置く回数が maxNodes を超えても数え終わらなければ null。
+ * 外から受け取った盤面で、探索に時間を掛けないために使う（探索の順は countSolutions と同じ）
+ */
+export function countSolutionsWithin(
+  grid: readonly number[],
+  limit: number,
+  maxNodes: number,
+): number | null {
+  const s = new Search(grid);
+  if (!s.ok) return 0;
+  return s.countWithin(limit, maxNodes);
 }
 
 export function solve(grid: readonly number[]): Grid | null {

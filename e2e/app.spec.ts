@@ -2844,6 +2844,139 @@ test.describe("毎日の通知", () => {
   });
 });
 
+/** 共有の URL で開く盤面（解が 1 つで、手筋のレベル 6。鬼・極） */
+const SHARED_PUZZLE = "100006004060000000200000078000800000074000100500302040800000009001000020000760001";
+const gridOf = (p: string) => [...p].map(Number);
+/** 共有の URL で開いたときに、始めるかを確かめるシート */
+const sharedSheet = (page: Page) => page.getByRole("dialog", { name: "共有された問題を始めますか？" });
+
+test.describe("共有した盤面", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "デスクトップだけ");
+
+  const board = (page: Page) => page.getByRole("grid", { name: "ナンプレの盤面" });
+  const storedStats = async (page: Page) =>
+    JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats"))) ?? "{}");
+
+  test("URL の盤面は、確かめるシートで始めるを押したときだけフリープレイとして始める。やめると何も変えない。URL から盤面を消す", async ({
+    page,
+    baseURL,
+  }) => {
+    const confirm = sharedSheet(page);
+    await page.goto(`/?from=e2e&p=${SHARED_PUZZLE}&d=extreme`);
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByText("極のフリープレイとして始めます。", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+    await confirm.getByRole("button", { name: "やめる", exact: true }).click();
+    await expect(confirm).toBeHidden();
+    await expect(board(page)).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("sudoku:free"))).toBeNull();
+    expect((await storedStats(page)).extreme).toBeUndefined();
+
+    await page.goto(`/?from=e2e&p=${SHARED_PUZZLE}&d=extreme`);
+    await confirm.getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("極");
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+    const g = await savedGame(page, "sudoku:free");
+    expect(g.puzzle).toEqual(gridOf(SHARED_PUZZLE));
+    expect(g.solution).toEqual(solve(gridOf(SHARED_PUZZLE)));
+    await expect(page.getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 最初から 1");
+    await expect(page.getByRole("gridcell").nth(1)).toHaveAccessibleName("1行2列 空き");
+    expect((await storedStats(page)).extreme.started).toBe(1);
+
+    // ホームに戻っても、URL に盤面は戻らない
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+  });
+
+  test("読めない盤面では、ホームに知らせて始めない。URL から盤面を消す。ゲームを開くと知らせは消える", async ({
+    page,
+    baseURL,
+  }) => {
+    const notice = page.getByText("読み込めない盤面です", { exact: true });
+    // 形が違う・解が 2 つ以上
+    const multiple = `00${"530070000600195000098000060800060003400803001700020006060000280000419005000080079".slice(2)}`;
+    for (const p of ["123", multiple]) {
+      await page.goto(`/?p=${p}&d=easy`);
+      await expect(notice, p).toBeVisible();
+      await expect(page).toHaveURL(`${baseURL}/`);
+      await expect(board(page)).toHaveCount(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      expect(await page.evaluate(() => localStorage.getItem("sudoku:free"))).toBeNull();
+    }
+    await page.locator(".free-easy").click();
+    await expect(board(page)).toBeVisible();
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test("途中のフリープレイがあれば、消えることを示して確かめる。やめると途中の問題が残る", async ({
+    page,
+    baseURL,
+  }) => {
+    await page.goto("/");
+    await page.locator(".free-easy").click();
+    await expect(board(page)).toBeVisible();
+    const before = await savedGame(page, "sudoku:free");
+    const first = before.puzzle.indexOf(0);
+    await page
+      .getByRole("gridcell")
+      .nth(first)
+      .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${before.solution![first]}`);
+    await expect.poll(async () => (await savedGame(page, "sudoku:free")).history.length).toBe(1);
+
+    await page.goto(`/?p=${SHARED_PUZZLE}`);
+    const confirm = sharedSheet(page);
+    await expect(confirm).toBeVisible();
+    await expect(
+      confirm.getByText("鬼のフリープレイとして始めます。途中のフリープレイは消えます。", { exact: true }),
+    ).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/`);
+    await confirm.getByRole("button", { name: "やめる", exact: true }).click();
+    await expect(confirm).toBeHidden();
+    expect((await savedGame(page, "sudoku:free")).puzzle).toEqual(before.puzzle);
+    expect((await storedStats(page)).master).toBeUndefined();
+
+    await page.goto(`/?p=${SHARED_PUZZLE}`);
+    await confirm.getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("鬼");
+    expect((await savedGame(page, "sudoku:free")).puzzle).toEqual(gridOf(SHARED_PUZZLE));
+    const stats = await storedStats(page);
+    expect(stats.easy.started).toBe(1);
+    expect(stats.master.started).toBe(1);
+  });
+
+  test("フリープレイの結果を共有すると、同じ盤面を開く URL を文に入れてコピーする", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    // 共有のシートを使わず、コピーにする
+    await page.addInitScript(() =>
+      Object.defineProperty(navigator, "share", { value: undefined, configurable: true }),
+    );
+    // 完成した盤面から 4 マスを空けた問題（かんたん）
+    const solution = solve(gridOf(SHARED_PUZZLE))!;
+    const puzzle = solution.map((v, i) => ([0, 10, 40, 80].includes(i) ? 0 : v));
+    const p = puzzle.join("");
+    await page.goto(`/?p=${p}`);
+    await sharedSheet(page).getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await fill(page, puzzle, solution);
+    const result = page.getByRole("dialog", { name: "クリア" });
+    await expect(result).toBeVisible();
+    await result.getByRole("button", { name: "結果を共有", exact: true }).click();
+    await expect(result.getByRole("button", { name: "コピーしました", exact: true })).toBeVisible();
+    const [text, url] = (await page.evaluate(() => navigator.clipboard.readText())).split("\n");
+    expect(text).toMatch(/^ナンプレ（かんたん） [\d,]+点（\d{2}:\d{2}）$/);
+    expect(url).toBe(`${SITE_ORIGIN}/?p=${p}&d=easy`);
+  });
+});
+
 const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 
 /**
@@ -3039,6 +3172,21 @@ test.describe("URL の移行", () => {
     await expect(moveBar(page)).toHaveCount(0);
     expect(await storageOf(context, LEGACY_ORIGIN)).toEqual({});
     expect(await storageOf(context, SITE_ORIGIN)).toHaveProperty("sudoku:player");
+  });
+
+  test("旧 URL で記録の無い端末は、共有した盤面の URL でも新しい URL へ移り、その盤面を始める", async ({
+    page,
+    context,
+  }) => {
+    await page.goto(`${LEGACY_ORIGIN}/?p=${SHARED_PUZZLE}&d=extreme`);
+    await sharedSheet(page).getByRole("button", { name: "始める", exact: true }).click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("極");
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    expect(await storageOf(context, LEGACY_ORIGIN)).toEqual({});
+    expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:free"]).puzzle).toEqual(
+      gridOf(SHARED_PUZZLE),
+    );
   });
 
   test("iPhone のホーム画面に追加したアプリでは、新しい URL を開かずにコードと手順を出す", async ({
