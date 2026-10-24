@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { PEERS, bitCount, candidatesAt, digitsOf, findConflicts, parseGrid } from "@/lib/sudoku/core";
+import {
+  PEERS,
+  UNITS,
+  UNITS_OF,
+  bitCount,
+  candidatesAt,
+  digitsOf,
+  findConflicts,
+  parseGrid,
+} from "@/lib/sudoku/core";
 import { generatePuzzle } from "@/lib/sudoku/generator";
 import { createRng } from "@/lib/sudoku/rng";
 import { countSolutions, countSolutionsWithin } from "@/lib/sudoku/solver";
@@ -1213,5 +1222,232 @@ describe("練習", () => {
     expect(g.notes).toEqual(notes);
     expect(g.notes).not.toBe(notes);
     expect(g.history).toEqual([]);
+  });
+});
+
+describe("最初の誤り", () => {
+  const empties = (s: GameState) => s.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const wrongOf = (answer: number) => (answer % 9) + 1;
+  const put = (cell: number, digit: number): Action[] => [
+    { type: "select", cell },
+    { type: "input", digit },
+  ];
+
+  /**
+   * 盤面の数字だけから、cell に answer を 1 手で置けるシングル（ネイキッドを先に見る）。
+   * 記録の側（findAllSteps）とは別に、候補を数えて確かめる
+   */
+  function singleOf(values: number[], cell: number, answer: number) {
+    const grid = values.slice();
+    grid[cell] = 0;
+    if (bitCount(candidatesAt(grid, cell)) === 1) return "naked-single";
+    const bit = 1 << answer;
+    const hidden = UNITS_OF[cell].some((u) =>
+      UNITS[u].every((i) => i === cell || grid[i] !== 0 || !(candidatesAt(grid, i) & bit)),
+    );
+    return hidden ? "hidden-single" : null;
+  }
+
+  it("最初の誤りだけを記録する。何手目は数字を置いた回数（ヒントを含む。メモ・消す・色・戻す・進むは数えない）", () => {
+    const { p, s: s0 } = freeGame();
+    const [a, b, c, d] = empties(s0);
+    expect(s0.placed).toBe(0);
+    expect(s0.firstMistake).toBeUndefined();
+    const before = run(
+      s0,
+      { type: "select", cell: a },
+      { type: "input", digit: 3, asNote: true },
+      { type: "input", digit: p.solution[a] },
+      { type: "erase" },
+      { type: "toggleColors" },
+      { type: "input", digit: 2 },
+      { type: "toggleColors" },
+      { type: "hintUsed" },
+      { type: "hint", cell: b },
+      { type: "undo" },
+      { type: "redo" },
+    ).s;
+    // a に置いた 1 回と、ヒントで b に置いた 1 回
+    expect(before.placed).toBe(2);
+    expect(before.firstMistake).toBeUndefined();
+    const first = run(before, ...put(c, wrongOf(p.solution[c]))).s;
+    expect(first.mistakes).toBe(1);
+    expect(first.placed).toBe(3);
+    expect(first.firstMistake).toEqual({
+      move: 3,
+      cell: c,
+      digit: wrongOf(p.solution[c]),
+      answer: p.solution[c],
+      technique: singleOf(before.values, c, p.solution[c]),
+    });
+    // 2 つ目の誤りでは変えない
+    const second = run(first, ...put(d, wrongOf(p.solution[d]))).s;
+    expect(second.mistakes).toBe(2);
+    expect(second.placed).toBe(4);
+    expect(second.firstMistake).toEqual(first.firstMistake);
+  });
+
+  it("戻す・間違える前まで戻すで盤面から消しても残し、進むでも変えない（ミスの数と同じく、置いた事実として数える）", () => {
+    const { p, s: s0 } = freeGame();
+    const [a, b] = empties(s0);
+    const wrong = run(s0, ...put(a, wrongOf(p.solution[a]))).s;
+    const recorded = wrong.firstMistake;
+    expect(recorded).toMatchObject({ move: 1, cell: a });
+    const undone = run(wrong, { type: "undo" }).s;
+    expect(undone.values[a]).toBe(0);
+    expect(undone.firstMistake).toEqual(recorded);
+    expect(undone.placed).toBe(1);
+    expect(run(undone, { type: "redo" }).s.firstMistake).toEqual(recorded);
+    // 戻した後に入れた誤りは最初ではない
+    expect(run(undone, ...put(b, wrongOf(p.solution[b]))).s.firstMistake).toEqual(recorded);
+    // 解答と違う数字があると解けないので、間違える前まで戻すで消える
+    const { s: back, effects } = run(wrong, { type: "rewind" });
+    expect(effects[0]).toEqual({ kind: "rewind", steps: 1 });
+    expect(back.values[a]).toBe(0);
+    expect(back.firstMistake).toEqual(recorded);
+    expect(back.placed).toBe(1);
+  });
+
+  it("重複しない誤り（間違いの表示がオフなら気づけないもの）も記録する。日次も端末で解いた解答と照合して記録する", () => {
+    const p = generatePuzzle("first-mistake-daily", "hard");
+    const daily = withSolution(
+      newGame({
+        mode: "daily",
+        difficulty: "hard",
+        seed: "2026-10-24",
+        puzzle: p.puzzle,
+        solution: null,
+        daily: { sessionId: "s", date: "2026-10-24", startedAt: 0, clockOffset: 0 },
+      }),
+    );
+    const free = newGame({
+      mode: "free",
+      difficulty: "hard",
+      seed: "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+    });
+    const cell = p.puzzle.findIndex((v, i) => !v && bitCount(candidatesAt(p.puzzle, i)) >= 2);
+    const digit = digitsOf(candidatesAt(p.puzzle, cell)).find((d) => d !== p.solution[cell])!;
+    for (const s0 of [daily, free]) {
+      const { s, effects } = run(s0, ...put(cell, digit));
+      expect(effects[0]).toMatchObject({ kind: "place", wrong: true, conflict: false });
+      expect(s.firstMistake).toEqual({
+        move: 1,
+        cell,
+        digit,
+        answer: p.solution[cell],
+        technique: singleOf(p.puzzle, cell, p.solution[cell]),
+      });
+    }
+  });
+
+  it("手筋は、置く直前の盤面の数字だけから、そのマスに正解を 1 手で置けたシングル。無ければ null", () => {
+    const p = generatePuzzle("first-mistake-technique", "hard");
+    const s0 = newGame({
+      mode: "free",
+      difficulty: "hard",
+      seed: "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+    });
+    // 空きマスのうち 3 つに 1 つを正しく埋めた途中の盤面
+    const base = run(
+      s0,
+      ...empties(s0)
+        .filter((_, k) => k % 3 === 0)
+        .flatMap((i) => put(i, p.solution[i])),
+    ).s;
+    // メモは見ない（正解を消したメモがあっても、盤面の数字だけで調べる）
+    const noted = run(base, { type: "setNotes", notes: Array(81).fill(1 << 1) }).s;
+    const seen = new Set<string | null>();
+    for (const cell of empties(base).filter((i) => !base.values[i])) {
+      const answer = p.solution[cell];
+      const expected = singleOf(base.values, cell, answer);
+      seen.add(expected);
+      for (const g of [base, noted]) {
+        expect(run(g, ...put(cell, wrongOf(answer))).s.firstMistake?.technique, `${cell}`).toBe(expected);
+      }
+    }
+    // ネイキッド・ヒドゥン・どちらも無いマスがそろっている盤面で確かめる
+    expect(seen).toEqual(new Set(["naked-single", "hidden-single", null]));
+  });
+
+  it("正しい数字を誤りで上書きしても記録し、手筋はそのマスを空けた盤面で調べる", () => {
+    const { p, s: s0 } = freeGame();
+    const cell = empties(s0)[0];
+    const placed = run(s0, ...put(cell, p.solution[cell])).s;
+    const { s } = run(placed, { type: "input", digit: wrongOf(p.solution[cell]) });
+    expect(s.firstMistake).toEqual({
+      move: 2,
+      cell,
+      digit: wrongOf(p.solution[cell]),
+      answer: p.solution[cell],
+      technique: singleOf(s0.values, cell, p.solution[cell]),
+    });
+  });
+
+  it("ミスが無ければ記録しない。練習は結果を出さないので記録しない", () => {
+    const { p, s: s0 } = freeGame();
+    const solved = run(s0, ...empties(s0).flatMap((i) => put(i, p.solution[i]))).s;
+    expect(solved.status).toBe("solved");
+    expect(solved.mistakes).toBe(0);
+    expect(solved.placed).toBe(empties(s0).length);
+    expect(solved.firstMistake).toBeUndefined();
+
+    const practice = newGame({
+      mode: "practice",
+      difficulty: "easy",
+      seed: "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+    });
+    const cell = empties(practice)[0];
+    const wrong = run(practice, ...put(cell, wrongOf(p.solution[cell]))).s;
+    expect(wrong.mistakes).toBe(1);
+    expect(wrong.firstMistake).toBeUndefined();
+  });
+
+  it("保存して開き直しても残り、続きから数える", () => {
+    const { p, s: s0 } = freeGame();
+    const [a, b] = empties(s0);
+    const s = run(s0, ...put(a, p.solution[a]), ...put(b, wrongOf(p.solution[b]))).s;
+    const reopened = withSolution(JSON.parse(JSON.stringify(persisted(s))) as GameState);
+    expect(reopened.firstMistake).toEqual(s.firstMistake);
+    expect(reopened.placed).toBe(2);
+    expect(run(reopened, ...put(b, p.solution[b])).s.placed).toBe(3);
+  });
+
+  it("古い保存データ（置いた回数なし）では、何手目か分からないので記録しない。壊れずに遊べる", () => {
+    const { p, s: s0 } = freeGame();
+    const { placed: _, ...old } = s0;
+    const [a, b] = empties(s0);
+    const s = run(old as GameState, ...put(a, wrongOf(p.solution[a])), ...put(b, p.solution[b])).s;
+    expect(s.mistakes).toBe(1);
+    expect(s.values[b]).toBe(p.solution[b]);
+    expect(s.placed).toBeUndefined();
+    expect(s.firstMistake).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(persisted(s)))).not.toHaveProperty("firstMistake");
+  });
+
+  it("それまでにミスがあれば（解答の無い日次で重複を数えたなど）、後の誤りは最初とは呼ばないので記録しない", () => {
+    const p = generatePuzzle("first-mistake-nosolution", "easy");
+    const s0 = newGame({
+      mode: "daily",
+      difficulty: "easy",
+      seed: "2026-10-24",
+      puzzle: p.puzzle,
+      solution: null,
+      daily: { sessionId: "s", date: "2026-10-24", startedAt: 0, clockOffset: 0 },
+    });
+    const [a, b] = empties(s0);
+    // 解答が無いと正しい数字が分からないので記録しない（ミスには数える）
+    const dupe = p.puzzle[PEERS[a].find((i) => p.puzzle[i] !== 0)!];
+    const s = run(s0, ...put(a, dupe)).s;
+    expect(s.mistakes).toBe(1);
+    expect(s.firstMistake).toBeUndefined();
+    const later = run(withSolution(s), ...put(b, wrongOf(p.solution[b]))).s;
+    expect(later.mistakes).toBe(2);
+    expect(later.firstMistake).toBeUndefined();
   });
 });

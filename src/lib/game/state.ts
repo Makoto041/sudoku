@@ -7,7 +7,7 @@ import {
   type ScoreDelta,
   type ScoreState,
 } from "./score";
-import { candidatesOf } from "@/lib/sudoku/logic";
+import { candidatesOf, findAllSteps, type TechniqueId } from "@/lib/sudoku/logic";
 import {
   PEERS,
   UNITS,
@@ -73,6 +73,30 @@ export type GameState = {
   score?: ScoreState;
   /** 日次：置いた手の記録。提出時にサーバーへ送り、サーバーがスコアを計算し直す */
   moves?: MoveLog;
+  /**
+   * 数字を置いた回数（ヒントで置いた分を含む）。最初の誤りの「何手目」に使う。
+   * メモ・消す・色・戻す・進む・間違える前まで戻すでは変えない（戻しても置いた事実は残る）。
+   * 古い保存データには無く、そのときは数えない（それまでの回数が分からないので、最初の誤りも記録しない）
+   */
+  placed?: number;
+  /** 最初に置いた、解答と違う数字（クリアの結果で振り返る）。無ければ undefined */
+  firstMistake?: FirstMistake;
+};
+
+/**
+ * 最初の誤り。間違いの表示の設定に関わらず記録し、戻す・消す・間違える前まで戻すで盤面から消えても残す
+ * （ミスの数と同じく、置いた事実として数える）。端末の保存データにだけ入り、サーバーには送らない
+ */
+export type FirstMistake = {
+  /** 何手目か（placed で数える。1 始まり） */
+  move: number;
+  cell: number;
+  /** 置いた数字 */
+  digit: number;
+  /** 正しい数字 */
+  answer: number;
+  /** 置く直前の盤面の数字だけから、そのマスに正しい数字を 1 手で置けた手筋（シングル）。無ければ null */
+  technique: TechniqueId | null;
 };
 
 type Move = {
@@ -184,6 +208,7 @@ export function newGame(input: {
     daily: input.daily ?? null,
     score: emptyScore(input.puzzle),
     moves: [],
+    placed: 0,
   };
 }
 
@@ -280,6 +305,21 @@ function commitNotes(s: GameState, notes: number[], effect: Effect): [GameState,
   return [commit(s, bulkMove({ bulkNotes: s.notes }), { notes }), [effect]];
 }
 
+/**
+ * 置く直前の盤面の数字だけから、cell に answer を 1 手で置ける手筋（findAllSteps の順で最初のもの）。無ければ null。
+ * 候補は盤面の数字から出し、メモは見ない。cell は空けて調べる（正しい数字を間違いで上書きしたときも、空きと同じに扱う）。
+ * まだミスが無い盤面で呼ぶので、盤面の数字はどれも正しく、候補に答えが残る。置ける手になるのはシングルだけ。
+ * 最初の誤りの 1 回だけ呼ぶ（findAllSteps は途中の盤面で 1 回 0.2〜2ms ほど。手元の Mac）
+ */
+function singleAt(values: Grid, cell: number, answer: number): TechniqueId | null {
+  const grid = values.slice();
+  grid[cell] = 0;
+  const step = findAllSteps(grid, candidatesOf(grid)).find(
+    (st) => st.placement?.cell === cell && st.placement.digit === answer,
+  );
+  return step?.trace.technique ?? null;
+}
+
 /** マスの色。古い保存データには無いので、そのときは色なしとして扱う */
 const colorsOf = (s: GameState): number[] => s.colors ?? Array<number>(81).fill(0);
 
@@ -314,6 +354,19 @@ function place(
   let delta: ScoreDelta | null = null;
   if (s.solution && score)
     [score, delta] = applyPlacement(score, { cell, digit, t, viaHint }, s.solution, s.difficulty);
+  const placed = s.placed === undefined ? undefined : s.placed + 1;
+  // 最初の誤りは、まだミスが無いときだけ記録する（古い保存データでそれまでにミスがあれば、後の誤りは最初ではない）。
+  // 練習は結果を出さないので記録しない
+  const firstMistake: FirstMistake | undefined =
+    wrong && s.solution && s.mistakes === 0 && placed !== undefined && s.mode !== "practice"
+      ? {
+          move: placed,
+          cell,
+          digit,
+          answer: s.solution[cell],
+          technique: singleAt(s.values, cell, s.solution[cell]),
+        }
+      : s.firstMistake;
   const next = commit(s, move, {
     values,
     notes,
@@ -322,6 +375,8 @@ function place(
     score,
     // 日次はサーバーで計算し直すので、置いた手を残す
     moves: s.mode === "daily" && !viaHint ? [...(s.moves ?? []), [Math.round(t), cell, digit]] : s.moves,
+    placed,
+    firstMistake,
   });
   const units = wrong ? [] : completedUnits(next, values, cell);
   const effects: Effect[] = [
@@ -425,7 +480,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return [{ ...undoOnce(s), future }, [{ kind: "undo", cell: move.cell }]];
     }
     case "redo": {
-      // 戻す前の盤面に戻すだけで、得点・手の記録・ミスには触れない（元に戻すもそれらを戻さない）
+      // 戻す前の盤面に戻すだけで、得点・手の記録・ミス・置いた回数・最初の誤りには触れない（元に戻すもそれらを戻さない）
       const future = s.future ?? [];
       const entry = future[future.length - 1];
       if (!entry) return [s, [{ kind: "blocked" }]];

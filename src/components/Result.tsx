@@ -7,6 +7,7 @@ import { techniqueProfile } from "@/lib/sudoku/logic";
 import { techniqueRows } from "@/lib/sudoku/practice";
 import { formatPoints } from "@/lib/game/score";
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
+import { firstMistakeLines } from "@/lib/game/review";
 import type { FreeClear } from "@/lib/client/stats";
 import { shareUrl } from "@/lib/client/sharedPuzzle";
 import type { Achievement } from "@/lib/client/achievements";
@@ -53,6 +54,8 @@ export function Result({
     const { counts, stalled } = techniqueProfile(game.puzzle);
     return { rows: techniqueRows(counts), stalled };
   }, [game.puzzle]);
+  // このプレイで最初に置いた解答と違う数字。端末の保存データにだけあり、共有する文には入れない
+  const mistake = useMemo(() => firstMistakeLines(game.firstMistake), [game.firstMistake]);
 
   const share = async () => {
     sfx.tap();
@@ -164,6 +167,16 @@ export function Result({
               </ul>
             )}
             {techniques.stalled && <p className="result-techniques-note">手筋で進めない局面あり</p>}
+          </section>
+        )}
+
+        {mistake && (
+          <section className="result-techniques" aria-labelledby="result-mistake-title">
+            <h3 id="result-mistake-title" className="result-techniques-title">
+              最初の誤り
+            </h3>
+            <p className="result-mistake">{mistake.main}</p>
+            {mistake.technique && <p className="result-techniques-note">{mistake.technique}</p>}
           </section>
         )}
 
