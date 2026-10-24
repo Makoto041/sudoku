@@ -132,13 +132,19 @@ export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
             }}
             aria-label={asColors ? `色${d}` : showLeft ? `${d}（残り${left}）` : `${d}`}
           >
+            {/* 色は色相だけでは見分けにくいので、残りの数の位置に番号を添える */}
             {asColors ? (
-              <span className="swatch" style={{ background: `var(--mark-${d})` }} />
+              <>
+                <span className="swatch" style={{ background: `var(--mark-${d})` }} />
+                <span className="swatch-num">{d}</span>
+              </>
             ) : (
-              <span className="pad-digit">{d}</span>
+              <>
+                <span className="pad-digit">{d}</span>
+                {/* 表示しないときも高さをそろえるため空で残す */}
+                <span className="pad-left">{showLeft && left > 0 ? left : ""}</span>
+              </>
             )}
-            {/* 表示しないときも高さをそろえるため空で残す */}
-            <span className="pad-left">{showLeft && left > 0 ? left : ""}</span>
           </button>
         );
       })}

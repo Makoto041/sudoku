@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTY_LABEL } from "@/lib/sudoku/core";
+import { techniqueProfile } from "@/lib/sudoku/logic";
+import { techniqueRows } from "@/lib/sudoku/practice";
 import { formatPoints } from "@/lib/game/score";
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { FreeClear } from "@/lib/client/stats";
@@ -45,6 +47,11 @@ export function Result({
   // 日次はサーバーが計算し直した点数、まだ届いていなければ端末の点数
   const points = done?.points ?? game.score?.points ?? 0;
   const bonus = done?.timeBonus ?? game.score?.timeBonus;
+  // 問題を手筋で解いたときの道筋（難易度の判定と同じ）。遊んだ人の手順ではない
+  const techniques = useMemo(() => {
+    const { counts, stalled } = techniqueProfile(game.puzzle);
+    return { rows: techniqueRows(counts), stalled };
+  }, [game.puzzle]);
 
   const share = async () => {
     sfx.tap();
@@ -138,6 +145,25 @@ export function Result({
             </div>
           )}
         </dl>
+
+        {(techniques.rows.length > 0 || techniques.stalled) && (
+          <section className="result-techniques" aria-labelledby="result-techniques-title">
+            <h3 id="result-techniques-title" className="result-techniques-title">
+              要る手筋
+            </h3>
+            {techniques.rows.length > 0 && (
+              <ul className="result-techniques-list">
+                {techniques.rows.map((row) => (
+                  <li key={row.key}>
+                    {row.name}
+                    <span className="result-techniques-count">×{row.count}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {techniques.stalled && <p className="result-techniques-note">手筋で進めない局面あり</p>}
+          </section>
+        )}
 
         <div className="result-actions">
           {isDaily ? (

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { DIFFICULTIES, findConflicts, isValidSolution, parseGrid, serializeGrid } from "./core";
 import { PROFILES, generateDaily, generateExtreme, generatePuzzle, jstDateKey } from "./generator";
-import { candidatesOf, findAllSteps, findNextStep, gradePuzzle, searchEffort, solveLogically } from "./logic";
+import {
+  candidatesOf,
+  findAllSteps,
+  findNextStep,
+  gradePuzzle,
+  searchEffort,
+  solveLogically,
+  techniqueProfile,
+  type LogicLevel,
+  type TechniqueId,
+} from "./logic";
 import { countSolutions, solve } from "./solver";
 
 // 極は作るのに時間がかかるので、まとめて回すテストからは外し、下で個別に確かめる
@@ -107,6 +117,82 @@ describe("logic grader", () => {
         if (gradePuzzle(puzzle) < 6) expect(grid).toEqual(solution);
       }
     }
+  });
+});
+
+describe("手筋の内訳", () => {
+  /** 手筋ごとのレベル（logic.ts の TECHNIQUES と同じ組み分け） */
+  const LEVEL_OF: Record<TechniqueId, LogicLevel> = {
+    "naked-single": 1,
+    "hidden-single": 1,
+    pointing: 2,
+    claiming: 2,
+    "naked-pair": 3,
+    "hidden-pair": 3,
+    "naked-triple": 3,
+    "x-wing": 4,
+    "hidden-triple": 4,
+    "naked-quad": 4,
+    "xy-wing": 5,
+    "xyz-wing": 5,
+    swordfish: 5,
+  };
+  const emptiesOf = (puzzle: readonly number[]) => puzzle.filter((v) => v === 0).length;
+  // 数字を置くのはシングルだけなので、解き切れたときは空きマスの数と同じになる
+  const singlesOf = (counts: Partial<Record<TechniqueId, number>>) =>
+    (counts["naked-single"] ?? 0) + (counts["hidden-single"] ?? 0);
+
+  it("かんたん: シングルだけで解き切れる", () => {
+    for (let k = 0; k < 6; k++) {
+      const { puzzle } = generatePuzzle(`profile-${k}`, "easy");
+      const { counts, stalled } = techniqueProfile(puzzle);
+      expect(stalled).toBe(false);
+      expect(Object.keys(counts).every((t) => t === "naked-single" || t === "hidden-single")).toBe(true);
+      expect(singlesOf(counts)).toBe(emptiesOf(puzzle));
+    }
+  });
+
+  it("鬼: 手筋だけでは解き切れない", () => {
+    for (let k = 0; k < 2; k++) {
+      const { puzzle } = generatePuzzle(`profile-${k}`, "master");
+      const { counts, stalled } = techniqueProfile(puzzle);
+      expect(stalled).toBe(true);
+      expect(singlesOf(counts)).toBeLessThan(emptiesOf(puzzle));
+    }
+  });
+
+  it.each(BANDED)("%s: 最も難しい手筋のレベルは gradePuzzle と同じ", (difficulty) => {
+    for (let k = 0; k < 3; k++) {
+      const { puzzle } = generatePuzzle(`profile-level-${k}`, difficulty);
+      const { counts, stalled } = techniqueProfile(puzzle);
+      const level = gradePuzzle(puzzle);
+      expect(stalled).toBe(level === 6);
+      if (stalled) continue;
+      const hardest = Math.max(...(Object.keys(counts) as TechniqueId[]).map((t) => LEVEL_OF[t]));
+      expect(hardest).toBe(level);
+      expect(singlesOf(counts)).toBe(emptiesOf(puzzle));
+    }
+  });
+
+  it("途中で呼ばれても、例外で抜けても、前の数え方に戻す", () => {
+    const { puzzle } = generatePuzzle("profile-nested", "hard");
+    const expected = techniqueProfile(puzzle);
+    const broken = {
+      slice() {
+        throw new Error("broken");
+      },
+    } as unknown as number[];
+    expect(() => techniqueProfile(broken)).toThrow("broken");
+    expect(techniqueProfile(puzzle)).toEqual(expected);
+    // 外側が数え始めた後（盤面を写すとき）に内側を呼ぶ。内側が戻し損ねると、外側の内訳が空になる
+    const nested = Object.assign(puzzle.slice(), {
+      slice() {
+        expect(() => techniqueProfile(broken)).toThrow("broken");
+        expect(techniqueProfile(CLASSIC).stalled).toBe(false);
+        return puzzle.slice();
+      },
+    });
+    expect(techniqueProfile(nested)).toEqual(expected);
   });
 });
 

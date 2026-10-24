@@ -426,6 +426,27 @@ export function gradePuzzle(puzzle: readonly number[]): LogicLevel {
 }
 
 /**
+ * 手筋の内訳。gradePuzzle と同じ道筋（solveLogically）で、どの手筋で何回進んだかを数える。
+ * stalled は手筋だけでは解き切れなかった（レベル 6）か。そのときの counts は行き詰まるまでの分
+ */
+export function techniqueProfile(puzzle: readonly number[]): {
+  counts: Partial<Record<TechniqueId, number>>;
+  stalled: boolean;
+} {
+  const counts: Partial<Record<TechniqueId, number>> = {};
+  // 呼び出しの途中で呼ばれても、例外で抜けても、前の受け取り先に戻す
+  const prev = tracer;
+  tracer = (t) => {
+    counts[t.technique] = (counts[t.technique] ?? 0) + 1;
+  };
+  try {
+    return { counts, stalled: solveLogically(puzzle).level === 6 };
+  } finally {
+    tracer = prev;
+  }
+}
+
+/**
  * 仮定の手数。シングルとロックドキャンディデートで進められるところまで進め、
  * 詰まったら候補の最も少ないマスで候補を 1 つずつ仮定して試す。
  * 解が 1 つであることまで確かめる探索全体で、仮定した回数（nodes）と最も深い仮定の重なり（depth）を数える。

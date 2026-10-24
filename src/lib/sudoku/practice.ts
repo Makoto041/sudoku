@@ -25,6 +25,21 @@ export type PracticeKey = (typeof PRACTICE_KEYS)[number];
 
 export const practiceKeyOf = (t: TechniqueId): PracticeKey => (t === "claiming" ? "pointing" : t);
 
+/** 手筋の内訳（techniqueProfile の counts）を、練習の項目の名前と順でまとめる。0 回の手筋は出さない */
+export function techniqueRows(
+  counts: Partial<Record<TechniqueId, number>>,
+): { key: PracticeKey; name: string; count: number }[] {
+  const sum = new Map<PracticeKey, number>();
+  for (const [t, n] of Object.entries(counts) as [TechniqueId, number][]) {
+    const key = practiceKeyOf(t);
+    sum.set(key, (sum.get(key) ?? 0) + n);
+  }
+  return PRACTICE_KEYS.flatMap((key) => {
+    const count = sum.get(key) ?? 0;
+    return count > 0 ? [{ key, name: TECHNIQUE_NAME[key], count }] : [];
+  });
+}
+
 /** 同梱する局面（practice-data.ts）の 1 件。盤面は 81 文字（0 は空き） */
 export type RawPosition = {
   id: string;
