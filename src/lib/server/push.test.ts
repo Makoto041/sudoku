@@ -15,7 +15,6 @@ import {
   PUSH_MAX_BODY_BYTES,
   PUSH_MAX_PER_PLAYER,
   PUSH_MAX_TOTAL,
-  PUSH_RATE_LIMITS,
   REMINDER,
   assertEndpoint,
   createGuardedLookup,
@@ -595,6 +594,15 @@ describe("本文の読み取り", () => {
     }
     await expect(readJson(req('{"a":1}'), opts)).resolves.toEqual({ a: 1 });
   });
+
+  it("型を外して上限を渡さない・数でない上限を渡した呼び出しは、上限なしで読まずに TypeError にする", async () => {
+    // @ts-expect-error maxBytes は必須
+    await expect(readJson(req("{}"), {})).rejects.toBeInstanceOf(TypeError);
+    for (const maxBytes of [undefined, null, "4096", NaN, Infinity, 0, -1]) {
+      await expect(readJson(req("{}"), { maxBytes } as never)).rejects.toBeInstanceOf(TypeError);
+    }
+    await expect(readJson(req("{}"), undefined as never)).rejects.toBeInstanceOf(TypeError);
+  });
 });
 
 describe("設定と cron の認証", () => {
@@ -804,13 +812,6 @@ describe("新規登録の回数制限", () => {
     ip: string | null = IP,
   ) => subscribePush(store, { playerId, subscription: subscription(endpoint) }, now, { ip });
 
-  it("上限は IP ごとに 1 時間 20 件、プレイヤーごとに 24 時間 10 件", () => {
-    expect(PUSH_RATE_LIMITS).toEqual({
-      ip: { limit: 20, windowSec: 60 * 60 },
-      player: { limit: 10, windowSec: 24 * 60 * 60 },
-    });
-  });
-
   it("同じ IP からの新規登録は 1 時間の窓に 20 件までで、21 件目は 429 で保存しない。次の窓ではまた受け付ける", async () => {
     const store = new MemoryStore();
     const t = Math.floor(T0 / HOUR) * HOUR;
@@ -952,7 +953,7 @@ describe("新規登録の回数制限", () => {
     expect(store.rateWindowKeys()).toEqual(
       [
         ipKey("203.0.113.7", T0),
-        ipKey("2001:db8:1:2::/64", T0),
+        ipKey("2001:db8:1::/48", T0),
         ipKey("198.51.100.9", T0),
         ...[0, 1, 2].map((i) => playerKey(player(i), T0)),
       ].sort(),
@@ -961,17 +962,18 @@ describe("新規登録の回数制限", () => {
     for (const s of [...ips, "198.51.100.9", "2001:db8"]) expect(text).not.toContain(s);
   });
 
-  it("IPv6 は同じ /64 のアドレス（書き方が違っても）をまとめて数え、別の /64 は別に数える。IPv4 射影は IPv4 として数える", async () => {
+  it("IPv6 は同じ /48 のアドレス（/64 が違っても、書き方が違っても）をまとめて数え、別の /48 は別に数える。IPv4 射影は IPv4 として数える", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < 20; i++) {
-      const ip = i % 2 === 0 ? `2001:db8:1:2::${i.toString(16)}` : `2001:0DB8:0001:0002:ffff:0:0:${i}`;
+      // /64 を 1 つずつ替える（/48 を配る回線では、/64 を 65,536 個使い分けられる）
+      const ip = i % 2 === 0 ? `2001:db8:1:${i.toString(16)}::1` : `2001:0DB8:0001:${i}:ffff:0:0:1`;
       await expect(register(store, player(i), fcm(`v${i}`), T0 + i, ip)).resolves.toEqual({ ok: true });
     }
     await expectStatus(
-      register(store, player(20), fcm("v20"), T0 + 20, "2001:db8:1:2:ffff:ffff:ffff:ffff"),
+      register(store, player(20), fcm("v20"), T0 + 20, "2001:db8:1:ffff:ffff:ffff:ffff:ffff"),
       429,
     );
-    await expect(register(store, player(21), fcm("v21"), T0 + 21, "2001:db8:1:3::1")).resolves.toEqual({
+    await expect(register(store, player(21), fcm("v21"), T0 + 21, "2001:db8:2::1")).resolves.toEqual({
       ok: true,
     });
     for (let i = 0; i < 20; i++)

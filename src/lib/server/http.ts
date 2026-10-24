@@ -7,13 +7,13 @@ export const NO_STORE = { "Cache-Control": "no-store" };
 
 /**
  * ランキング API 共通：保存先の用意、エラーの HTTP 変換、キャッシュ無効化。
- * 想定外のエラーは、既定で中身なしで記録する（Upstash のエラーには送ったコマンド＝playerId・引き継ぎコード・
- * 記録・通知の endpoint や鍵が含まれうる）。redactErrors: false のときだけ中身を記録する。
+ * 想定外のエラーは、エラーの名前だけを記録する（Upstash のエラーには送ったコマンド＝playerId・引き継ぎコード・
+ * 記録・通知の endpoint や鍵が含まれうる）。どの route かは Vercel のログの要求のパスで分かる。
  * cacheControl を渡すと、成功した応答だけその Cache-Control にする（エラーは no-store のまま）
  */
 export async function handle<T>(
   fn: (store: RankingStore) => Promise<T>,
-  opts: { redactErrors?: boolean; cacheControl?: string } = {},
+  opts: { cacheControl?: string } = {},
 ) {
   const store = getStore();
   if (!store) {
@@ -26,9 +26,7 @@ export async function handle<T>(
     if (err instanceof RankingError) {
       return NextResponse.json({ error: err.message }, { status: err.status, headers: NO_STORE });
     }
-    console.error(
-      (opts.redactErrors ?? true) ? `request failed (${err instanceof Error ? err.name : typeof err})` : err,
-    );
+    console.error(`request failed (${err instanceof Error ? err.name : typeof err})`);
     return NextResponse.json({ error: "internal error" }, { status: 500, headers: NO_STORE });
   }
 }
@@ -69,9 +67,10 @@ async function readText(req: Request, maxBytes: number): Promise<string> {
 
 /**
  * 本文を JSON として読む。JSON でなければ 400、maxBytes（UTF-8 のバイト数）を超えたら 413。オブジェクト以外は {} にする。
- * 上限は必ず指定する（上限なしでは読まない）
+ * 上限は必ず指定する（上限なしでは読まない）。型を外した呼び出しで上限が数でなければ、読まずに TypeError にする
  */
 export async function readJson(req: Request, opts: { maxBytes: number }): Promise<Record<string, unknown>> {
+  if (!(Number.isFinite(opts?.maxBytes) && opts.maxBytes > 0)) throw new TypeError("readJson needs maxBytes");
   let body: unknown;
   try {
     body = JSON.parse(await readText(req, opts.maxBytes));

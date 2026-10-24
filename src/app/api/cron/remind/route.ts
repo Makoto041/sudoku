@@ -7,14 +7,11 @@ export const maxDuration = 60;
 
 /** Vercel Cron から呼ばれる。CRON_SECRET が Authorization: Bearer で付いてくる */
 export function GET(req: Request) {
-  return handle(
-    async (store) => {
-      const config = requirePushConfig();
-      if (!cronAuthorized(req.headers.get("authorization"), config.cronSecret)) {
-        throw new RankingError(401, "unauthorized");
-      }
-      return sendReminders(store, { send: webPushSender(config) });
-    },
-    { redactErrors: true },
-  );
+  return handle(async (store) => {
+    const config = requirePushConfig();
+    if (!cronAuthorized(req.headers.get("authorization"), config.cronSecret)) {
+      throw new RankingError(401, "unauthorized");
+    }
+    return sendReminders(store, { send: webPushSender(config) });
+  });
 }

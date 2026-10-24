@@ -21,7 +21,7 @@ import {
   type ChallengeRecord,
   type StoredCredential,
 } from "./auth-store";
-import { ipRateName } from "./push";
+import { ipRateName } from "./ip";
 import { MAX_STATS_BYTES, RankingError, assertPlayerId } from "./ranking";
 import { historyField, type RankingStore } from "./store";
 

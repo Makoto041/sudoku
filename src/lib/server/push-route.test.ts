@@ -406,16 +406,13 @@ describe("新規登録の回数制限（購読 API）", () => {
 });
 
 describe("エラーの記録", () => {
-  it("redactErrors のときは、エラーの中身（Upstash が含める送ったコマンド）を記録しない", async () => {
+  it("想定外のエラーの中身（Upstash が含める送ったコマンド）を記録しない", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const res = await handle(
-      async () => {
-        throw new Error(
-          `command was: ["set","sdk:push:x","{\\"endpoint\\":\\"${ENDPOINT}\\",\\"playerId\\":\\"${ALICE}\\"}"]`,
-        );
-      },
-      { redactErrors: true },
-    );
+    const res = await handle(async () => {
+      throw new Error(
+        `command was: ["set","sdk:push:x","{\\"endpoint\\":\\"${ENDPOINT}\\",\\"playerId\\":\\"${ALICE}\\"}"]`,
+      );
+    });
     expect((await read(res)).status).toBe(500);
     expect(log).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify(log.mock.calls[0].map(String));

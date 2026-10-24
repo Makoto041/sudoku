@@ -2,7 +2,7 @@ import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficult
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { CODE_ALPHABET, CODE_LENGTH, normalizeCode } from "@/lib/transfer-code";
-import { ipRateName } from "./push";
+import { ipRateName } from "./ip";
 import type { BoardKey, RankingStore, Session } from "./store";
 
 /** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
@@ -32,6 +32,11 @@ export const RANKING_RATE_LIMITS = {
   transfer: { limit: 100, windowSec: 60 * 60 },
   /** 引き継ぎコードの発行。playerId ごと（playerId は端末が選べるので、主な歯止めは IP ごとの制限） */
   transferPlayer: { limit: 100, windowSec: 24 * 60 * 60 },
+  /**
+   * 引き継ぎコードの発行。全体（超えたら 429 でなく 503）。コードは 1 件 約 4KB で 24 時間残るので、多数の IP からの
+   * 発行で保存先の容量を埋めさせない（代わりに、超えると窓が変わるまで誰も発行できない）
+   */
+  transferTotal: { limit: 300, windowSec: 60 * 60 },
   /** 引き継ぎコードの使用（形の正しいコードだけ。見つからないコードも数える）。IP ごと */
   claim: { limit: 100, windowSec: 60 * 60 },
 } as const;
@@ -53,9 +58,11 @@ async function limit(
   name: string,
   rule: { limit: number; windowSec: number },
   now: number,
+  status = 429,
+  message = "rate limited",
 ) {
   if ((await store.incrRateWindow(name, rule.windowSec, now)) > rule.limit) {
-    throw new RankingError(429, "rate limited");
+    throw new RankingError(status, message);
   }
 }
 
@@ -308,8 +315,8 @@ function newCode(): string {
 
 /**
  * 引き継ぎコードを発行する。24 時間有効で、1 回だけ使える。保存する中身は UTF-8 で MAX_STATS_BYTES まで。
- * client を渡すと（route は必ず渡す）、IP ごと・playerId ごとの回数を制限する。IP を先に数え、IP で超えたら
- * playerId の分は数えない
+ * client を渡すと（route は必ず渡す）、IP ごと・playerId ごと・全体の回数を制限する。この順に数え、先の制限で
+ * 断った分は後の回数に数えない（1 つの IP が 429 を受けながら全体の枠を使い切れないように）
  */
 export async function createTransfer(
   store: RankingStore,
@@ -325,6 +332,7 @@ export async function createTransfer(
   if (client) {
     await limit(store, `xfer:${ipRateName(client.ip)}`, RANKING_RATE_LIMITS.transfer, now);
     await limit(store, `xfer:player:${playerId}`, RANKING_RATE_LIMITS.transferPlayer, now);
+    await limit(store, "xfer:total", RANKING_RATE_LIMITS.transferTotal, now, 503, "too many codes");
   }
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = newCode();

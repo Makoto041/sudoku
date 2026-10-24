@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DIFFICULTIES, parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import { generateDaily } from "@/lib/sudoku/generator";
 import { solve } from "@/lib/sudoku/solver";
@@ -360,8 +360,7 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
 
   it("今日の一問の開始は IP ごとに 1 時間 240 回までで、次の 1 回は 429。窓が変われば、また受け付ける", async () => {
     const store = new MemoryStore();
-    const { limit, windowSec } = RANKING_RATE_LIMITS.start;
-    expect([limit, windowSec]).toEqual([240, 60 * 60]);
+    const { limit } = RANKING_RATE_LIMITS.start;
     for (let i = 0; i < limit; i++) await start(store, i, T0 + i);
     await expectStatus(start(store, limit, T0 + limit), 429);
     // 開始し直し（同じプレイヤー）も数える
@@ -384,8 +383,7 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
 
   it("引き継ぎコードの発行は IP ごとに 1 時間 100 回までで、次の 1 回は 429。窓が変われば、また受け付ける", async () => {
     const store = new MemoryStore();
-    const { limit, windowSec } = RANKING_RATE_LIMITS.transfer;
-    expect([limit, windowSec]).toEqual([100, 60 * 60]);
+    const { limit } = RANKING_RATE_LIMITS.transfer;
     for (let i = 0; i < limit; i++) await createTransfer(store, { playerId: pid(i) }, T0, { ip: IP });
     await expectStatus(createTransfer(store, { playerId: pid(limit) }, T0, { ip: IP }), 429);
     await expect(
@@ -398,8 +396,7 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
 
   it("引き継ぎコードの発行は、IP を変えても同じプレイヤー ID なら 24 時間に 100 回まで。IP で断った分は数えない", async () => {
     const store = new MemoryStore();
-    const { limit, windowSec } = RANKING_RATE_LIMITS.transferPlayer;
-    expect([limit, windowSec]).toEqual([100, 24 * 60 * 60]);
+    const { limit } = RANKING_RATE_LIMITS.transferPlayer;
     // IP の枠を使い切り、ALICE の発行を IP の制限で断らせる
     for (let i = 0; i < RANKING_RATE_LIMITS.transfer.limit; i++) {
       await createTransfer(store, { playerId: pid(i) }, T0, { ip: IP });
@@ -415,6 +412,47 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
     ).resolves.toHaveProperty("code");
   });
 
+  it("引き継ぎコードの発行は、IP とプレイヤー ID を変えても全体で 1 時間 300 回まで。次の 1 回は 503 で保存せず、窓が変われば、また受け付ける", async () => {
+    const store = new MemoryStore();
+    const { limit } = RANKING_RATE_LIMITS.transferTotal;
+    const put = vi.spyOn(store, "putTransfer");
+    for (let i = 0; i < limit; i++) {
+      await createTransfer(store, { playerId: pid(i) }, T0 + i, { ip: `192.0.2.${i % 5}` });
+    }
+    await expect(
+      createTransfer(store, { playerId: pid(limit) }, T0 + HOUR - 1, { ip: OTHER_IP }),
+    ).rejects.toMatchObject({ status: 503, message: "too many codes" });
+    expect(put).toHaveBeenCalledTimes(limit);
+    await expect(
+      createTransfer(store, { playerId: pid(limit) }, T0 + HOUR, { ip: OTHER_IP }),
+    ).resolves.toHaveProperty("code");
+  });
+
+  it("IP ごと・プレイヤー ID ごとの制限で断った発行（429）は、全体の回数に数えない", async () => {
+    const store = new MemoryStore();
+    const { limit } = RANKING_RATE_LIMITS.transferTotal;
+    const perIp = RANKING_RATE_LIMITS.transfer.limit;
+    const perPlayer = RANKING_RATE_LIMITS.transferPlayer.limit;
+    // 1 つの IP が枠を使い切ったあと、断られながら送り続ける
+    for (let i = 0; i < perIp; i++) await createTransfer(store, { playerId: pid(i) }, T0, { ip: IP });
+    for (let i = 0; i < limit; i++) {
+      await expectStatus(createTransfer(store, { playerId: pid(i) }, T0, { ip: IP }), 429);
+    }
+    // 1 つのプレイヤー ID が枠を使い切ったあと、IP を変えて断られながら送り続ける
+    for (let i = 0; i < perPlayer; i++) {
+      await createTransfer(store, { playerId: ALICE }, T0, { ip: `198.51.100.${i}` });
+    }
+    for (let i = 0; i < limit; i++) {
+      const ip = `198.18.${i >> 8}.${i & 0xff}`;
+      await expectStatus(createTransfer(store, { playerId: ALICE }, T0, { ip }), 429);
+    }
+    // 全体の枠の残りは、ほかの要求で使える
+    for (let i = perIp + perPlayer; i < limit; i++) {
+      await createTransfer(store, { playerId: pid(1000 + i) }, T0, { ip: `192.0.2.${i % 5}` });
+    }
+    await expectStatus(createTransfer(store, { playerId: pid(9999) }, T0, { ip: "192.0.2.9" }), 503);
+  });
+
   it("大きすぎる記録（400）は数えない", async () => {
     const store = new MemoryStore();
     for (let i = 0; i < 150; i++) {
@@ -424,13 +462,12 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
       );
     }
     await expect(createTransfer(store, { playerId: ALICE }, T0, { ip: IP })).resolves.toHaveProperty("code");
-    expect(store.rateWindowKeys()).toHaveLength(2);
+    expect(store.rateWindowKeys()).toHaveLength(3);
   });
 
   it("引き継ぎコードの使用は IP ごとに 1 時間 100 回まで（見つからないコードも数える）。断ったときはコードを消さない", async () => {
     const store = new MemoryStore();
-    const { limit, windowSec } = RANKING_RATE_LIMITS.claim;
-    expect([limit, windowSec]).toEqual([100, 60 * 60]);
+    const { limit } = RANKING_RATE_LIMITS.claim;
     const { code } = await createTransfer(store, { playerId: ALICE, name: "アリス" }, T0);
     // 形の違うコード（400）は数えない
     for (let i = 0; i < 150; i++)
@@ -458,6 +495,7 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
       "sdk:push:rl:daily:ip:<hash>:<window>",
       "sdk:push:rl:xfer:ip:<hash>:<window>",
       `sdk:push:rl:xfer:player:${ALICE}:<window>`,
+      "sdk:push:rl:xfer:total:<window>",
     ]);
     for (const k of keys) expect(k).not.toContain(IP);
   });

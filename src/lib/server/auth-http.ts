@@ -42,7 +42,7 @@ function cookieAttrs(config: AuthConfig) {
  * - 設定（WEBAUTHN_ORIGIN）が使えなければ 503。GET は設定した origin と違うホストでも 503
  * - GET 以外は、Origin が設定した origin と一致しなければ 403、本文が JSON でなければ 415（CSRF 対策）
  * - Cookie のセッションを引く。session が required で無ければ 401 にして Cookie を消す
- * - fn が頼んだ Cookie の書き換えを応答に付ける。想定外のエラーは中身なしで記録する
+ * - fn が頼んだ Cookie の書き換えを応答に付ける
  * Cookie は応答に直接書く（route の関数をテストから直接呼べるよう、next/headers の cookies() は使わない）
  */
 export async function handleAuth<T>(
@@ -56,45 +56,42 @@ export async function handleAuth<T>(
   }
   // Cookie の書き換え。最後に頼まれたものだけを、エラーの応答にも付ける
   const cookie: { apply?: (res: NextResponse) => void } = {};
-  const res = await handle(
-    async (store) => {
-      const config = authConfig();
-      if (req.method === "GET") {
-        if (!servedHere(req, config)) throw new RankingError(503, "auth unavailable");
-      } else {
-        if (req.headers.get("origin") !== config.origin) throw new RankingError(403, "invalid origin");
-        if (!isJson(req.headers.get("content-type"))) throw new RankingError(415, "invalid content type");
-      }
-      const body =
-        req.method === "GET" ? {} : await readJson(req, { maxBytes: opts.maxBytes ?? AUTH_MAX_BODY_BYTES });
-      const deps: AuthDeps = { store, auth, config, ip: clientIp(req.headers) };
-      const token = cookieValue(req.headers.get("cookie"), config.cookieName);
-      const session = await sessionFromToken(deps, token);
-      const setCookie = (value: string) => {
-        cookie.apply = (r) =>
-          r.cookies.set(config.cookieName, value, { ...cookieAttrs(config), maxAge: AUTH_SESSION_TTL_SEC });
-      };
-      // 消すときも Path と Secure をそろえる（Path が違うと別の Cookie になり、__Secure- は Secure が無いと拒まれる）
-      const clearSession = () => {
-        cookie.apply = (r) => r.cookies.delete({ name: config.cookieName, ...cookieAttrs(config) });
-      };
-      if (opts.session === "required" && !session) {
-        clearSession();
-        throw new RankingError(401, "not signed in");
-      }
-      return fn({
-        deps,
-        body,
-        session,
-        setSession: setCookie,
-        renewSession: () => {
-          if (session && token) setCookie(token);
-        },
-        clearSession,
-      });
-    },
-    { redactErrors: true },
-  );
+  const res = await handle(async (store) => {
+    const config = authConfig();
+    if (req.method === "GET") {
+      if (!servedHere(req, config)) throw new RankingError(503, "auth unavailable");
+    } else {
+      if (req.headers.get("origin") !== config.origin) throw new RankingError(403, "invalid origin");
+      if (!isJson(req.headers.get("content-type"))) throw new RankingError(415, "invalid content type");
+    }
+    const body =
+      req.method === "GET" ? {} : await readJson(req, { maxBytes: opts.maxBytes ?? AUTH_MAX_BODY_BYTES });
+    const deps: AuthDeps = { store, auth, config, ip: clientIp(req.headers) };
+    const token = cookieValue(req.headers.get("cookie"), config.cookieName);
+    const session = await sessionFromToken(deps, token);
+    const setCookie = (value: string) => {
+      cookie.apply = (r) =>
+        r.cookies.set(config.cookieName, value, { ...cookieAttrs(config), maxAge: AUTH_SESSION_TTL_SEC });
+    };
+    // 消すときも Path と Secure をそろえる（Path が違うと別の Cookie になり、__Secure- は Secure が無いと拒まれる）
+    const clearSession = () => {
+      cookie.apply = (r) => r.cookies.delete({ name: config.cookieName, ...cookieAttrs(config) });
+    };
+    if (opts.session === "required" && !session) {
+      clearSession();
+      throw new RankingError(401, "not signed in");
+    }
+    return fn({
+      deps,
+      body,
+      session,
+      setSession: setCookie,
+      renewSession: () => {
+        if (session && token) setCookie(token);
+      },
+      clearSession,
+    });
+  });
   cookie.apply?.(res);
   return res;
 }

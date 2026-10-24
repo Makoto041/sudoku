@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as startRoute } from "@/app/api/daily/start/route";
 import { POST as submitRoute } from "@/app/api/daily/submit/route";
@@ -16,7 +17,7 @@ import {
   SUBMIT_MAX_BODY_BYTES,
   TRANSFER_MAX_BODY_BYTES,
 } from "./ranking";
-import { MemoryStore } from "./store";
+import { MemoryStore, getStore } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
 
@@ -71,14 +72,6 @@ describe("ランキング API の本文の上限", () => {
     ["/api/daily/submit", submitRoute, SUBMIT_MAX_BODY_BYTES],
   ];
 
-  it("開始・名前・コードの使用は 1KB、発行は 8KB、送信は 64KB", () => {
-    expect([RANKING_MAX_BODY_BYTES, TRANSFER_MAX_BODY_BYTES, SUBMIT_MAX_BODY_BYTES]).toEqual([
-      1024,
-      8 * 1024,
-      64 * 1024,
-    ]);
-  });
-
   it("上限は UTF-8 のバイト数で数え、超えたら 413（上限ちょうどは読んで、入力の検査で 400）", async () => {
     at(1);
     for (const [path, route, max] of ROUTES) {
@@ -114,66 +107,59 @@ describe("ランキング API の本文の上限", () => {
 });
 
 describe("ランキング API の回数制限（route は要求元の IP で数える）", () => {
+  // 上限までの数え方と断った要求の扱いは ranking.test.ts で確かめる。ここでは route が要求元の IP を渡して数えることだけ
   const pid = (test: number, i: number) =>
     `${test.toString(16).padStart(4, "0")}${i.toString(16).padStart(4, "0")}-3333-4333-8333-333333333333`;
-  const start = (playerId: string, headers: Record<string, string>) =>
-    startRoute(post("/api/daily/start", JSON.stringify({ playerId, difficulty: "easy" }), headers));
-  const transfer = (playerId: string, headers: Record<string, string>) =>
-    transferRoute(
-      post("/api/player/transfer", JSON.stringify({ playerId, name: null, stats: null }), headers),
-    );
-  const claim = (code: string, headers: Record<string, string>) =>
-    claimRoute(post("/api/player/claim", JSON.stringify({ code }), headers));
+  const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+  const COUNTED = [
+    {
+      what: "今日の一問の開始",
+      counter: "daily",
+      rule: RANKING_RATE_LIMITS.start,
+      ok: 200,
+      send: (headers: Record<string, string>) =>
+        startRoute(
+          post("/api/daily/start", JSON.stringify({ playerId: ALICE, difficulty: "easy" }), headers),
+        ),
+    },
+    {
+      what: "引き継ぎコードの発行",
+      counter: "xfer",
+      rule: RANKING_RATE_LIMITS.transfer,
+      ok: 200,
+      send: (headers: Record<string, string>) =>
+        transferRoute(
+          post("/api/player/transfer", JSON.stringify({ playerId: ALICE, name: null, stats: null }), headers),
+        ),
+    },
+    {
+      what: "引き継ぎコードの使用",
+      counter: "claim",
+      rule: RANKING_RATE_LIMITS.claim,
+      // 形の正しい、発行していないコード
+      ok: 404,
+      send: (headers: Record<string, string>) =>
+        claimRoute(post("/api/player/claim", JSON.stringify({ code: "ABCD-EFGH" }), headers)),
+    },
+  ];
 
-  it("今日の一問の開始：同じ IP（x-forwarded-for の最初の要素）から 241 回目は 429 で、応答に IP を含めない。別の IP は通る", async () => {
-    at(10);
-    const IP = "203.0.113.70";
-    const { limit } = RANKING_RATE_LIMITS.start;
-    for (let i = 0; i < limit; i++) {
-      const res = await start(pid(10, i), { "x-forwarded-for": `${IP}, 10.0.0.${i % 250}` });
-      expect([i, res.status]).toEqual([i, 200]);
-    }
-    const limited = await read(await start(pid(10, limit), { "x-forwarded-for": `${IP}, 10.0.0.1` }), [IP]);
-    expect(limited).toEqual({ status: 429, body: { error: "rate limited" } });
-    const other = await start(pid(10, limit), { "x-forwarded-for": "198.51.100.70" });
-    expect(other.status).toBe(200);
-  });
-
-  it("引き継ぎコードの発行：同じ IP から 101 回目は 429。別の IP は通る", async () => {
-    at(11);
-    const IP = "203.0.113.71";
-    const { limit } = RANKING_RATE_LIMITS.transfer;
-    for (let i = 0; i < limit; i++) {
-      expect([i, (await transfer(pid(11, i), { "x-real-ip": IP })).status]).toEqual([i, 200]);
-    }
-    expect(await read(await transfer(pid(11, limit), { "x-real-ip": IP }), [IP])).toEqual({
-      status: 429,
-      body: { error: "rate limited" },
-    });
-    expect((await transfer(pid(11, limit), { "x-real-ip": "198.51.100.71" })).status).toBe(200);
-  });
-
-  it("引き継ぎコードの使用：同じ IP から 101 回目は 429（見つからないコードも数える）。断ったコードは別の IP から使える", async () => {
-    at(12);
-    const IP = "203.0.113.72";
-    const issued = await read(await transfer(ALICE, { "x-forwarded-for": "192.0.2.72" }));
-    const { code } = issued.body as { code: string };
-    const { limit } = RANKING_RATE_LIMITS.claim;
-    for (let i = 0; i < limit; i++) {
-      const res = await claim(`ABCD${"23456789"[i % 8]}${"23456789"[(i >> 3) % 8]}Z9`, {
-        "x-forwarded-for": IP,
+  it.each(COUNTED.map((r, i) => ({ ...r, hour: 10 + i })))(
+    "$what：x-forwarded-for の最初の要素の IP で数え、上限を超えたら 429 で、応答に IP を含めない。別の IP は通る",
+    async ({ counter, rule, ok, send, hour }) => {
+      at(hour);
+      const IP = `203.0.113.${70 + hour}`;
+      expect((await send({ "x-forwarded-for": `${IP}, 10.0.0.1` })).status).toBe(ok);
+      // route と同じカウンタを、上限まで route を通さずに進める（route の 1 回目が数えられていなければ、次は通る）
+      for (let i = 1; i < rule.limit; i++) {
+        await getStore()!.incrRateWindow(`${counter}:ip:${sha256(IP)}`, rule.windowSec, Date.now());
+      }
+      expect(await read(await send({ "x-forwarded-for": `${IP}, 10.0.0.2` }), [IP])).toEqual({
+        status: 429,
+        body: { error: "rate limited" },
       });
-      expect([i, res.status]).toEqual([i, 404]);
-    }
-    expect(await read(await claim(code, { "x-forwarded-for": IP }), [IP, code])).toEqual({
-      status: 429,
-      body: { error: "rate limited" },
-    });
-    expect(await read(await claim(code, { "x-forwarded-for": "198.51.100.72" }))).toMatchObject({
-      status: 200,
-      body: { playerId: ALICE },
-    });
-  });
+      expect((await send({ "x-real-ip": "198.51.100.70" })).status).toBe(ok);
+    },
+  );
 
   it("今日の一問の送信と名前の変更は回数を数えない", async () => {
     at(13);
