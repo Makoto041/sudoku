@@ -16,7 +16,7 @@ import type { Achievement } from "@/lib/client/achievements";
 import { formatPoints } from "@/lib/game/score";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
-import { HintPanel, applyHint, firstStage, hintHighlight } from "./HintPanel";
+import { HintPanel, applyHint, firstStage, hintHighlight, useHintAnnouncement } from "./HintPanel";
 import { Result } from "./Result";
 import { ConfirmSheet } from "./Sheets";
 import { findHint, type Hint } from "@/lib/sudoku/hint";
@@ -52,7 +52,7 @@ export function Game({
   onRanking,
   onNewFree,
 }: Props) {
-  const { game, fx, dispatch } = useGame(initial, {
+  const { game, fx, dispatch, announce } = useGame(initial, {
     showMistakes: settings.showMistakes,
     autoClearNotes: settings.autoClearNotes,
   });
@@ -104,6 +104,7 @@ export function Game({
     applyHint(hint.data, game, dispatch);
   };
   const hintCells = useMemo(() => hintHighlight(hint), [hint]);
+  useHintAnnouncement(hint, announce);
 
   const [outcome, setOutcome] = useState<DailyOutcome | null>(() => {
     if (initial.mode !== "daily" || !initial.daily) return null;
@@ -254,7 +255,7 @@ export function Game({
       </header>
 
       <div className="status-row">
-        <div className="stat score-stat" aria-label="スコア">
+        <div className="stat score-stat">
           <span className="stat-label">スコア</span>
           <span key={game.score?.points ?? 0} className="stat-value score-value">
             {formatPoints(game.score?.points ?? 0)}
@@ -429,7 +430,7 @@ function Clock({ game }: { game: GameState }) {
     return () => clearInterval(id);
   }, [game.mode, game.status]);
   return (
-    <div className="clock" aria-label="経過時間">
+    <div className="clock" role="timer" aria-label="経過時間">
       {formatTime(elapsedOf(game))}
     </div>
   );

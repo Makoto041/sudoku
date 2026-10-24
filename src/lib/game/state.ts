@@ -124,7 +124,8 @@ export type Action =
   | { type: "extendSelection"; cell: number }
   /** 修飾キー付きクリック：選択にマスを足す・外す */
   | { type: "toggleSelection"; cell: number }
-  | { type: "move"; dr: number; dc: number }
+  /** from は選んでいるマスが無いときの起点（フォーカスしているマス）。省略時は中央 */
+  | { type: "move"; dr: number; dc: number; from?: number }
   /**
    * t は開始からの経過 ms（スコアの速さに使う）。clearPeers は周りのメモからその数字を消すか（省略時は消す）。
    * どちらも dispatch 側で付ける
@@ -236,6 +237,13 @@ export function isWrong(s: GameState, i: number, values: Grid = s.values): boole
   if (s.solution) return s.solution[i] !== v;
   return PEERS[i].some((p) => values[p] === v);
 }
+
+/**
+ * 間違いとして見せるか（赤くする・揺らす・読み上げで「間違い」と言う）。
+ * conflict は同じ行・列・ブロックに同じ数字があるか、wrong は解答と違うか。重複はいつも、解答と違うだけなら showMistakes のときだけ
+ */
+export const isShownWrong = (m: { conflict: boolean; wrong: boolean }, showMistakes: boolean): boolean =>
+  m.conflict || (m.wrong && showMistakes);
 
 /** 置いたことで揃ったユニット（行・列・ブロック）。全マスが埋まり、間違いが無いもの */
 function completedUnits(s: GameState, values: Grid, cell: number): number[][] {
@@ -372,7 +380,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       return [withCells(s, cell === s.selected ? [...rest.slice(-1), ...rest.slice(0, -1)] : rest), []];
     }
     case "move": {
-      const cur = s.selected ?? 40;
+      const cur = s.selected ?? action.from ?? 40;
       const r = (Math.floor(cur / 9) + action.dr + 9) % 9;
       const c = ((cur % 9) + action.dc + 9) % 9;
       return [pickOne(s, r * 9 + c), []];
