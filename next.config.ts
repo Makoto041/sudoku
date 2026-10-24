@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // next/image を使っていないので、画像最適化（/_next/image）を止めて攻撃面を減らす
+  images: { unoptimized: true },
   async headers() {
     return [
       {
