@@ -94,8 +94,8 @@ export interface RankingStore {
    * キーに窓の番号を入れる（窓が変われば別のカウンタになる）。カウンタは最後に数えてから windowSec で消える
    */
   incrRateWindow(name: string, windowSec: number, now: number): Promise<number>;
-  /** 回数制限のカウンタの、この窓での回数（数えない。無ければ 0） */
-  peekRateWindow(name: string, windowSec: number, now: number): Promise<number>;
+  /** incrRateWindow で数えた 1 回を戻す（数えたあとで断った要求を、回数に残さないため） */
+  decrRateWindow(name: string, windowSec: number, now: number): Promise<void>;
 }
 
 /** 通知の購読。endpoint は検査して正規化したもの、鍵は base64url */
@@ -397,8 +397,10 @@ export class RedisStore implements RankingStore {
     return Number(count);
   }
 
-  async peekRateWindow(name: string, windowSec: number, now: number) {
-    return Number(await this.redis.get(rateKey(name, windowSec, now))) || 0;
+  async decrRateWindow(name: string, windowSec: number, now: number) {
+    // キーは直前に数えたもので期限も付いているが、無かったとき（追い出しなど）に期限なしで残さないよう付け直す
+    const key = rateKey(name, windowSec, now);
+    await this.redis.pipeline().decr(key).expire(key, windowSec).exec();
   }
 }
 
@@ -609,9 +611,9 @@ export class MemoryStore implements RankingStore {
     return v.count;
   }
 
-  async peekRateWindow(name: string, windowSec: number, now: number) {
+  async decrRateWindow(name: string, windowSec: number, now: number) {
     const v = this.rateWindows.get(rateKey(name, windowSec, now));
-    return v && v.expiresAt > now ? v.count : 0;
+    if (v && v.expiresAt > now) v.count--;
   }
 
   /** テスト用：回数制限のカウンタのキー */

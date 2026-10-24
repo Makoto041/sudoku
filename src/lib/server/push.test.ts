@@ -1045,31 +1045,44 @@ describe("新規登録の回数制限", () => {
     ]);
   });
 
-  it("カウンタを読むだけのときは、同じキーを GET で読み、無ければ 0（RedisStore は Redis にはつながない。MemoryStore は数えない）", async () => {
-    const gets: unknown[] = [];
-    const values: Record<string, unknown> = {};
+  it("数えた 1 回を戻すときは、同じキーに DECR と EXPIRE を 1 回の pipeline で送る（RedisStore は Redis にはつながない。MemoryStore は次の回数が 1 減る）", async () => {
+    const commands: unknown[][] = [];
+    let pipelines = 0;
+    const pipeline = {
+      decr(...args: unknown[]) {
+        commands.push(["decr", ...args]);
+        return this;
+      },
+      expire(...args: unknown[]) {
+        commands.push(["expire", ...args]);
+        return this;
+      },
+      exec: async () => [2, 1],
+    };
     const redis = {
-      get: async (key: string) => {
-        gets.push(key);
-        return values[key] ?? null;
+      pipeline: () => {
+        pipelines++;
+        return pipeline;
       },
     };
     const store = new RedisStore(redis as unknown as Redis);
     const now = T0 + 5;
     const key = `sdk:push:rl:xfer:total:${Math.floor(now / HOUR)}`;
-    expect(await store.peekRateWindow("xfer:total", 3600, now)).toBe(0);
-    values[key] = 7;
-    expect(await store.peekRateWindow("xfer:total", 3600, now)).toBe(7);
-    expect(gets).toEqual([key, key]);
+    await store.decrRateWindow("xfer:total", 3600, now);
+    expect(commands).toEqual([
+      ["decr", key],
+      ["expire", key, 3600],
+    ]);
+    expect(pipelines).toBe(1);
 
     const memory = new MemoryStore();
-    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(0);
     await memory.incrRateWindow("ip:abc", 3600, now);
     await memory.incrRateWindow("ip:abc", 3600, now);
-    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(2);
-    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(2);
-    // 次の窓は別のカウンタ
-    expect(await memory.peekRateWindow("ip:abc", 3600, now + HOUR)).toBe(0);
+    await memory.decrRateWindow("ip:abc", 3600, now);
+    expect(await memory.incrRateWindow("ip:abc", 3600, now)).toBe(2);
+    // 数えていない窓のカウンタは作らない
+    await memory.decrRateWindow("ip:abc", 3600, now + HOUR);
+    expect(await memory.incrRateWindow("ip:abc", 3600, now + HOUR)).toBe(1);
   });
 });
 

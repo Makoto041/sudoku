@@ -445,6 +445,110 @@ describe("回数制限（今日の一問の開始・引き継ぎ）", () => {
     await expectStatus(createTransfer(store, { playerId: pid(810) }, T0 + HOUR, { ip: IP }), 429);
   });
 
+  it("混雑の段は全体の 211 回目から。全体の 210 回目では IP の 3 回目も通し、211 回目では IP の 3 回目を断る", async () => {
+    // IP の 3 回目が全体の 210 回目になる
+    const a = new MemoryStore();
+    for (let i = 0; i < 207; i++) await createTransfer(a, { playerId: pid(i) }, T0, { ip: ipOf(i) });
+    for (let i = 0; i < 2; i++) await createTransfer(a, { playerId: pid(300 + i) }, T0, { ip: IP });
+    await expect(createTransfer(a, { playerId: pid(302) }, T0, { ip: IP })).resolves.toHaveProperty("code");
+    // IP の 3 回目が全体の 211 回目になる
+    const b = new MemoryStore();
+    for (let i = 0; i < 208; i++) await createTransfer(b, { playerId: pid(i) }, T0, { ip: ipOf(i) });
+    for (let i = 0; i < 2; i++) await createTransfer(b, { playerId: pid(300 + i) }, T0, { ip: IP });
+    await expectStatus(createTransfer(b, { playerId: pid(302) }, T0, { ip: IP }), 429);
+    // 2 回目までの IP は、211 回目からも通る
+    await expect(createTransfer(b, { playerId: pid(303) }, T0, { ip: OTHER_IP })).resolves.toHaveProperty(
+      "code",
+    );
+  });
+
+  it("混雑の段で断った発行は、全体と playerId の回数から戻す（IP の枠で断ったときと同じ回数になる）", async () => {
+    const store = new MemoryStore();
+    const P = pid(7777);
+    // P は 99 回発行する（10 の IP から）
+    for (let i = 0; i < 99; i++) await createTransfer(store, { playerId: P }, T0, { ip: ipOf(i % 10) });
+    // 全体を 210 回にする（IP の 3 回を含む）
+    for (let i = 99; i < 207; i++)
+      await createTransfer(store, { playerId: pid(i) }, T0, { ip: ipOf(100 + i) });
+    for (let i = 0; i < 3; i++) await createTransfer(store, { playerId: pid(400 + i) }, T0, { ip: IP });
+    // IP の 4〜10 回目（P）は混雑の段で断る
+    for (let i = 0; i < 7; i++)
+      await expectStatus(createTransfer(store, { playerId: P }, T0, { ip: IP }), 429);
+    // 全体は 210 回のまま: ほかの IP で 90 回発行でき、次は 503
+    for (let i = 0; i < 90; i++) {
+      await createTransfer(store, { playerId: pid(500 + i) }, T0, { ip: ipOf(1000 + i) });
+    }
+    await expectStatus(createTransfer(store, { playerId: pid(600) }, T0, { ip: ipOf(2000) }), 503);
+    // P は 99 回のまま: 次の 1 時間（playerId は 24 時間の窓）に 1 回だけ発行できる
+    await expect(
+      createTransfer(store, { playerId: P }, T0 + HOUR, { ip: ipOf(3000) }),
+    ).resolves.toHaveProperty("code");
+    await expectStatus(createTransfer(store, { playerId: P }, T0 + HOUR, { ip: ipOf(3001) }), 429);
+  });
+
+  /** 保存先の往復の遅れを真似る（INCR・DECR は実行した時点で原子的で、その前後で待つ）。遅れは決まった並びの擬似乱数 */
+  class SlowStore extends MemoryStore {
+    private seed = 1;
+    private wait() {
+      this.seed = (this.seed * 48271) % 2147483647;
+      return new Promise((resolve) => setTimeout(resolve, this.seed % 5));
+    }
+    async incrRateWindow(name: string, windowSec: number, now: number) {
+      await this.wait();
+      const count = await super.incrRateWindow(name, windowSec, now);
+      await this.wait();
+      return count;
+    }
+    async decrRateWindow(name: string, windowSec: number, now: number) {
+      await this.wait();
+      await super.decrRateWindow(name, windowSec, now);
+      await this.wait();
+    }
+  }
+
+  /** 各 IP から per 回ずつ、別々のプレイヤー ID で一斉に発行する。応答の状態の一覧を返す */
+  const burst = (store: MemoryStore, ips: string[], per: number) =>
+    Promise.all(
+      ips.flatMap((ip, n) =>
+        Array.from({ length: per }, (_, k) =>
+          createTransfer(store, { playerId: pid(n * per + k) }, T0, { ip }).then(
+            () => 200,
+            (e: RankingError) => e.status,
+          ),
+        ),
+      ),
+    );
+  const countOf = (statuses: number[], status: number) => statuses.filter((s) => s === status).length;
+
+  it("一斉に送っても混雑の段が効き、全体の上限に達しない（IPv4 の 30 個から 10 回ずつ）。断った分は全体の回数に残らない", async () => {
+    const store = new SlowStore();
+    const statuses = await burst(
+      store,
+      Array.from({ length: 30 }, (_, i) => ipOf(i)),
+      10,
+    );
+    const ok = countOf(statuses, 200);
+    // 211 回目からは IP ごとに 2 回まで: 210 + 2 × 30 = 270 を超えない
+    expect(ok).toBeGreaterThanOrEqual(210);
+    expect(ok).toBeLessThanOrEqual(270);
+    expect(countOf(statuses, 429)).toBe(300 - ok);
+    // 全体の回数は発行した数だけ: 残りを別の IP で発行でき、次は 503
+    for (let i = 0; i < 300 - ok; i++) {
+      await createTransfer(store, { playerId: pid(1000 + i) }, T0, { ip: ipOf(1000 + i) });
+    }
+    await expectStatus(createTransfer(store, { playerId: pid(9999) }, T0, { ip: ipOf(9999) }), 503);
+  });
+
+  it("一斉に送っても混雑の段が効き、全体の上限に達しない（IPv6 の 4 つの /48 の、8 つずつの /64 から 10 回ずつ）", async () => {
+    const store = new SlowStore();
+    const ips = Array.from({ length: 4 * 8 }, (_, i) => `2001:db8:${(i >> 3) + 1}:${i & 7}::1`);
+    const statuses = await burst(store, ips, 10);
+    const ok = countOf(statuses, 200);
+    // 211 回目からは /48 ごとに 16 回（2 × 8）まで: 210 + 16 × 4 = 274 を超えない
+    expect(ok).toBeGreaterThanOrEqual(210);
+    expect(ok).toBeLessThanOrEqual(274);
+  });
+
   it("IP ごと・プレイヤー ID ごとの制限で断った発行（429）は、全体の回数に数えない", async () => {
     const store = new MemoryStore();
     // 1 つの IP が枠（10 回）を使い切ったあと、断られながら送り続ける

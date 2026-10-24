@@ -63,21 +63,35 @@ export function ipRateBuckets(ip: string | null): IpBucket[] {
   return [bucket(`${hex(4)}::/64`), bucket(`${hex(3)}::/48`, IPV6_48_SCALE)];
 }
 
+/** 数えた IP の枠の、この窓での回数（数えたあとの値）と上限の倍率 */
+export type IpCount = { count: number; scale: number };
+
 /**
- * 要求元の IP の枠を、細かい順に 1 回ずつ数える。どれかの枠で上限（rule.limit × 枠の倍率）を超えたら false を返し、
+ * 要求元の IP の枠を、細かい順に 1 回ずつ数える。どれかの枠で上限（rule.limit × 枠の倍率）を超えたら within: false で、
  * その先の枠は数えない（/64 で断った要求は /48 に数えない）。カウンタの名前は prefix に枠の名前を続けたもの
  */
-export async function withinIpLimit(
+export async function countIp(
   store: Pick<RankingStore, "incrRateWindow">,
   prefix: string,
   ip: string | null,
   rule: { limit: number; windowSec: number },
   now: number,
-): Promise<boolean> {
+): Promise<{ within: boolean; counts: IpCount[] }> {
+  const counts: IpCount[] = [];
   for (const { name, scale } of ipRateBuckets(ip)) {
-    if ((await store.incrRateWindow(`${prefix}${name}`, rule.windowSec, now)) > rule.limit * scale) {
-      return false;
-    }
+    const count = await store.incrRateWindow(`${prefix}${name}`, rule.windowSec, now);
+    counts.push({ count, scale });
+    if (count > rule.limit * scale) return { within: false, counts };
   }
-  return true;
+  return { within: true, counts };
+}
+
+/** countIp の回数が、どの枠でも別の上限（limit × 枠の倍率）以内か（数え直さずに、より低い上限で判定する） */
+export function ipCountsWithin(counts: IpCount[], limit: number): boolean {
+  return counts.every(({ count, scale }) => count <= limit * scale);
+}
+
+/** countIp の within だけを返す */
+export async function withinIpLimit(...args: Parameters<typeof countIp>): Promise<boolean> {
+  return (await countIp(...args)).within;
 }

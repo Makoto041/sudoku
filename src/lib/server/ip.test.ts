@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ipRateBuckets, withinIpLimit } from "./ip";
+import { countIp, ipCountsWithin, ipRateBuckets, withinIpLimit } from "./ip";
 import { MemoryStore } from "./store";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -89,5 +89,42 @@ describe("withinIpLimit", () => {
         expect([n, i, await count(store, `2001:db8:1:${n}::1`)]).toEqual([n, i, true]);
     }
     expect(await count(store, "2001:db8:1:9::1")).toBe(false);
+  });
+});
+
+describe("countIp と ipCountsWithin", () => {
+  const T0 = Date.parse("2026-10-15T03:00:00Z");
+  const rule = { limit: 10, windowSec: 60 * 60 };
+
+  it("数えた枠の回数と倍率を返し、別の上限（倍率を掛けたもの）で判定し直せる", async () => {
+    const store = new MemoryStore();
+    for (let i = 0; i < 2; i++) await countIp(store, "t:", "203.0.113.7", rule, T0);
+    const v4 = await countIp(store, "t:", "203.0.113.7", rule, T0);
+    expect(v4).toEqual({ within: true, counts: [{ count: 3, scale: 1 }] });
+    expect([ipCountsWithin(v4.counts, 3), ipCountsWithin(v4.counts, 2)]).toEqual([true, false]);
+
+    // /48 は 8 倍: 上限 2 なら /48 は 16 回まで。/64 を変えると 16 回目までは通り、17 回目で超える
+    let last = await countIp(store, "t:", "2001:db8:1:0::1", rule, T0);
+    for (let i = 1; i <= 16; i++) {
+      expect([i, ipCountsWithin(last.counts, 2)]).toEqual([i, true]);
+      last = await countIp(store, "t:", `2001:db8:1:${i}::1`, rule, T0);
+    }
+    expect(last).toEqual({
+      within: true,
+      counts: [
+        { count: 1, scale: 1 },
+        { count: 17, scale: 8 },
+      ],
+    });
+    expect(ipCountsWithin(last.counts, 2)).toBe(false);
+  });
+
+  it("上限を超えた枠で止め、その先の枠は数えない", async () => {
+    const store = new MemoryStore();
+    for (let i = 0; i < 10; i++) await countIp(store, "t:", "2001:db8:1:1::1", rule, T0);
+    expect(await countIp(store, "t:", "2001:db8:1:1::1", rule, T0)).toEqual({
+      within: false,
+      counts: [{ count: 11, scale: 1 }],
+    });
   });
 });
