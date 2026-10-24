@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sfx } from "@/lib/audio";
 import { announcementOf } from "@/lib/game/a11y";
-import { elapsedOf, persisted, reduce, type Action, type Effect, type GameState } from "@/lib/game/state";
+import {
+  elapsedOf,
+  isShownWrong,
+  persisted,
+  reduce,
+  type Action,
+  type Effect,
+  type GameState,
+} from "@/lib/game/state";
 import { haptic } from "@/lib/haptics";
 import { KEYS, save } from "./storage";
 
@@ -18,11 +26,29 @@ export type Fx = {
   popups: Popup[];
   /** 盤面の読み上げ欄に出す知らせ。同じ文でも読み直すよう、知らせるたびに key を変える */
   say: { text: string; key: number } | null;
+  /** 矢印キーで選んだマス。盤面にフォーカスがあれば、フォーカスもここへ動かす（動かすたびに key を変える） */
+  follow: { cell: number; key: number } | null;
 };
 
 export type Popup = { id: number; cell: number; text: string; kind: "gain" | "bonus" | "loss" };
 
-const EMPTY_FX: Fx = { pop: null, shake: null, flash: null, solvedKey: null, popups: [], say: null };
+const EMPTY_FX: Fx = {
+  pop: null,
+  shake: null,
+  flash: null,
+  solvedKey: null,
+  popups: [],
+  say: null,
+  follow: null,
+};
+
+/**
+ * 入力の後にフォーカスを付いて行かせるマス。矢印キーで選んだときだけで、ほかは null。
+ * 戻す・進む・ヒントで選択が動いたときは、そのマスの中身を読み上げ欄で知らせるので、
+ * フォーカスを動かしてマスの名前まで読ませない（同じことを 2 回読ませない）
+ */
+export const followCell = (action: Action, next: GameState): number | null =>
+  action.type === "move" ? next.selected : null;
 
 /** 保存先のキー。練習は保存しないので null */
 export function storageKeyFor(s: GameState): string | null {
@@ -117,11 +143,18 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
       if (!changed && effects.length === 0) return false;
       gameRef.current = next;
       setGame(next);
+      const follow = followCell(raw, next);
+      if (follow !== null) {
+        const key = ++fxKey.current;
+        setFx((prev) => ({ ...prev, follow: { cell: follow, key } }));
+      }
       if (effects.length === 0) return changed;
       playEffects(
         effects.map((e) =>
           // 「間違いをすぐ表示」がオフのときは、重複していない間違いは普通の音にする
-          e.kind === "place" && e.wrong && !options.showMistakes && !e.conflict ? { ...e, wrong: false } : e,
+          e.kind === "place" && e.wrong && !isShownWrong(e, options.showMistakes)
+            ? { ...e, wrong: false }
+            : e,
         ),
       );
       const key = ++fxKey.current;
@@ -142,9 +175,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
             out.pop = { cell: e.cell, key };
             // 揺れは間違えたその入力だけ。正しく入れ直したら前の揺れを引き継がない
             out.shake =
-              e.kind === "place" && ((e.wrong && options.showMistakes) || e.conflict)
-                ? { cell: e.cell, key }
-                : null;
+              e.kind === "place" && isShownWrong(e, options.showMistakes) ? { cell: e.cell, key } : null;
             if (e.units.length) {
               const cells = new Map<number, number>();
               for (const unit of e.units) {

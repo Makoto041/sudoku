@@ -1182,12 +1182,32 @@ test("Tab では盤面の 1 マスにだけ止まり、矢印キーで選ぶと�
   await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
   await expect(pause).toBeVisible();
 
+  // 選択を外した後の矢印キーは、中央ではなくフォーカスしているマスから動かす
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(51)).toBeFocused();
+  await expect(cells.nth(51)).toHaveAttribute("aria-selected", "true");
+
   // 盤面の外にフォーカスがあるときは、矢印キーで選んでもフォーカスを動かさない
   const key = page.locator(".pad-key").first();
   await key.focus();
   await page.keyboard.press("ArrowLeft");
-  await expect(cells.nth(49)).toHaveAttribute("aria-selected", "true");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
   await expect(key).toBeFocused();
+
+  // 戻すで選択が動いても、フォーカスは動かさない（動いた先のマスは読み上げ欄で知らせる）
+  const g = await savedGame(page, "sudoku:free");
+  const e = g.puzzle.findIndex((v, i) => !v && i % 9 < 8);
+  await cells.nth(e).focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press(`Digit${g.solution![e]}`);
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(e + 1)).toBeFocused();
+  await page.keyboard.press("z");
+  await expect(cells.nth(e)).toHaveAttribute("aria-selected", "true");
+  await expect(cells.nth(e)).toHaveAttribute("aria-label", `${cellAt(e)} 空き`);
+  await expect(boardLive(page)).toHaveText(`戻す ${cellAt(e)} 空き`);
+  await expect(cells.nth(e + 1)).toBeFocused();
 });
 
 test("click だけが届く操作（読み上げソフトのダブルタップなど）でも、マスと数字キーが 1 回ずつ効く。置いた結果とヒントを読み上げ欄で知らせる", async ({

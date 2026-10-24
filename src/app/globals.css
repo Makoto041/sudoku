@@ -810,6 +810,11 @@ p {
   display: contents;
 }
 
+/* フォーカスの枠はマスの内側に描く（外側だと隣のマスと盤面の縁に隠れる） */
+.cell:focus-visible {
+  outline-offset: -2px;
+}
+
 .cell:last-child {
   border-right: 0;
 }

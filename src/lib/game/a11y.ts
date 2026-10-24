@@ -1,6 +1,6 @@
 import { colOf, digitsOf, rowOf } from "@/lib/sudoku/core";
 import type { Hint } from "@/lib/sudoku/hint";
-import type { Effect, GameState } from "./state";
+import { isShownWrong, type Effect, type GameState } from "./state";
 
 /** マスの呼び名（例: 3行5列） */
 export const cellName = (i: number) => `${rowOf(i) + 1}行${colOf(i) + 1}列`;
@@ -50,9 +50,7 @@ export function announcementOf(
   for (const e of effects) {
     switch (e.kind) {
       case "place":
-        parts.push(
-          `${cellName(e.cell)}に ${e.digit}${e.conflict || (e.wrong && showMistakes) ? " 間違い" : ""}`,
-        );
+        parts.push(`${cellName(e.cell)}に ${e.digit}${isShownWrong(e, showMistakes) ? " 間違い" : ""}`);
         break;
       case "hint":
         parts.push(`${cellName(e.cell)}に ${e.digit}`);

@@ -12,7 +12,7 @@ import {
 } from "react";
 import { boxOf, colOf, findConflicts, rowOf } from "@/lib/sudoku/core";
 import { cellLabel } from "@/lib/game/a11y";
-import { isGiven, isWrong, type GameState } from "@/lib/game/state";
+import { isGiven, isShownWrong, isWrong, type GameState } from "@/lib/game/state";
 import { usePressGuard } from "@/lib/client/press";
 import type { Fx } from "@/lib/client/useGame";
 
@@ -44,6 +44,12 @@ const NINE = [0, 1, 2, 3, 4, 5, 6, 7, 8];
 /** 何も選んだことが無いときに Tab で止まるマス。矢印キーで選ぶときの起点（中央）と同じにする */
 const FIRST_TAB_STOP = 40;
 
+/** イベントの起きたマスの番号。マスの外なら null */
+function cellIndexOf(target: EventTarget | null): number | null {
+  const cell = (target as Element | null)?.closest<HTMLElement>("[data-i]");
+  return cell ? Number(cell.dataset.i) : null;
+}
+
 export function Board({
   game,
   fx,
@@ -69,15 +75,16 @@ export function Board({
   const [lastSelected, setLastSelected] = useState(FIRST_TAB_STOP);
   if (sel !== null && sel !== lastSelected) setLastSelected(sel);
   const tabStop = sel ?? lastSelected;
-  // 盤面にフォーカスがあれば、選んだマスへフォーカスも動かす（矢印キーで選ぶと、読み上げも付いてくる）。
-  // 数字パッドなど盤面の外にあるフォーカスは動かさない
+  // 矢印キーで選んだら、盤面にフォーカスがあればフォーカスも動かす（読み上げも付いてくる）。
+  // 数字パッドなど盤面の外にあるフォーカスは動かさない。戻す・進むなどで選択が動いたときは動かさない（useGame の followCell）
   const boardRef = useRef<HTMLDivElement>(null);
+  const follow = fx.follow;
   useEffect(() => {
     const board = boardRef.current;
-    if (sel === null || !board?.contains(document.activeElement)) return;
-    const cell = board.querySelector<HTMLElement>(`[data-i="${sel}"]`);
+    if (!follow || !board?.contains(document.activeElement)) return;
+    const cell = board.querySelector<HTMLElement>(`[data-i="${follow.cell}"]`);
     if (cell && cell !== document.activeElement) cell.focus();
-  }, [sel]);
+  }, [follow]);
 
   // なぞって選ぶ。タッチでは押したマスにポインタが捕まり、隣のマスにイベントが来ないので、座標からマスを探す
   const drag = useRef<Drag | null>(null);
@@ -93,13 +100,16 @@ export function Board({
     };
   }, []);
   const press = usePressGuard();
-  const onPointerDown = (e: PointerEvent) => {
-    const cell = (e.target as Element).closest<HTMLElement>("[data-i]");
-    if (!cell || (e.pointerType === "mouse" && e.button !== 0)) return;
-    // click を待たず押した時点で選ぶ（タッチの反応を速くする）
-    const i = Number(cell.dataset.i);
+  /** マスを選ぶ。修飾キー付きなら選択に足す・外す */
+  const pick = (i: number, e: MouseEvent) => {
     if (e.shiftKey || e.ctrlKey || e.metaKey) onToggle(i);
     else onSelect(i);
+  };
+  const onPointerDown = (e: PointerEvent) => {
+    const i = cellIndexOf(e.target);
+    if (i === null || (e.pointerType === "mouse" && e.button !== 0)) return;
+    // click を待たず押した時点で選ぶ（タッチの反応を速くする）
+    pick(i, e);
     press.down(i, e.pointerId);
     // 指のぶれで隣のマスに掛かっても選択が増えないよう、マス幅の半分（盤面の幅の 1/18）動くまではなぞったことにしない
     const slop = e.currentTarget.getBoundingClientRect().width / 18;
@@ -108,11 +118,8 @@ export function Board({
   // 読み上げソフトの操作（ダブルタップなど）と Enter・Space は click だけが届くので、ここで選ぶ。
   // 押した時点で選んだ操作の click は無視する（なぞって選んだ後に、押したマスだけの選択に戻さない）
   const onClick = (e: MouseEvent) => {
-    const cell = (e.target as Element).closest<HTMLElement>("[data-i]");
-    const i = cell ? Number(cell.dataset.i) : -1;
-    if (!press.click(i, performance.now()) || !cell) return;
-    if (e.shiftKey || e.ctrlKey || e.metaKey) onToggle(i);
-    else onSelect(i);
+    const i = cellIndexOf(e.target);
+    if (press.click(i ?? -1, performance.now()) && i !== null) pick(i, e);
   };
   const onPointerMove = (e: PointerEvent) => {
     const d = drag.current;
@@ -143,7 +150,10 @@ export function Board({
     const given = isGiven(game, i);
     const value = game.values[i];
     // 重複はいつも、解答と違う数字は「間違いをすぐ表示」がオンのときに赤くする
-    const wrong = !given && value !== 0 && (conflicts.has(i) || (showMistakes && isWrong(game, i)));
+    const wrong =
+      !given &&
+      value !== 0 &&
+      isShownWrong({ conflict: conflicts.has(i), wrong: isWrong(game, i) }, showMistakes);
     const classes = ["cell"];
     if (c % 3 === 2 && c < 8) classes.push("edge-r");
     if (r % 3 === 2 && r < 8) classes.push("edge-b");
