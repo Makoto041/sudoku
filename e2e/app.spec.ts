@@ -4054,3 +4054,251 @@ test.describe("アカウント（パスキー）", () => {
     await expect(settings.getByRole("button", { name: "コードを入力" })).toBeVisible();
   });
 });
+
+test.describe("表示の設定", () => {
+  // JS のファイルを止めて開くテストがある（Service Worker が返した分は page.route で止められない）
+  test.use({ serviceWorkers: "block" });
+
+  const LIGHT_BG = "rgb(245, 244, 240)";
+  const DARK_BG = "rgb(15, 15, 17)";
+  const NO_OVERFLOW = { scroll: 0, out: [] };
+
+  const settingsSheet = (page: Page) => page.getByRole("dialog", { name: "設定" });
+  const openSettings = (page: Page) => page.getByRole("button", { name: "設定" }).click();
+  const html = (page: Page) => page.locator("html");
+  const background = (page: Page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  /** ブラウザが使う theme-color（先頭の、端末の設定に当てはまるもの。テーマを選んだときの値は大文字なので小文字にそろえる） */
+  const themeColor = (page: Page) =>
+    page.evaluate(() => {
+      const metas = [...document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')];
+      return metas.find((m) => !m.media || matchMedia(m.media).matches)?.content.toLowerCase() ?? null;
+    });
+  /** アプリの JS のファイル（止めると React が動かず、<head> のスクリプトだけが動く） */
+  const isAppScript = (url: URL) => url.pathname.startsWith("/_next/static/") && url.pathname.endsWith(".js");
+  /** 画面の左右からはみ出している要素と、ページを横にスクロールできる幅。横にスクロールする難易度のタブの中身は除く */
+  const horizontalOverflow = (page: Page) =>
+    page.evaluate(() => {
+      const width = document.documentElement.clientWidth;
+      const out = [...document.body.querySelectorAll("*")]
+        .filter((el) => !el.closest(".diff-tabs, .sr-only"))
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && (r.left < -0.5 || r.right > width + 0.5);
+        })
+        .map((el) => `${el.tagName.toLowerCase()}.${el.getAttribute("class") ?? ""}`);
+      return { scroll: document.documentElement.scrollWidth - width, out };
+    });
+  /** ツールの名前と数字キーの数字のうち、ボタンの左右からはみ出しているもの */
+  const labelProblems = (page: Page) =>
+    page.evaluate(() => {
+      const out: string[] = [];
+      const check = (inner: Element | null, outer: Element) => {
+        if (!inner) return;
+        const a = inner.getBoundingClientRect();
+        const b = outer.getBoundingClientRect();
+        if (a.left < b.left - 0.5 || a.right > b.right + 0.5) out.push(outer.textContent ?? "");
+      };
+      for (const tool of document.querySelectorAll(".tools .tool"))
+        check(tool.querySelector(":scope > span:last-child"), tool);
+      for (const key of document.querySelectorAll(".pad-key")) check(key.querySelector(".pad-digit"), key);
+      return out;
+    });
+  /** 文字の大きさ（px） */
+  const fontSize = (page: Page, selector: string) =>
+    page
+      .locator(selector)
+      .first()
+      .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+
+  test("テーマを自動・ライト・ダークで選べる。選んだテーマは端末の設定によらず、開き直しても最初の描画から使う。theme-color も合わせる", async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+    expect(await background(page)).toBe(LIGHT_BG);
+    await openSettings(page);
+    const theme = settingsSheet(page).getByRole("radiogroup", { name: "テーマ" });
+    await expect(theme.getByRole("radio")).toHaveCount(3);
+    await expect(theme.getByRole("radio", { name: "自動" })).toBeChecked();
+
+    // 自動は端末の設定に従う
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect(html(page)).not.toHaveAttribute("data-theme");
+    expect(await background(page)).toBe(DARK_BG);
+    expect(await themeColor(page)).toBe("#0f0f11");
+
+    // ライトを選ぶと、端末がダークでもライト
+    await theme.getByRole("radio", { name: "ライト" }).check();
+    await expect(html(page)).toHaveAttribute("data-theme", "light");
+    expect(await background(page)).toBe(LIGHT_BG);
+    expect(await themeColor(page)).toBe("#f5f4f0");
+
+    // ダークを選ぶと、端末がライトでもダーク。端末に保存する
+    await page.emulateMedia({ colorScheme: "light" });
+    await theme.getByRole("radio", { name: "ダーク" }).check();
+    await expect(html(page)).toHaveAttribute("data-theme", "dark");
+    expect(await background(page)).toBe(DARK_BG);
+    expect(await themeColor(page)).toBe("#0f0f11");
+    const saved = await page.evaluate(() => localStorage.getItem("sudoku:settings"));
+    expect(JSON.parse(saved!).theme).toBe("dark");
+
+    // 開き直すと、React が動く前（JS のファイルを止めても）から <head> のスクリプトでダークになっている
+    await page.route(isAppScript, (route) => route.abort());
+    await page.reload();
+    await expect(html(page)).toHaveAttribute("data-theme", "dark");
+    expect(await background(page)).toBe(DARK_BG);
+    expect(await themeColor(page)).toBe("#0f0f11");
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toHaveCount(0);
+    await page.unroute(isAppScript);
+
+    // 自動に戻すと、端末の設定（ライト）に従う
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+    // React が動いた後も、theme-color は端末の設定に合わせた 2 つと、選んだテーマの 1 つ
+    const metas = page.locator('meta[name="theme-color"]');
+    await expect(metas).toHaveCount(3);
+    await expect(metas.first()).toHaveAttribute("id", "theme-color-fixed");
+    await openSettings(page);
+    await expect(theme.getByRole("radio", { name: "ダーク" })).toBeChecked();
+    await theme.getByRole("radio", { name: "自動" }).check();
+    await expect(html(page)).not.toHaveAttribute("data-theme");
+    expect(await background(page)).toBe(LIGHT_BG);
+    expect(await themeColor(page)).toBe("#f5f4f0");
+    await expect(metas).toHaveCount(2);
+    await expect(page.locator("#theme-color-fixed")).toHaveCount(0);
+  });
+
+  test("文字サイズを大・特大にすると、盤面の数字・メモ・ボタン・本文が大きくなる。幅 375px の特大でも横にはみ出さない", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+    const normal = await fontSize(page, ".daily-name");
+    await openSettings(page);
+    const sheet = settingsSheet(page);
+    const size = sheet.getByRole("radiogroup", { name: "文字サイズ" });
+    await expect(size.getByRole("radio")).toHaveCount(3);
+    await expect(size.getByRole("radio", { name: "標準" })).toBeChecked();
+    await size.getByRole("radio", { name: "大", exact: true }).check();
+    await expect(html(page)).toHaveAttribute("data-text-size", "large");
+    expect(await fontSize(page, ".daily-name")).toBeCloseTo(normal * 1.15, 0);
+    await size.getByRole("radio", { name: "特大" }).check();
+    await expect(html(page)).toHaveAttribute("data-text-size", "xlarge");
+    expect(await fontSize(page, ".daily-name")).toBeCloseTo(normal * 1.3, 0);
+    expect(await horizontalOverflow(page), "設定").toEqual(NO_OVERFLOW);
+    await sheet.getByRole("button", { name: "閉じる" }).click();
+    await expect(sheet).toBeHidden();
+    expect(await horizontalOverflow(page), "ホーム").toEqual(NO_OVERFLOW);
+
+    // 開き直しても特大のまま
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+    await expect(html(page)).toHaveAttribute("data-text-size", "xlarge");
+    expect(await fontSize(page, ".daily-name")).toBeCloseTo(normal * 1.3, 0);
+
+    await page.getByRole("banner").getByRole("button", { name: "記録" }).click();
+    await expect(page.locator(".streak-card")).toBeVisible();
+    expect(await horizontalOverflow(page), "記録").toEqual(NO_OVERFLOW);
+    await page.getByRole("button", { name: "戻る", exact: true }).click();
+    await page.getByRole("button", { name: "ランキング", exact: true }).click();
+    await expect(page.locator(".board-list")).toHaveAttribute("aria-busy", "false");
+    expect(await horizontalOverflow(page), "ランキング").toEqual(NO_OVERFLOW);
+    await page.getByRole("button", { name: "戻る", exact: true }).click();
+
+    // フリープレイ（ツールが 7 つ並ぶ）。メモと数字を 1 つずつ入れる
+    await page.locator(".free-easy").click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    const g = await savedGame(page, "sudoku:free");
+    const [noted, placed] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+    const cells = page.getByRole("gridcell");
+    await cells.nth(noted).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    // 置く数字と違う数字をメモする（同じだと、置いたときに周りのメモから消える）
+    await page.keyboard.press(`Shift+Digit${(g.solution![placed] % 9) + 1}`);
+    await cells.nth(placed).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${g.solution![placed]}`);
+    await expect(page.locator(".notes")).toHaveCount(1);
+    await expect(cells.nth(placed).locator(".digit")).toHaveText(String(g.solution![placed]));
+    await nextFrames(page);
+    expect(await horizontalOverflow(page), "フリープレイ").toEqual(NO_OVERFLOW);
+    expect(await labelProblems(page)).toEqual([]);
+    expect(await toolBadgeProblems(page)).toEqual({ badges: 2, problems: [] });
+    const board = await page.getByRole("grid", { name: "ナンプレの盤面" }).boundingBox();
+    expect(board!.x).toBeGreaterThanOrEqual(0);
+    expect(board!.x + board!.width).toBeLessThanOrEqual(375);
+
+    // 盤面の大きさは変わらず、数字・メモ・数字キー・本文だけが大きい（標準に戻して比べる）
+    const SIZED = [".cell.filled .digit", ".notes", ".pad-digit", ".stat-label"];
+    const boardWidth = () => page.locator(".board").evaluate((el) => el.getBoundingClientRect().width);
+    const measure = async () => {
+      const width = await boardWidth();
+      return Promise.all(SIZED.map(async (s) => (await fontSize(page, s)) / width));
+    };
+    const big = await measure();
+    const bigBoard = await boardWidth();
+    await openSettings(page);
+    await sheet.getByRole("radio", { name: "標準" }).check();
+    await expect(html(page)).not.toHaveAttribute("data-text-size");
+    await sheet.getByRole("button", { name: "閉じる" }).click();
+    await expect(sheet).toBeHidden();
+    const base = await measure();
+    expect(await boardWidth()).toBeCloseTo(bigBoard, 0);
+    const ratios = big.map((b, i) => b / base[i]);
+    // メモは 3×3 の枠に収まるよう 1.2 倍まで
+    [1.3, 1.2, 1.3, 1.3].forEach((r, i) => expect(ratios[i], SIZED[i]).toBeCloseTo(r, 1));
+  });
+
+  test("ピンチで拡大できる（viewport に maximum-scale・user-scalable を付けない）。ゲームの画面とボタンはダブルタップで拡大せず、盤面はなぞって選ぶまま", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");
+    expect(viewport).toContain("width=device-width");
+    expect(viewport).toContain("initial-scale=1");
+    expect(viewport).not.toMatch(/maximum-scale|user-scalable/i);
+    await page.locator(".free-easy").click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    // touch-action を扱えないブラウザ（テストの WebKit など）では見ない
+    if (!(await page.evaluate(() => CSS.supports("touch-action", "manipulation")))) return;
+    const touchAction = (selector: string) =>
+      page
+        .locator(selector)
+        .first()
+        .evaluate((el) => getComputedStyle(el).touchAction);
+    expect(await touchAction(".game")).toBe("manipulation");
+    expect(await touchAction(".pad-key")).toBe("manipulation");
+    expect(await touchAction(".tool")).toBe("manipulation");
+    expect(await touchAction(".board")).toBe("none");
+  });
+
+  test("localStorage が使えなくても、例外を出さず自動のテーマ・標準の文字サイズで開く。選べばその場では効く", async ({
+    page,
+  }) => {
+    // localStorage の読み書きだけを例外にする（sessionStorage はそのまま）
+    await page.addInitScript(() => {
+      const local = window.localStorage;
+      for (const name of ["getItem", "setItem", "removeItem", "key"] as const) {
+        const original = Reflect.get(Storage.prototype, name) as (...args: unknown[]) => unknown;
+        Object.defineProperty(Storage.prototype, name, {
+          configurable: true,
+          writable: true,
+          value(this: Storage, ...args: unknown[]) {
+            if (this === local) throw new DOMException("The operation is insecure.", "SecurityError");
+            return original.apply(this, args);
+          },
+        });
+      }
+    });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+    await expect(html(page)).not.toHaveAttribute("data-theme");
+    await expect(html(page)).not.toHaveAttribute("data-text-size");
+    expect(await background(page)).toBe(DARK_BG);
+    await openSettings(page);
+    await settingsSheet(page).getByRole("radio", { name: "ライト" }).check();
+    await expect(html(page)).toHaveAttribute("data-theme", "light");
+    expect(await background(page)).toBe(LIGHT_BG);
+  });
+});

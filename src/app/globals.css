@@ -49,10 +49,21 @@
   --radius: 20px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* 文字の大きさの倍率（設定の「文字サイズ」。下の data-text-size） */
+  --text-scale: 1;
 }
 
+/* テーマを選んだときは、ブラウザの部品（スクロールバーなど）もそのテーマにする */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/*
+ * ダーク。テーマが自動で端末がダークのときと、テーマでダークを選んだとき（下の :root[data-theme="dark"]）に使う。
+ * 2 か所の値は同じにしておく（src/lib/client/display.test.ts で確かめる）。ライトを選んだときは使わない
+ */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f0f11;
     --surface: #1a1a1d;
     --surface-2: #242428;
@@ -81,6 +92,54 @@
     --mark-7: rgba(174, 62, 201, 0.26);
     --mark-9: rgba(134, 142, 150, 0.49);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f11;
+  --surface: #1a1a1d;
+  --surface-2: #242428;
+  --ink: #f1f1f3;
+  --ink-2: #9b9ba2;
+  --ink-3: #5d5d64;
+  --line: #2c2c31;
+  --line-strong: #8a8a92;
+  --accent: #7891ff;
+  --accent-ink: #93a8ff;
+  --accent-contrast: #0f0f11;
+  --sel: rgba(120, 145, 255, 0.3);
+  --peer: #1f2029;
+  --same: rgba(120, 145, 255, 0.17);
+  --danger: #ff6b63;
+  --danger-soft: rgba(255, 107, 99, 0.16);
+  --success: #4cc98a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-key: 0 1px 0 rgba(0, 0, 0, 0.5);
+  --mark-1: rgba(229, 72, 77, 0.42);
+  --mark-2: rgba(240, 140, 0, 0.21);
+  --mark-3: rgba(245, 217, 10, 0.26);
+  --mark-4: rgba(47, 158, 68, 0.19);
+  --mark-5: rgba(34, 184, 207, 0.39);
+  --mark-6: rgba(59, 91, 219, 0.58);
+  --mark-7: rgba(174, 62, 201, 0.26);
+  --mark-9: rgba(134, 142, 150, 0.49);
+}
+
+/*
+ * 文字サイズ（<html> の data-text-size）。文字の大きさは rem で書き、ここでルートの大きさごと拡縮する。
+ * 標準はブラウザの既定（ふつう 16px）のまま。盤面のマスは画面の幅で決まるので、盤面の数字とメモは --text-scale を掛ける。
+ * ロゴ・結果の点数・連続日数・引き継ぎコードのような大きな表示と、位置を px で決めているツールのバッジは px のまま
+ */
+:root[data-text-size="large"] {
+  --text-scale: 1.15;
+}
+
+:root[data-text-size="xlarge"] {
+  --text-scale: 1.3;
+}
+
+html {
+  font-size: calc(100% * var(--text-scale));
 }
 
 * {
@@ -150,7 +209,7 @@ p {
 }
 
 .small {
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .accent {
@@ -164,7 +223,7 @@ p {
 
 .error-text {
   color: var(--danger);
-  font-size: 13px;
+  font-size: 0.8125rem;
   margin-top: 10px;
 }
 
@@ -228,13 +287,13 @@ p {
 }
 
 .bar-kicker {
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   color: var(--ink-2);
   letter-spacing: 0.02em;
 }
 
 .bar-main {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 650;
 }
 
@@ -250,7 +309,7 @@ p {
   border-radius: 15px;
   background: var(--surface-2);
   font-weight: 600;
-  font-size: 15.5px;
+  font-size: 0.96875rem;
   transition:
     transform 0.12s,
     filter 0.15s;
@@ -269,7 +328,7 @@ p {
   height: 34px;
   padding: 0 14px;
   border-radius: 10px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .btn:disabled {
@@ -293,7 +352,7 @@ p {
   padding: 0 12px;
   border-radius: 999px;
   background: var(--surface-2);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -366,7 +425,7 @@ p {
 }
 
 .card-head h2 {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   margin-bottom: 3px;
 }
@@ -386,7 +445,8 @@ p {
   grid-template-columns: auto 1fr auto 18px;
   align-items: center;
   gap: 12px;
-  height: 54px;
+  /* 文字サイズを大きくすると、難易度の名前が 2 行になることがある */
+  min-height: 54px;
   padding: 0 10px 0 12px;
   border-radius: 14px;
   text-align: left;
@@ -402,14 +462,14 @@ p {
 
 .daily-name {
   font-weight: 600;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .daily-status {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .row-chevron {
@@ -457,7 +517,7 @@ p {
 }
 
 .rank-pill {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 999px;
@@ -497,12 +557,12 @@ p {
 .continue-label {
   display: block;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .continue-meta {
   display: block;
-  font-size: 13px;
+  font-size: 0.8125rem;
   opacity: 0.85;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
@@ -554,11 +614,11 @@ p {
 
 .free-name {
   font-weight: 650;
-  font-size: 15.5px;
+  font-size: 0.96875rem;
 }
 
 .free-best {
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -569,7 +629,7 @@ p {
   justify-content: space-between;
   gap: 10px;
   border-radius: 16px;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
 }
 
 .install-hint {
@@ -604,6 +664,11 @@ p {
   max-width: 1040px;
   height: 100dvh;
   padding-bottom: calc(var(--safe-bottom) + 10px);
+  /*
+   * ボタンやそのすき間を続けて叩いても、ダブルタップで拡大しない（ピンチでは拡大できる）。
+   * ボタンは button の指定で、盤面は .board の touch-action: none で止まる
+   */
+  touch-action: manipulation;
 }
 
 .game-body {
@@ -617,7 +682,8 @@ p {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  height: 36px;
+  /* 中のスコアは 2 行なので、文字サイズに合わせて高くする（標準で 36px） */
+  height: 2.25rem;
   padding: 0 2px;
 }
 
@@ -625,7 +691,7 @@ p {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .stat-label {
@@ -651,11 +717,11 @@ p {
 }
 
 .score-stat .stat-label {
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 .score-value {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 700;
   color: var(--accent-ink);
   animation: bump 0.25s cubic-bezier(0.25, 1.5, 0.45, 1);
@@ -736,7 +802,7 @@ p {
 .clock {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
-  font-size: 19px;
+  font-size: 1.1875rem;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -745,7 +811,7 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--ink-2);
 }
@@ -866,7 +932,7 @@ p {
 
 .digit {
   position: relative;
-  font-size: calc(var(--size) * 0.066);
+  font-size: calc(var(--size) * 0.066 * var(--text-scale));
   line-height: 1;
   font-weight: 500;
   color: var(--accent-ink);
@@ -916,11 +982,11 @@ p {
 
 .hint-title {
   font-weight: 800;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .hint-body {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--ink-2);
 }
@@ -946,7 +1012,7 @@ p {
   border-radius: 14px;
   background: var(--danger-soft);
   color: var(--danger);
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 650;
   animation: rise 0.25s cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }
@@ -1014,7 +1080,8 @@ p {
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
   place-items: center;
-  font-size: calc(var(--size) * 0.026);
+  /* 3×3 の枠に入れるので、文字サイズの倍率は 1.2 までにする（それより大きいと枠からはみ出す） */
+  font-size: calc(var(--size) * 0.026 * min(var(--text-scale), 1.2));
   line-height: 1;
   font-weight: 600;
   color: var(--ink-2);
@@ -1170,7 +1237,7 @@ p {
   gap: 12px;
   color: var(--ink-2);
   font-weight: 600;
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 
 .paused-icon {
@@ -1206,7 +1273,7 @@ p {
   padding: 6px 0;
   border-radius: 14px;
   color: var(--ink-2);
-  font-size: 11.5px;
+  font-size: 0.71875rem;
   font-weight: 600;
   white-space: nowrap;
   transition:
@@ -1217,10 +1284,10 @@ p {
 
 /*
  * フリープレイは 7 つ（練習は 6 つ）並び、狭い画面で「自動メモ」などが収まらないので、並びの幅に合わせて小さくする。
- * 並ぶ数は --tools-n
+ * 文字サイズを大きくしても、並びの幅で決まる大きさを超えない。並ぶ数は --tools-n
  */
 .tools.is-dense .tool {
-  font-size: clamp(9px, 3.5cqi, 11.5px);
+  font-size: clamp(9px, 3.5cqi, 0.71875rem);
 }
 
 .tool:active {
@@ -1313,17 +1380,17 @@ p {
 }
 
 .pad-digit {
-  font-size: 27px;
+  font-size: 1.6875rem;
   font-weight: 550;
   line-height: 1.05;
   color: var(--accent-ink);
 }
 
 .pad-left {
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 600;
   color: var(--ink-3);
-  height: 12px;
+  height: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1338,7 +1405,7 @@ p {
 }
 
 .pad.is-notes .pad-digit {
-  font-size: 20px;
+  font-size: 1.25rem;
   color: var(--ink-2);
 }
 
@@ -1357,10 +1424,10 @@ p {
 
 /* 色の番号。数字モードの残りの数と同じ高さにして、キーの中の位置をそろえる */
 .swatch-num {
-  height: 12px;
-  font-size: 11px;
+  height: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 650;
-  line-height: 12px;
+  line-height: 0.75rem;
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
@@ -1419,7 +1486,7 @@ p {
     border-radius: 18px;
   }
   .pad-digit {
-    font-size: 34px;
+    font-size: 2.125rem;
   }
   .swatch {
     --d: min(40px, 80cqi);
@@ -1437,7 +1504,7 @@ p {
     height: 44px;
   }
   .status-row {
-    height: 28px;
+    height: 1.75rem;
     max-width: 640px;
     width: 100%;
     margin: 0 auto;
@@ -1464,7 +1531,7 @@ p {
     border-radius: 12px;
   }
   .pad-digit {
-    font-size: 24px;
+    font-size: 1.5rem;
   }
 }
 
@@ -1533,7 +1600,7 @@ p {
 }
 
 .sheet-title {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 700;
 }
 
@@ -1557,7 +1624,7 @@ p {
 
 .toggle-heading {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 700;
   color: var(--ink-2);
 }
@@ -1585,12 +1652,21 @@ p {
 .toggle-label {
   display: block;
   font-weight: 600;
-  font-size: 15.5px;
+  font-size: 0.96875rem;
+}
+
+/* いくつかから 1 つを選ぶ項目（テーマ・文字サイズ）。選ぶところは名前の下に、幅いっぱいに並べる */
+.choice-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .toggle-hint {
   display: block;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--ink-2);
   margin-top: 2px;
 }
@@ -1670,7 +1746,7 @@ p {
   color: var(--ink);
   padding: 0 16px;
   font: inherit;
-  font-size: 17px;
+  font-size: 1.0625rem;
 }
 
 .text-input:focus {
@@ -1692,7 +1768,7 @@ p {
 }
 
 .result-kicker {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--ink-2);
   font-weight: 600;
 }
@@ -1726,28 +1802,28 @@ p {
   justify-content: center;
   gap: 6px;
   min-height: 30px;
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: var(--gold);
 }
 
 .result-rank strong {
-  font-size: 24px;
+  font-size: 1.5rem;
   font-family: var(--font-num);
 }
 
 .result-rank .muted {
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .result-error {
   color: var(--danger);
-  font-size: 14px;
+  font-size: 0.875rem;
   display: inline-flex;
   align-items: center;
 }
 
 .best-chip {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 700;
   padding: 5px 12px;
   border-radius: 999px;
@@ -1762,13 +1838,13 @@ p {
 
 .result .ach-line {
   max-width: 100%;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 650;
   line-height: 1.5;
 }
 
 .practice-result .ach-line {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 
@@ -1785,14 +1861,14 @@ p {
 }
 
 .result-stats dt {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--ink-2);
 }
 
 .result-stats dd {
   margin: 0;
   font-family: var(--font-num);
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 650;
 }
 
@@ -1808,7 +1884,7 @@ p {
 
 .result-techniques-title {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 400;
   color: var(--ink-2);
 }
@@ -1829,7 +1905,7 @@ p {
   padding: 4px 10px;
   border-radius: 999px;
   background: var(--surface-2);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -1842,7 +1918,7 @@ p {
 }
 
 .result-techniques-note {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--ink-2);
 }
 
@@ -1880,10 +1956,11 @@ p {
 }
 
 .segmented button,
+.segmented label,
 .diff-tabs button {
   height: 34px;
   border-radius: 10px;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 600;
   color: var(--ink-2);
   transition:
@@ -1893,10 +1970,36 @@ p {
 }
 
 .segmented button.is-active,
+.segmented label.is-active,
 .diff-tabs button.is-active {
   background: var(--surface);
   color: var(--ink);
   box-shadow: var(--shadow-key);
+}
+
+/* ラジオボタンで選ぶ切り替え（設定）。ボタンは見えなくして文字の上に重ね、押せるようにする */
+.segmented label {
+  position: relative;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.segmented input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .diff-tabs {
@@ -1963,7 +2066,7 @@ p {
   justify-self: center;
   font-family: var(--font-num);
   font-weight: 700;
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--ink-2);
 }
 
@@ -1976,7 +2079,7 @@ p {
   display: grid;
   place-items: center;
   color: #fff;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .rank-1 {
@@ -1998,7 +2101,7 @@ p {
 
 .me-tag {
   margin-left: 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 999px;
@@ -2016,11 +2119,11 @@ p {
 
 .points {
   font-weight: 700;
-  font-size: 16px;
+  font-size: 1rem;
 }
 
 .time {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--ink-2);
 }
 
@@ -2058,7 +2161,7 @@ p {
   border-radius: 16px;
   background: var(--ink);
   color: var(--bg);
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 
 .me-bar .muted {
@@ -2067,7 +2170,7 @@ p {
 
 .me-bar strong {
   font-family: var(--font-num);
-  font-size: 19px;
+  font-size: 1.1875rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2093,7 +2196,7 @@ p {
   border-radius: 999px;
   background: var(--same);
   color: var(--accent-ink);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
   vertical-align: 1px;
 }
@@ -2129,11 +2232,11 @@ p {
 }
 
 .streak-sub {
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .card-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 700;
   margin-bottom: 8px;
 }
@@ -2148,7 +2251,7 @@ p {
 .cal-title {
   text-align: center;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2156,7 +2259,7 @@ p {
   margin-left: 8px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 800;
   background: color-mix(in srgb, var(--gold) 20%, transparent);
   color: var(--gold);
@@ -2171,7 +2274,7 @@ p {
 }
 
 .cal-week {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--ink-3);
   padding-bottom: 2px;
 }
@@ -2184,7 +2287,7 @@ p {
   border-radius: 50%;
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--ink-2);
 }
 
@@ -2211,7 +2314,7 @@ p {
 .rec-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 .rec-table th,
@@ -2241,7 +2344,7 @@ p {
 }
 
 .ach-count {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--ink-2);
 }
 
@@ -2282,7 +2385,7 @@ p {
 
 .ach-name {
   min-width: 0;
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 650;
   color: var(--ink-2);
   white-space: normal;
@@ -2296,14 +2399,14 @@ p {
 .ach-desc {
   grid-column: 2 / -1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   line-height: 1.4;
   color: var(--ink-2);
   white-space: normal;
 }
 
 .ach-date {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--ink-2);
 }
 
@@ -2356,7 +2459,7 @@ p {
 /* 新しい URL へ移る */
 .move-url {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 15px;
+  font-size: 0.9375rem;
   overflow-wrap: anywhere;
 }
 
@@ -2401,7 +2504,7 @@ p {
   padding-left: 1.2em;
   display: grid;
   gap: 4px;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   line-height: 1.5;
 }
 
@@ -2433,7 +2536,7 @@ p {
   display: grid;
   grid-template-columns: 6.5em 1fr;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .howto-defs dt {
@@ -2462,7 +2565,7 @@ p {
 }
 
 .practice-entry-title {
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
 }
 
@@ -2502,7 +2605,7 @@ p {
 .practice-name {
   min-width: 0;
   font-weight: 600;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.3;
 }
 
@@ -2510,7 +2613,7 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--ink-2);
 }
 
@@ -2541,7 +2644,7 @@ p {
 .practice-status {
   grid-template-columns: 1fr;
   justify-items: center;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   color: var(--ink-2);
 }
 
@@ -2554,7 +2657,7 @@ p {
   border-radius: 14px;
   background: color-mix(in srgb, var(--success) 14%, var(--surface));
   color: var(--success);
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 700;
   animation: rise 0.25s cubic-bezier(0.2, 0.9, 0.3, 1) both;
 }

@@ -13,6 +13,7 @@ import { summarize } from "@/lib/client/records";
 import { loadStats, mergeStats, recordFreeStart } from "@/lib/client/stats";
 import { firstUnsolved, loadPracticeProgress, markPracticeSolved } from "@/lib/client/practiceProgress";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings, type Settings } from "@/lib/client/settings";
+import { applyDisplay } from "@/lib/client/display";
 import { KEYS, load, remove, save } from "@/lib/client/storage";
 import { howtoSeen, markHowtoSeen } from "@/lib/client/howto";
 import { updateAchievements } from "@/lib/client/achievements";
@@ -582,6 +583,9 @@ export function App() {
   const updateSettings = (s: Settings) => {
     setSettings(s);
     saveSettings(s);
+    // テーマと文字サイズは <html> の属性で効かせる。開いたときは <head> のスクリプトが付けるので、変えたときだけ付け直す
+    // （設定の state は最初は既定なので、描画のたびに付け直すと、開いた直後に一瞬既定の見た目に戻る）
+    applyDisplay(s);
   };
 
   // 旧版や手で書き換えた余計な項目を送ると、サーバーの上限を超えて発行できないことがある
