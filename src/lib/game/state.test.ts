@@ -8,6 +8,7 @@ import {
   elapsedOf,
   formatTime,
   isGiven,
+  isShownWrong,
   isSolved,
   isWrong,
   newGame,
@@ -117,6 +118,26 @@ describe("game reducer", () => {
     expect(run(s, { type: "hint" }).effects[0].kind).toBe("blocked");
     expect(elapsedOf(s, 61_000)).toBe(60_000);
     expect(run(s, { type: "pause" }).s.status).toBe("playing");
+  });
+
+  it("矢印キーで動かす起点は選んでいるマス。選んでいなければフォーカスしているマス（from）、それも無ければ中央", () => {
+    const { s: s0 } = freeGame();
+    expect(run(s0, { type: "move", dr: 0, dc: 1 }).s.selected).toBe(41);
+    expect(run(s0, { type: "move", dr: 0, dc: 1, from: 10 }).s.selected).toBe(11);
+    // 端では反対側へ回り込む
+    expect(run(s0, { type: "move", dr: -1, dc: 0, from: 3 }).s.selected).toBe(75);
+    const picked = run(s0, { type: "select", cell: 20 }).s;
+    expect(run(picked, { type: "move", dr: 1, dc: 0, from: 10 }).s.selected).toBe(29);
+  });
+
+  it("間違いとして見せるのは、重複はいつも、解答と違うだけなら「間違いをすぐ表示」のときだけ", () => {
+    for (const showMistakes of [true, false]) {
+      expect(isShownWrong({ conflict: true, wrong: true }, showMistakes)).toBe(true);
+      expect(isShownWrong({ conflict: true, wrong: false }, showMistakes)).toBe(true);
+      expect(isShownWrong({ conflict: false, wrong: false }, showMistakes)).toBe(false);
+    }
+    expect(isShownWrong({ conflict: false, wrong: true }, true)).toBe(true);
+    expect(isShownWrong({ conflict: false, wrong: true }, false)).toBe(false);
   });
 
   it("時間の表示", () => {

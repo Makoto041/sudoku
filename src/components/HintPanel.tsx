@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { sfx } from "@/lib/audio";
+import { hintAnnouncement } from "@/lib/game/a11y";
 import type { Action, GameState } from "@/lib/game/state";
 import { notesAfterHint, type Hint } from "@/lib/sudoku/hint";
 import { Close } from "./icons";
@@ -17,6 +19,21 @@ export function hintHighlight(hint: { data: Hint; stage: 1 | 2 } | null) {
     pattern: new Set("pattern" in h && hint.stage === 2 ? h.pattern : []),
     targets: new Set(hint.stage === 2 ? h.targets : []),
   };
+}
+
+/**
+ * ヒントを開いた・説明に進んだときに、盤面の読み上げ欄で知らせる（パネルは閉じると消えるので、パネル自体では知らせない）
+ */
+export function useHintAnnouncement(
+  hint: { data: Hint; stage: 1 | 2 } | null,
+  announce: (text: string) => void,
+) {
+  const shown = useRef<1 | 2 | null>(null);
+  useEffect(() => {
+    const prev = shown.current;
+    shown.current = hint?.stage ?? null;
+    if (hint) announce(hintAnnouncement(hint.data, hint.stage, prev));
+  }, [hint, announce]);
 }
 
 /** ヒントを盤面に反映する：置く・メモに反映・1マス埋める・違う数字を消す */
@@ -45,7 +62,7 @@ type Props = {
 /** 手筋ヒントのパネル。手筋の名前 → 説明の順に見せ、盤面に反映する */
 export function HintPanel({ hint, stage, onMore, onApply, onClose }: Props) {
   return (
-    <div className="hint-panel" role="status">
+    <div className="hint-panel">
       <div className="hint-text">
         <span className="hint-title">{hint.title}</span>
         {stage === 2 && <span className="hint-body">{hint.text}</span>}

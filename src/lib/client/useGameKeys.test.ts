@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyCommand, type KeyInput } from "./useGameKeys";
+import { keyCommand, withFocusedCell, type KeyInput } from "./useGameKeys";
 
 /** key と、数字なら code を渡す。修飾キーは init で付ける */
 const press = (key: string, init: Partial<KeyInput> = {}, paused = false) =>
@@ -70,5 +70,19 @@ describe("キー操作", () => {
   it("Space は一時停止中なら再開、そうでなければ一時停止", () => {
     expect(press(" ")).toEqual({ run: { type: "pause" }, prevent: true });
     expect(press(" ", {}, true)).toEqual({ run: { type: "resume" }, prevent: true });
+  });
+});
+
+describe("フォーカスしているマス", () => {
+  it("矢印キーの移動にだけ、フォーカスしているマスを起点として添える", () => {
+    expect(withFocusedCell({ type: "move", dr: 0, dc: 1 }, 12)).toEqual({
+      type: "move",
+      dr: 0,
+      dc: 1,
+      from: 12,
+    });
+    expect(withFocusedCell({ type: "move", dr: 0, dc: 1 }, null)).toEqual({ type: "move", dr: 0, dc: 1 });
+    expect(withFocusedCell({ type: "input", digit: 3 }, 12)).toEqual({ type: "input", digit: 3 });
+    expect(withFocusedCell({ type: "select", cell: null }, 12)).toEqual({ type: "select", cell: null });
   });
 });
