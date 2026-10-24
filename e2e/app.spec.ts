@@ -498,6 +498,61 @@ test("置く音の録音を配信している", async ({ request }) => {
   expect((await res.body()).length).toBeGreaterThan(1000);
 });
 
+test("CSP を付けて配り、ホーム・フリープレイ・設定・記録・遊び方・練習で CSP の違反が出ない", async ({
+  page,
+}) => {
+  const violations: string[] = [];
+  page.on("console", (m) => {
+    if (/Content Security Policy/i.test(m.text())) violations.push(m.text());
+  });
+  await page.exposeFunction("__cspViolation", (v: string) => violations.push(v));
+  await page.addInitScript(() =>
+    document.addEventListener("securitypolicyviolation", (e) =>
+      (window as unknown as { __cspViolation: (v: string) => void }).__cspViolation(
+        `${e.violatedDirective} ${e.blockedURI}`,
+      ),
+    ),
+  );
+  const res = await page.goto("/");
+  expect(res!.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(res!.headers()["content-security-policy"]).not.toContain("'unsafe-eval'");
+  expect(res!.headers()["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const first = g.puzzle.indexOf(0);
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![first]}`);
+  // 置く音の録音は最初の入力で fetch で読む（connect-src）。Service Worker が返した分も Resource Timing に残る
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => performance.getEntriesByName(new URL("/sounds/clack.mp3", location.href).href).length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+
+  await page.getByRole("banner").getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  await page.getByRole("banner").getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
+  await page.goBack();
+  await howtoButton(page).click();
+  await page.getByRole("dialog", { name: "遊び方" }).getByRole("button", { name: "練習してみる" }).click();
+  await expect(page.getByRole("heading", { name: practiceItem("naked-single").name })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator(".practice-row").first()).toBeVisible();
+  expect(violations).toEqual([]);
+});
+
 test("正しく置くと得点が浮かび、スコアが増える。間違えると減る", async ({ page }) => {
   await page.goto("/");
   await page

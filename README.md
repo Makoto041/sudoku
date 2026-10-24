@@ -133,6 +133,17 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 - `VAPID_SUBJECT` は新しい URL（`https://nanpure-game.vercel.app`）にする。
 - `WEBAUTHN_ORIGIN` は `src/lib/site.ts` の `SITE_ORIGIN` と同じ値にする（「アカウント（パスキー）」を参照）。
 
+### セキュリティヘッダー
+
+- 全パス（ページ・API・静的ファイル・`/sw.js`）に付ける（`next.config.ts` の `headers()`。中身は `src/lib/security-headers.ts`）。
+- CSP: スクリプト・画像・通信などの先は同じ origin だけ。nonce は使わず、インラインの `<script>` とスタイルは `'unsafe-inline'` で許す（nonce にするとページを毎回サーバーで描画することになり、関数の実行が増える）。属性のハンドラ（`onclick` など）は使っていないので `script-src-attr 'none'` で止める。`'unsafe-eval'` は `next dev` のときだけ足す（`next.config.ts` の phase で見る）。外部のスクリプト・画像・通信先を使うときは CSP にも足す（足さないと読み込めない）。
+- iframe への埋め込みは `frame-ancestors 'none'` と `X-Frame-Options: DENY` で止める。
+- `Referrer-Policy: strict-origin-when-cross-origin`。`no-referrer` などにしない（新しい URL は旧 URL から開かれたかを `document.referrer` で見る。「URL の移行」を参照）。
+- ほか: `X-Content-Type-Options: nosniff`、`Cross-Origin-Opener-Policy: same-origin`（ポップアップと `window.opener` は使っていない）、`Permissions-Policy` でカメラ・マイク・位置情報だけを止める（触覚・通知・パスキー・共有は止めない）。
+- `Strict-Transport-Security` は Vercel が付けるので、ここでは付けない。
+- Service Worker は保存した応答をヘッダーごと返すので、ヘッダーを変えたら `public/sw.js` の `CACHE` の版を上げる（入れ替わって取り直す）。
+- 既知の限界: `'unsafe-inline'` を許すので、HTML に入り込んだインラインの `<script>` は止められない（外部のスクリプトの読み込みと、fetch・画像などでほかの origin へ送るのは止める。ページの移動・WebRTC（`RTCPeerConnection` の STUN/TURN）・DNS のプリフェッチで送るのは止められない）。プレビューで Vercel のツールバー（`vercel.live`）は読み込めない。
+
 ### アカウント（パスキー）
 
 - 任意のログイン。パスキー（WebAuthn）だけを使い、メールアドレス・パスワード・外部サービスのログインは使わない。ログインしなくても今までどおり遊べる。端末側は `src/lib/client/account.ts` と、設定の「アカウント」（`src/components/Sheets.tsx` の `AccountSheet`）。
