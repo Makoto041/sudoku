@@ -586,16 +586,14 @@ describe("本文の読み取り", () => {
     expect(pulls).toBeLessThanOrEqual(20);
   });
 
-  it("JSON でなければ 400、オブジェクトでなければ {}（上限が無いときも同じ）", async () => {
+  it("JSON でなければ 400、オブジェクトでなければ {}", async () => {
     for (const body of ["", "x", "{"]) {
       await expectStatus(readJson(req(body), opts), 400);
-      await expectStatus(readJson(req(body)), 400);
     }
     for (const body of ["null", "42", '"s"']) {
       await expect(readJson(req(body), opts)).resolves.toEqual({});
-      await expect(readJson(req(body))).resolves.toEqual({});
     }
-    await expect(readJson(req('{"a":1}'))).resolves.toEqual({ a: 1 });
+    await expect(readJson(req('{"a":1}'), opts)).resolves.toEqual({ a: 1 });
   });
 });
 

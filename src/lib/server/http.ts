@@ -7,25 +7,27 @@ export const NO_STORE = { "Cache-Control": "no-store" };
 
 /**
  * ランキング API 共通：保存先の用意、エラーの HTTP 変換、キャッシュ無効化。
- * redactErrors のときは、想定外のエラーを中身なしで記録する（通知の購読は、Upstash のエラーに
- * 送ったコマンド＝endpoint や鍵が含まれうる）
+ * 想定外のエラーは、既定で中身なしで記録する（Upstash のエラーには送ったコマンド＝playerId・引き継ぎコード・
+ * 記録・通知の endpoint や鍵が含まれうる）。redactErrors: false のときだけ中身を記録する。
+ * cacheControl を渡すと、成功した応答だけその Cache-Control にする（エラーは no-store のまま）
  */
 export async function handle<T>(
   fn: (store: RankingStore) => Promise<T>,
-  opts: { redactErrors?: boolean } = {},
+  opts: { redactErrors?: boolean; cacheControl?: string } = {},
 ) {
   const store = getStore();
   if (!store) {
     return NextResponse.json({ error: "ranking unavailable" }, { status: 503, headers: NO_STORE });
   }
   try {
-    return NextResponse.json(await fn(store), { headers: NO_STORE });
+    const headers = opts.cacheControl ? { "Cache-Control": opts.cacheControl } : NO_STORE;
+    return NextResponse.json(await fn(store), { headers });
   } catch (err) {
     if (err instanceof RankingError) {
       return NextResponse.json({ error: err.message }, { status: err.status, headers: NO_STORE });
     }
     console.error(
-      opts.redactErrors ? `request failed (${err instanceof Error ? err.name : typeof err})` : err,
+      (opts.redactErrors ?? true) ? `request failed (${err instanceof Error ? err.name : typeof err})` : err,
     );
     return NextResponse.json({ error: "internal error" }, { status: 500, headers: NO_STORE });
   }
@@ -65,14 +67,14 @@ async function readText(req: Request, maxBytes: number): Promise<string> {
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-/** 本文を JSON として読む。JSON でなければ 400、maxBytes を超えたら 413。オブジェクト以外は {} にする */
-export async function readJson(
-  req: Request,
-  opts: { maxBytes?: number } = {},
-): Promise<Record<string, unknown>> {
+/**
+ * 本文を JSON として読む。JSON でなければ 400、maxBytes（UTF-8 のバイト数）を超えたら 413。オブジェクト以外は {} にする。
+ * 上限は必ず指定する（上限なしでは読まない）
+ */
+export async function readJson(req: Request, opts: { maxBytes: number }): Promise<Record<string, unknown>> {
   let body: unknown;
   try {
-    body = JSON.parse(await readText(req, opts.maxBytes ?? Infinity));
+    body = JSON.parse(await readText(req, opts.maxBytes));
   } catch (err) {
     if (err instanceof RankingError) throw err;
     throw new RankingError(400, "invalid json");
