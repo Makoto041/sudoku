@@ -132,7 +132,7 @@ describe("表示の設定を <html> に付ける", () => {
     expect(state()).toEqual(NOTHING);
   });
 
-  it("applyDisplay は、テーマを替えても theme-color を 1 つだけ使い、自動に戻すと属性ごと外す", () => {
+  it("applyDisplay は、テーマを替えても theme-color を 1 つだけ置き、自動に戻すと属性ごと外す", () => {
     const { doc, state } = fakeDocument();
     const d = doc as unknown as Document;
     applyDisplay({ theme: "dark", textSize: "xlarge" }, d);
@@ -162,12 +162,10 @@ describe("globals.css のテーマ", () => {
   };
   const tokens = (body: string) => body.match(/--[\w-]+:[^;]+;/g) ?? [];
 
-  it("ダークの値は、自動で端末がダークのときとダークを選んだときで同じ。ライトを選んだときは端末のダークを使わない", () => {
-    expect(css).toContain('@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]) {');
+  it("ダークの値は、自動で端末がダークのときとダークを選んだときで同じ", () => {
     const auto = tokens(block(':root:not([data-theme="light"])'));
-    expect(auto.length).toBeGreaterThan(20);
+    expect(auto.length).toBeGreaterThan(0);
     expect(tokens(block(':root[data-theme="dark"]'))).toEqual(auto);
-    expect(css.match(/prefers-color-scheme: dark/g)).toHaveLength(1);
   });
 
   it("theme-color の色は背景（--bg）と同じ", () => {

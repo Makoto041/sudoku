@@ -49,23 +49,14 @@ export function applyDisplay({ theme, textSize }: Display, doc: Document = docum
   else root.setAttribute("data-theme", theme);
   if (textSize === "normal") root.removeAttribute("data-text-size");
   else root.setAttribute("data-text-size", textSize);
-  const meta = doc.getElementById(THEME_COLOR_ID);
-  if (theme === "auto") {
-    meta?.remove();
-    return;
-  }
-  if (meta) {
-    meta.setAttribute("content", FIXED_THEME_COLORS[theme]);
-    return;
-  }
-  const fixed = doc.createElement("meta");
-  fixed.setAttribute("id", THEME_COLOR_ID);
-  fixed.setAttribute("name", "theme-color");
-  fixed.setAttribute("content", FIXED_THEME_COLORS[theme]);
-  doc.head.prepend(fixed);
+  doc.getElementById(THEME_COLOR_ID)?.remove();
+  if (theme === "auto") return;
+  const meta = doc.createElement("meta");
+  meta.setAttribute("id", THEME_COLOR_ID);
+  meta.setAttribute("name", "theme-color");
+  meta.setAttribute("content", FIXED_THEME_COLORS[theme]);
+  doc.head.prepend(meta);
 }
-
-const json = (x: unknown) => JSON.stringify(x);
 
 /**
  * <head> に置くスクリプト。最初の描画の前に、保存した表示の設定を applyDisplay と同じように付ける
@@ -75,17 +66,17 @@ const json = (x: unknown) => JSON.stringify(x);
  */
 export const DISPLAY_SCRIPT = `(function () {
   try {
-    var s = JSON.parse(localStorage.getItem(${json(KEYS.settings)})) || {};
+    var s = JSON.parse(localStorage.getItem(${JSON.stringify(KEYS.settings)})) || {};
     var root = document.documentElement;
-    if (${json(THEMES.filter((t) => t !== "auto"))}.indexOf(s.theme) >= 0) {
+    if (${JSON.stringify(THEMES.filter((t) => t !== "auto"))}.indexOf(s.theme) >= 0) {
       root.setAttribute("data-theme", s.theme);
       var meta = document.createElement("meta");
-      meta.setAttribute("id", ${json(THEME_COLOR_ID)});
+      meta.setAttribute("id", ${JSON.stringify(THEME_COLOR_ID)});
       meta.setAttribute("name", "theme-color");
-      meta.setAttribute("content", ${json(FIXED_THEME_COLORS)}[s.theme]);
+      meta.setAttribute("content", ${JSON.stringify(FIXED_THEME_COLORS)}[s.theme]);
       document.head.prepend(meta);
     }
-    if (${json(TEXT_SIZES.filter((t) => t !== "normal"))}.indexOf(s.textSize) >= 0) {
+    if (${JSON.stringify(TEXT_SIZES.filter((t) => t !== "normal"))}.indexOf(s.textSize) >= 0) {
       root.setAttribute("data-text-size", s.textSize);
     }
   } catch (e) {}

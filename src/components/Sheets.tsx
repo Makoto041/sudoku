@@ -139,13 +139,11 @@ const TEXT_SIZE_OPTIONS: [TextSize, string][] = [
 /** いくつかから 1 つを選ぶ項目（ラジオボタン。矢印キーでも選べる） */
 function Choice<T extends string>({
   label,
-  name,
   value,
   options,
   onChange,
 }: {
   label: string;
-  name: string;
   value: T;
   options: [T, string][];
   onChange: (v: T) => void;
@@ -161,7 +159,7 @@ function Choice<T extends string>({
           <label key={v} className={v === value ? "is-active" : undefined}>
             <input
               type="radio"
-              name={name}
+              name={id}
               value={v}
               checked={v === value}
               onChange={() => {
@@ -275,14 +273,12 @@ export function SettingsSheet({
         <h3 className="toggle-heading">表示</h3>
         <Choice
           label="テーマ"
-          name="theme"
           value={settings.theme}
           options={THEME_OPTIONS}
           onChange={(v) => set({ theme: v })}
         />
         <Choice
           label="文字サイズ"
-          name="text-size"
           value={settings.textSize}
           options={TEXT_SIZE_OPTIONS}
           onChange={(v) => set({ textSize: v })}

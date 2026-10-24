@@ -4207,6 +4207,15 @@ test.describe("表示の設定", () => {
   test("テーマを自動・ライト・ダークで選べる。選んだテーマは端末の設定によらず、開き直しても最初の描画から使う。theme-color も合わせる", async ({
     page,
   }) => {
+    // <head> のスクリプトが付けた属性と meta で、hydration のエラーが出ないこと（本番のビルドでは console.error に出る）。
+    // 「Failed to load resource」は応答の状態や止めた読み込みでブラウザが出すもの（テストの環境で通知の API が 503 を返すなど）なので除く。
+    // JS のファイルを止めて開いている間は集めない
+    const consoleErrors: string[] = [];
+    let collecting = true;
+    page.on("console", (m) => {
+      if (collecting && m.type() === "error" && !m.text().startsWith("Failed to load resource"))
+        consoleErrors.push(m.text());
+    });
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
@@ -4238,6 +4247,7 @@ test.describe("表示の設定", () => {
     expect(JSON.parse(saved!).theme).toBe("dark");
 
     // 開き直すと、React が動く前（JS のファイルを止めても）から <head> のスクリプトでダークになっている
+    collecting = false;
     await page.route(isAppScript, (route) => route.abort());
     await page.reload();
     await expect(html(page)).toHaveAttribute("data-theme", "dark");
@@ -4247,6 +4257,7 @@ test.describe("表示の設定", () => {
     await page.unroute(isAppScript);
 
     // 自動に戻すと、端末の設定（ライト）に従う
+    collecting = true;
     await page.reload();
     await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
     // React が動いた後も、theme-color は端末の設定に合わせた 2 つと、選んだテーマの 1 つ
@@ -4261,6 +4272,7 @@ test.describe("表示の設定", () => {
     expect(await themeColor(page)).toBe("#f5f4f0");
     await expect(metas).toHaveCount(2);
     await expect(page.locator("#theme-color-fixed")).toHaveCount(0);
+    expect(consoleErrors).toEqual([]);
   });
 
   test("文字サイズを大・特大にすると、盤面の数字・メモ・ボタン・本文が大きくなる。幅 375px の特大でも横にはみ出さない", async ({
@@ -4343,18 +4355,22 @@ test.describe("表示の設定", () => {
     [1.3, 1.2, 1.3, 1.3].forEach((r, i) => expect(ratios[i], SIZED[i]).toBeCloseTo(r, 1));
   });
 
-  test("ピンチで拡大できる（viewport に maximum-scale・user-scalable を付けない）。ゲームの画面とボタンはダブルタップで拡大せず、盤面はなぞって選ぶまま", async ({
-    page,
-  }) => {
+  test("ピンチで拡大できる（viewport に maximum-scale・user-scalable を付けない）", async ({ page }) => {
     await page.goto("/");
     const viewport = await page.locator('meta[name="viewport"]').getAttribute("content");
     expect(viewport).toContain("width=device-width");
     expect(viewport).toContain("initial-scale=1");
     expect(viewport).not.toMatch(/maximum-scale|user-scalable/i);
+  });
+
+  test("ゲームの画面とボタンはダブルタップで拡大せず（touch-action: manipulation）、盤面はなぞって選ぶまま（none）", async ({
+    page,
+  }) => {
+    await page.goto("/");
     await page.locator(".free-easy").click();
     await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
-    // touch-action を扱えないブラウザ（テストの WebKit など）では見ない
-    if (!(await page.evaluate(() => CSS.supports("touch-action", "manipulation")))) return;
+    const supported = await page.evaluate(() => CSS.supports("touch-action", "manipulation"));
+    test.skip(!supported, "この WebKit は touch-action を扱えない");
     const touchAction = (selector: string) =>
       page
         .locator(selector)
