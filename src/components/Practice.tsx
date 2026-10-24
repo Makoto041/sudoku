@@ -13,7 +13,7 @@ import { findHint, type Hint } from "@/lib/sudoku/hint";
 import { answerOf, checkPractice, startNotes, type PracticeItem } from "@/lib/sudoku/practice";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
-import { HintPanel, applyHint, firstStage, hintHighlight } from "./HintPanel";
+import { HintPanel, applyHint, firstStage, hintHighlight, useHintAnnouncement } from "./HintPanel";
 import { AchievementLine } from "./AchievementLine";
 import { Check, ChevronLeft, Gear } from "./icons";
 
@@ -50,7 +50,7 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
   );
   // 答え合わせのため、間違いは設定に関わらず見せる。置いた数字は周りのメモから消さない
   // （違う数字を置いてから消すと、周りのメモから正解を消した跡が残るため。正解を置けば局面は終わる）
-  const { game, fx, dispatch } = useGame(initial, { showMistakes: true, autoClearNotes: false });
+  const { game, fx, dispatch, announce } = useGame(initial, { showMistakes: true, autoClearNotes: false });
   const gameRef = useRef(game);
   gameRef.current = game;
 
@@ -71,6 +71,8 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
     if (!solved) return;
     const newlyUnlocked = onSolved(position.id);
     if (newlyUnlocked.length) setFresh(newlyUnlocked);
+    // 正解の欄は中身ごと出てくるので、読み上げソフトが知らせないことがある。盤面の読み上げ欄で知らせる
+    announce(newlyUnlocked.length ? `正解 実績: ${newlyUnlocked.map((a) => a.name).join("、")}` : "正解");
     sfx.ranked();
     haptic("medium");
     // 正解は取り消さないので、正解になったときに 1 回だけ記録する
@@ -116,6 +118,7 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
     applyHint(hint.data, game, dispatch);
   };
   const hintCells = useMemo(() => hintHighlight(hint), [hint]);
+  useHintAnnouncement(hint, announce);
 
   // 正解したらキーでも盤面を変えず、音も鳴らさない
   useGameKeys({ dispatch: act, game, onHint: openHint, enabled: !solved });
@@ -181,7 +184,7 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
 
         <div className="controls">
           {solved ? (
-            <div className="practice-result" role="status">
+            <div className="practice-result">
               <span className="practice-result-main">
                 <span className="practice-result-label">
                   <Check size={20} />

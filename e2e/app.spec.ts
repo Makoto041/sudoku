@@ -104,6 +104,8 @@ test("フリープレイを最後まで解け、記録画面の始めた数・�
   await expect(
     page.getByRole("dialog", { name: "クリア" }).getByRole("heading", { name: "要る手筋", exact: true }),
   ).toBeVisible();
+  // 最後に置いた数字と、解き終えたことを読み上げ欄で知らせる
+  await expect(boardLive(page)).toHaveText(/に \d クリア$/);
   await page.waitForTimeout(700);
   await shot(page, "result-free");
 
@@ -494,6 +496,61 @@ test("置く音の録音を配信している", async ({ request }) => {
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("audio/mpeg");
   expect((await res.body()).length).toBeGreaterThan(1000);
+});
+
+test("CSP を付けて配り、ホーム・フリープレイ・設定・記録・遊び方・練習で CSP の違反が出ない", async ({
+  page,
+}) => {
+  const violations: string[] = [];
+  page.on("console", (m) => {
+    if (/Content Security Policy/i.test(m.text())) violations.push(m.text());
+  });
+  await page.exposeFunction("__cspViolation", (v: string) => violations.push(v));
+  await page.addInitScript(() =>
+    document.addEventListener("securitypolicyviolation", (e) =>
+      (window as unknown as { __cspViolation: (v: string) => void }).__cspViolation(
+        `${e.violatedDirective} ${e.blockedURI}`,
+      ),
+    ),
+  );
+  const res = await page.goto("/");
+  expect(res!.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(res!.headers()["content-security-policy"]).not.toContain("'unsafe-eval'");
+  expect(res!.headers()["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const first = g.puzzle.indexOf(0);
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![first]}`);
+  // 置く音の録音は最初の入力で fetch で読む（connect-src）。Service Worker が返した分も Resource Timing に残る
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => performance.getEntriesByName(new URL("/sounds/clack.mp3", location.href).href).length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+
+  await page.getByRole("banner").getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  await page.getByRole("banner").getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
+  await page.goBack();
+  await howtoButton(page).click();
+  await page.getByRole("dialog", { name: "遊び方" }).getByRole("button", { name: "練習してみる" }).click();
+  await expect(page.getByRole("heading", { name: practiceItem("naked-single").name })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator(".practice-row").first()).toBeVisible();
+  expect(violations).toEqual([]);
 });
 
 test("正しく置くと得点が浮かび、スコアが増える。間違えると減る", async ({ page }) => {
@@ -1061,6 +1118,220 @@ test("指のぶれ程度なら、隣のマスに掛かってもなぞったこ�
   await expect(page.locator(".cell.multi")).toHaveCount(0);
 });
 
+/** マスの呼び名（読み上げ名の先頭） */
+const cellAt = (i: number) => `${Math.floor(i / 9) + 1}行${(i % 9) + 1}列`;
+
+/** 盤面の読み上げ欄（置いた結果などを知らせる） */
+const boardLive = (page: Page) => page.locator(".board-wrap [role='status']");
+
+test("盤面は 9 行・81 マスの表として読み上げる。マスの名前で最初から・間違い・メモを言い、選んだマスは aria-selected で示す", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  await expect(board).toHaveAttribute("aria-multiselectable", "true");
+  const rows = board.getByRole("row");
+  await expect(rows).toHaveCount(9);
+  for (let r = 0; r < 9; r++) await expect(rows.nth(r).getByRole("gridcell")).toHaveCount(9);
+  const cells = board.getByRole("gridcell");
+  await expect(cells).toHaveCount(81);
+  // 行を挟んでも、マスは盤面の番号の順に並ぶ
+  await expect(rows.nth(4).getByRole("gridcell").nth(4)).toHaveAttribute("data-i", "40");
+  // 行を挟んでも、右端の列と下端の行のマスには外側の線を引かない
+  const borders = await board.evaluate((el) =>
+    [...el.querySelectorAll<HTMLElement>("[data-i]")].map((c) => {
+      const s = getComputedStyle(c);
+      return [parseFloat(s.borderRightWidth) > 0, parseFloat(s.borderBottomWidth) > 0];
+    }),
+  );
+  expect(borders[0]).toEqual([true, true]);
+  expect(borders[8]).toEqual([false, true]);
+  expect(borders[72]).toEqual([true, false]);
+  expect(borders[80]).toEqual([false, false]);
+
+  const g = await savedGame(page, "sudoku:free");
+  const given = g.puzzle.findIndex((v) => v !== 0);
+  const [a, b] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  await expect(cells.nth(given)).toHaveAttribute(
+    "aria-label",
+    `${cellAt(given)} 最初から ${g.puzzle[given]}`,
+  );
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} 空き`);
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(0);
+
+  await cells.nth(a).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await expect(cells.nth(a)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+  await page.keyboard.press("Shift+Digit3");
+  await page.keyboard.press("Shift+Digit1");
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} メモ1・3 空き`);
+  const wrong = (g.solution![a] % 9) + 1;
+  await page.keyboard.press(`Digit${wrong}`);
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} 間違い ${wrong}`);
+  await page.keyboard.press(`Digit${g.solution![a]}`);
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} ${g.solution![a]}`);
+
+  // 複数選択では、選んだマスすべてに付ける
+  await cells.nth(b).dispatchEvent("pointerdown", { pointerType: "mouse", button: 0, shiftKey: true });
+  await cells.nth(b).dispatchEvent("pointerup", { pointerType: "mouse", button: 0, shiftKey: true });
+  for (const i of [a, b]) await expect(cells.nth(i)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(2);
+});
+
+test("Tab では盤面の 1 マスにだけ止まり、矢印キーで選ぶとフォーカスも動く。フォーカスしたマスは Enter・Space で選ぶ", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  const cells = board.getByRole("gridcell");
+  const stop = board.locator("[tabindex='0']");
+  const pause = page.getByRole("button", { name: "一時停止", exact: true });
+  // 何も選んでいなければ、中央のマスに止まる
+  await expect(stop).toHaveCount(1);
+  await expect(stop).toHaveAttribute("data-i", "40");
+  await expect(board.locator("[tabindex='-1']")).toHaveCount(80);
+
+  if (isIphone(info)) {
+    // iPhone の Safari は Tab でボタンに止まらないので、フォーカスを直接移す
+    await cells.nth(40).focus();
+  } else {
+    // 盤面の前のボタンから Tab で入るとそのマスに止まり、もう一度 Tab で盤面の外へ出る
+    await pause.focus();
+    await page.keyboard.press("Tab");
+    await expect(cells.nth(40)).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(board.locator(":focus")).toHaveCount(0);
+    await expect(page.locator(":focus")).toHaveCount(1);
+    await page.keyboard.press("Shift+Tab");
+    await expect(cells.nth(40)).toBeFocused();
+  }
+
+  // 矢印キーで選ぶと、フォーカスも付いてくる（何も選んでいなければ中央から動く）
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(41)).toBeFocused();
+  await expect(cells.nth(41)).toHaveAttribute("aria-selected", "true");
+  await expect(stop).toHaveCount(1);
+  await expect(stop).toHaveAttribute("data-i", "41");
+  await page.keyboard.press("ArrowDown");
+  await expect(cells.nth(50)).toBeFocused();
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+
+  // 選択を外しても、止まるのは最後に選んだマス。フォーカスしたマスは Enter・Space で選ぶ（Space で一時停止にしない）
+  await page.keyboard.press("Escape");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(0);
+  await expect(stop).toHaveAttribute("data-i", "50");
+  await page.keyboard.press("Enter");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Space");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await expect(pause).toBeVisible();
+
+  // 選択を外した後の矢印キーは、中央ではなくフォーカスしているマスから動かす
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(51)).toBeFocused();
+  await expect(cells.nth(51)).toHaveAttribute("aria-selected", "true");
+
+  // 盤面の外にフォーカスがあるときは、矢印キーで選んでもフォーカスを動かさない
+  const key = page.locator(".pad-key").first();
+  await key.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await expect(key).toBeFocused();
+
+  // 戻すで選択が動いても、フォーカスは動かさない（動いた先のマスは読み上げ欄で知らせる）
+  const g = await savedGame(page, "sudoku:free");
+  const e = g.puzzle.findIndex((v, i) => !v && i % 9 < 8);
+  await cells.nth(e).focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press(`Digit${g.solution![e]}`);
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(e + 1)).toBeFocused();
+  await page.keyboard.press("z");
+  await expect(cells.nth(e)).toHaveAttribute("aria-selected", "true");
+  await expect(cells.nth(e)).toHaveAttribute("aria-label", `${cellAt(e)} 空き`);
+  await expect(boardLive(page)).toHaveText(`戻す ${cellAt(e)} 空き`);
+  await expect(cells.nth(e + 1)).toBeFocused();
+});
+
+test("click だけが届く操作（読み上げソフトのダブルタップなど）でも、マスと数字キーが 1 回ずつ効く。置いた結果とヒントを読み上げ欄で知らせる", async ({
+  page,
+}) => {
+  const sounds = await countSounds(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const [a, b, c] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const cells = board.getByRole("gridcell");
+  const keys = page.locator(".pad-key");
+  const live = boardLive(page);
+  const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
+
+  // 選ぶ音の数で、選ぶ処理が何回動いたかを数える。押した時点で選ぶ（pointerdown だけ）のを 1 回とする
+  const selectSounds = async (act: () => Promise<void>) => {
+    await nextFrames(page);
+    const before = await sounds();
+    await act();
+    await nextFrames(page);
+    return (await sounds()) - before;
+  };
+  const once = await selectSounds(() =>
+    cells.nth(b).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 }),
+  );
+  expect(once).toBeGreaterThan(0);
+  // 実際のクリック（pointerdown の後に click）でも、click だけでも 1 回
+  expect(await selectSounds(() => cells.nth(c).click())).toBe(once);
+  await expect(cells.nth(c)).toHaveAttribute("aria-selected", "true");
+  expect(await selectSounds(() => cells.nth(a).dispatchEvent("click"))).toBe(once);
+  await expect(cells.nth(a)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+
+  // 数字キーも click だけで 1 回入る
+  await keys.nth(g.solution![a] - 1).dispatchEvent("click");
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} ${g.solution![a]}`);
+  await expect(live).toHaveText(`${cellAt(a)}に ${g.solution![a]}`);
+
+  // メモは、実際のクリックでも click だけでも 1 回ずつ切り替わる
+  await cells.nth(c).click();
+  await notesTool.click();
+  await keys.nth(2).click();
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} メモ3 空き`);
+  await expect(live).toHaveText(`${cellAt(c)} メモ3 追加`);
+  await keys.nth(2).dispatchEvent("click");
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} 空き`);
+  await expect(live).toHaveText(`${cellAt(c)} メモ3 削除`);
+  await keys.nth(2).dispatchEvent("click");
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} メモ3 空き`);
+
+  // 間違いは「間違い」を付けて知らせる
+  await notesTool.click();
+  const wrong = (g.solution![c] % 9) + 1;
+  await keys.nth(wrong - 1).click();
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} 間違い ${wrong}`);
+  await expect(live).toHaveText(`${cellAt(c)}に ${wrong} 間違い`);
+
+  // ヒント（違う数字のヒントは説明から見せる）は、名前と説明と対象のマスを知らせる
+  await page.getByRole("button", { name: "ヒント", exact: true }).click();
+  await expect(page.locator(".hint-panel")).toBeVisible();
+  await expect(live).toHaveText(`ヒント 違う数字があります このマスの数字が違います 対象 ${cellAt(c)}`);
+});
+
 test("色を ON にすると数字パッドが色に変わり、選んだマスに色を付け外しする。消す・戻す・C キー・再読み込み", async ({
   page,
 }) => {
@@ -1521,6 +1792,7 @@ test("手筋の練習：シングルを置いて正解し、次へ進む。戻�
   await page.keyboard.press(`Digit${digit}`);
   const result = page.locator(".practice-result");
   await expect(result).toContainText("正解");
+  await expect(boardLive(page)).toHaveText(/^正解/);
   await shot(page, "practice-correct");
   // 正解したら盤面は変えず、キーを押しても音を鳴らさない（消す・移動・メモ切替・色切替・数字）
   await nextFrames(page);

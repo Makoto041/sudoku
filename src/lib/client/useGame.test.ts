@@ -3,7 +3,7 @@ import { newGame, reduce, type Mode } from "@/lib/game/state";
 import { generatePuzzle } from "@/lib/sudoku/generator";
 import { installMemoryStorage } from "./memoryStorage";
 import { KEYS } from "./storage";
-import { saveGame, storageKeyFor } from "./useGame";
+import { followCell, saveGame, storageKeyFor } from "./useGame";
 
 const { store } = installMemoryStorage();
 
@@ -41,5 +41,22 @@ describe("保存", () => {
     expect(storageKeyFor(practice)).toBe(null);
     saveGame(practice);
     expect(store.size).toBe(0);
+  });
+});
+
+describe("フォーカスを付いて行かせるマス", () => {
+  it("矢印キーで選んだときだけ選んだマス。戻す・ヒント・選ぶでは動かさない", () => {
+    const g = game("free");
+    const cell = g.selected!;
+    const moved = reduce(g, { type: "move", dr: 0, dc: 1 })[0];
+    expect(followCell({ type: "move", dr: 0, dc: 1 }, moved)).toBe(moved.selected);
+    expect(moved.selected).not.toBe(cell);
+    const undone = reduce(moved, { type: "undo" })[0];
+    // 戻すと選択は戻したマスに動くが、フォーカスは動かさない
+    expect(undone.selected).toBe(cell);
+    expect(followCell({ type: "undo" }, undone)).toBe(null);
+    expect(followCell({ type: "redo" }, reduce(undone, { type: "redo" })[0])).toBe(null);
+    expect(followCell({ type: "hint" }, reduce(undone, { type: "hint" })[0])).toBe(null);
+    expect(followCell({ type: "select", cell: 3 }, reduce(g, { type: "select", cell: 3 })[0])).toBe(null);
   });
 });

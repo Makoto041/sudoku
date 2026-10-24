@@ -3,6 +3,7 @@
 import type { CSSProperties } from "react";
 import { remainingCounts } from "@/lib/sudoku/core";
 import type { GameState } from "@/lib/game/state";
+import { usePressGuard } from "@/lib/client/press";
 import { AutoNote, Bulb, Eraser, Palette, Pencil, Redo, Undo } from "./icons";
 
 type ToolProps = {
@@ -108,6 +109,9 @@ export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
   const showLeft = showRemaining && !asColors;
   // 2 マス以上選んでいる間はメモとして入るので、メモの見た目にする
   const padMode = asColors ? " is-colors" : game.notesMode || game.selection ? " is-notes" : "";
+  // 押した時点で入れる（タッチの反応を速くする）。読み上げソフトの操作（ダブルタップなど）と Enter・Space は
+  // click だけが届くので click でも入れ、押した時点で入れた操作の click は無視する（同じ数字を 2 回入れない）
+  const press = usePressGuard();
   return (
     <div className={`pad${padMode}`}>
       {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => {
@@ -122,13 +126,11 @@ export function NumberPad({ game, showRemaining, onDigit }: PadProps) {
               if (e.pointerType !== "mouse" || e.button === 0) {
                 e.preventDefault();
                 onDigit(d);
+                press.down(d, e.pointerId);
               }
             }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onDigit(d);
-              }
+            onClick={() => {
+              if (press.click(d, performance.now())) onDigit(d);
             }}
             aria-label={asColors ? `色${d}` : showLeft ? `${d}（残り${left}）` : `${d}`}
           >
