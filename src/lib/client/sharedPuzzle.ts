@@ -62,7 +62,7 @@ export function parseShared(search: string): SharedResult | null {
   const ps = all.filter((pair) => keyOf(pair) === "p");
   if (ps.length === 0) return null;
   const raw = ps.length === 1 ? valueOf(ps[0]) : null;
-  if (raw === null || raw.length !== 81 || !/^[0-9]{81}$/.test(raw)) return fail("format");
+  if (raw === null || !/^[0-9]{81}$/.test(raw)) return fail("format");
   const puzzle = [...raw].map(Number);
   const givens = puzzle.filter((v) => v !== 0).length;
   // 81 個（空きマスが無い）だと、解き終えられない

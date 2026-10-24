@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
-import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
+import { DIFFICULTIES, DIFFICULTY_LABEL, parseGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
 import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
@@ -74,8 +74,9 @@ type SheetState =
   | { kind: "settings" }
   | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
-  /** shared は共有された盤面を始めるとき */
-  | { kind: "confirmFree"; difficulty: Difficulty; shared?: SharedPuzzle }
+  | { kind: "confirmFree"; difficulty: Difficulty }
+  /** 開いた URL の共有された盤面を始めるか。replace は途中のフリープレイを消すか */
+  | { kind: "confirmShared"; shared: SharedPuzzle; replace: boolean }
   | { kind: "move" }
   | { kind: "claim"; code: string; push: boolean; replace: boolean }
   | { kind: "account" }
@@ -131,8 +132,6 @@ export function App() {
   const [account, setAccount] = useState<AccountState>({ status: "loading" });
   /** 旧 URL のページから開かれたときの引き継ぎのリンク（受け取るシートを開く前） */
   const [claimLink, setClaimLink] = useState<{ code: string; push: boolean; replace: boolean } | null>(null);
-  /** 開いた URL の共有された盤面（始める前） */
-  const [sharedLink, setSharedLink] = useState<SharedPuzzle | null>(null);
 
   useEffect(() => {
     // 記録があるかは、開いたときに作る保存データ（プレイヤー・実績など）を書く前に見る
@@ -149,6 +148,8 @@ export function App() {
     const link = parseMoveHash(location.hash);
     if (link) history.replaceState(history.state, "", location.pathname + location.search);
     // 共有された盤面（?p=）も通信の前に読み、URL から消す（履歴やリファラに盤面を残さない。ほかのパラメータは残す）。
+    // 始めるのは確かめるシートで押したときだけ（ほかのページから開かせて、途中の問題や記録を書き換えられないように）。
+    // 開いただけなので音は鳴らさない（鳴らすと、最初に触れたときに遅れて鳴る）。
     // 旧 URL では読まない（移る案内を出す。共有の URL は新しい URL で作る）
     const shared = onLegacy ? null : parseShared(location.search);
     if (shared) {
@@ -157,7 +158,7 @@ export function App() {
         "",
         location.pathname + withoutShared(location.search) + location.hash,
       );
-      if (shared.ok) setSharedLink(shared.puzzle);
+      if (shared.ok) setSheet({ kind: "confirmShared", shared: shared.puzzle, replace: freeInProgress() });
       else setError("読み込めない盤面です");
     }
     const [navigation] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
@@ -278,8 +279,12 @@ export function App() {
     [mounted, refresh, view.name],
   );
 
+  // ゲームを開いたら、ホームの知らせ（読み込めない盤面など）は消す
   const openGame = useCallback(
-    (game: GameState) => go({ name: "game", game: withSolution(game), key: Date.now() }),
+    (game: GameState) => {
+      setError(null);
+      go({ name: "game", game: withSolution(game), key: Date.now() });
+    },
     [go],
   );
 
@@ -394,7 +399,15 @@ export function App() {
     (shared: SharedPuzzle) => {
       if (generatingRef.current) return;
       setSheet(null);
-      beginFree(newGame({ mode: "free", ...shared }));
+      beginFree(
+        newGame({
+          mode: "free",
+          difficulty: shared.difficulty,
+          seed: shared.seed,
+          puzzle: shared.puzzle,
+          solution: shared.solution,
+        }),
+      );
     },
     [beginFree],
   );
@@ -410,16 +423,6 @@ export function App() {
     },
     [startFree],
   );
-
-  // 開いた URL の共有された盤面は、途中のフリープレイがあれば確かめてから始める
-  // （開いただけなので音は鳴らさない。鳴らすと、最初に触れたときに遅れて鳴る）
-  useEffect(() => {
-    if (!sharedLink) return;
-    setSharedLink(null);
-    if (freeInProgress())
-      setSheet({ kind: "confirmFree", difficulty: sharedLink.difficulty, shared: sharedLink });
-    else startShared(sharedLink);
-  }, [sharedLink, startShared]);
 
   // 手筋の練習。局面のデータは一覧を開くときに読む（最初の読み込みに含めない）
   const [practice, setPractice] = useState<PracticeItem[] | null>(null);
@@ -849,11 +852,20 @@ export function App() {
           title="新しい問題を始めますか？"
           body="途中のフリープレイは消えます。"
           confirm="新しく始める"
+          onConfirm={() => startFree(sheet.difficulty)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "confirmShared" && (
+        <ConfirmSheet
+          title="共有された問題を始めますか？"
+          body={`${DIFFICULTY_LABEL[sheet.shared.difficulty]}のフリープレイとして始めます。${
+            sheet.replace ? "途中のフリープレイは消えます。" : ""
+          }`}
+          confirm="始める"
           onConfirm={() => {
-            if (sheet.shared) {
-              sfx.tap();
-              startShared(sheet.shared);
-            } else startFree(sheet.difficulty);
+            sfx.tap();
+            startShared(sheet.shared);
           }}
           onClose={() => setSheet(null)}
         />

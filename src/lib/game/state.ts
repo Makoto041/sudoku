@@ -1,4 +1,4 @@
-import { countSolutions, solve } from "@/lib/sudoku/solver";
+import { countSolutionsWithin, solve } from "@/lib/sudoku/solver";
 import {
   applyPlacement,
   emptyScore,
@@ -23,6 +23,9 @@ import {
  * ヒントと自動メモの制限は日次だけ
  */
 export type Mode = "free" | "daily" | "practice";
+
+/** 間違える前まで戻すときに、1 つの盤面が解けるかを確かめる置く回数の上限（作った問題なら数千回で終わる） */
+export const REWIND_MAX_NODES = 200_000;
 export type Status = "playing" | "paused" | "solved";
 
 export type GameState = {
@@ -434,10 +437,12 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
       ];
     }
     case "rewind": {
-      // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す
+      // 正解にたどり着ける最後の時点まで、手順を逆にたどって戻す。
+      // 置く回数の上限までに解けるか確かめ終わらない盤面では、そこで止める（確かめられない手まで消さない。
+      // 共有された盤面は外から来るので、探索が重いことがある）
       let cur = s;
       let steps = 0;
-      while (cur.history.length > 0 && countSolutions(cur.values, 1) === 0) {
+      while (cur.history.length > 0 && countSolutionsWithin(cur.values, 1, REWIND_MAX_NODES) === 0) {
         cur = undoOnce(cur);
         steps++;
       }
