@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
-import { DIFFICULTIES, parseGrid, type Difficulty } from "@/lib/sudoku/core";
+import { DIFFICULTIES, DIFFICULTY_LABEL, parseGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
 import { newGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
@@ -44,6 +44,7 @@ import {
   navigationAllowsClaim,
   parseMoveHash,
 } from "@/lib/client/move";
+import { parseShared, withoutShared, type SharedPuzzle } from "@/lib/client/sharedPuzzle";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
@@ -74,6 +75,8 @@ type SheetState =
   | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
   | { kind: "confirmFree"; difficulty: Difficulty }
+  /** 開いた URL の共有された盤面を始めるか。replace は途中のフリープレイを消すか */
+  | { kind: "confirmShared"; shared: SharedPuzzle; replace: boolean }
   | { kind: "move" }
   | { kind: "claim"; code: string; push: boolean; replace: boolean }
   | { kind: "account" }
@@ -102,6 +105,12 @@ const serverToday = () => jstDateKey(new Date(Date.now() + clockOffset));
 function loadGame(key: string): GameState | null {
   const g = load<GameState>(key);
   return g && g.version === 1 && Array.isArray(g.values) && g.values.length === 81 ? g : null;
+}
+
+/** 途中のフリープレイがあるか（1 手以上進めて、解き終えていない）。新しく始めるときは確かめる */
+function freeInProgress(): boolean {
+  const cur = loadGame(KEYS.free);
+  return !!cur && cur.status !== "solved" && cur.history.length > 0;
 }
 
 export function App() {
@@ -138,6 +147,20 @@ export function App() {
     // （ほかのページから送られたリンクで、1 回のタップでプレイヤーを差し替えられないように。ほかは設定から入力する）
     const link = parseMoveHash(location.hash);
     if (link) history.replaceState(history.state, "", location.pathname + location.search);
+    // 共有された盤面（?p=）も通信の前に読み、URL から消す（履歴やリファラに盤面を残さない。ほかのパラメータは残す）。
+    // 始めるのは確かめるシートで押したときだけ（ほかのページから開かせて、途中の問題や記録を書き換えられないように）。
+    // 開いただけなので音は鳴らさない（鳴らすと、最初に触れたときに遅れて鳴る）。
+    // 旧 URL では読まない（移る案内を出す。共有の URL は新しい URL で作る）
+    const shared = onLegacy ? null : parseShared(location.search);
+    if (shared) {
+      history.replaceState(
+        history.state,
+        "",
+        location.pathname + withoutShared(location.search) + location.hash,
+      );
+      if (shared.ok) setSheet({ kind: "confirmShared", shared: shared.puzzle, replace: freeInProgress() });
+      else setError("読み込めない盤面です");
+    }
     const [navigation] = performance.getEntriesByType("navigation") as PerformanceNavigationTiming[];
     if (onLegacy) {
       setLegacy({ standalone: iosStandalone() });
@@ -256,8 +279,12 @@ export function App() {
     [mounted, refresh, view.name],
   );
 
+  // ゲームを開いたら、ホームの知らせ（読み込めない盤面など）は消す
   const openGame = useCallback(
-    (game: GameState) => go({ name: "game", game: withSolution(game), key: Date.now() }),
+    (game: GameState) => {
+      setError(null);
+      go({ name: "game", game: withSolution(game), key: Date.now() });
+    },
     [go],
   );
 
@@ -324,6 +351,16 @@ export function App() {
   // 問題を作っている間は新しく始めない。続けて押されると、先に作った問題を途中の問題として開始数を二重に数える
   // （state はボタンを描き直すまで反映されないので ref で止める）
   const generatingRef = useRef(false);
+  /** フリープレイを始める。途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない） */
+  const beginFree = useCallback(
+    (game: GameState) => {
+      const prev = loadGame(KEYS.free);
+      recordFreeStart(game.difficulty, prev && prev.status !== "solved" ? prev : null);
+      save(KEYS.free, game);
+      openGame(game);
+    },
+    [openGame],
+  );
   const startFree = useCallback(
     (difficulty: Difficulty) => {
       if (generatingRef.current) return;
@@ -339,31 +376,45 @@ export function App() {
             difficulty === "extreme"
               ? await generateExtremeAsync(freeSeed(), 24)
               : generatePuzzle(freeSeed(), difficulty);
-          const game = newGame({
-            mode: "free",
-            difficulty,
-            seed: p.seed,
-            puzzle: p.puzzle,
-            solution: p.solution,
-          });
-          // 途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない）
-          const prev = loadGame(KEYS.free);
-          recordFreeStart(difficulty, prev && prev.status !== "solved" ? prev : null);
-          save(KEYS.free, game);
-          openGame(game);
+          beginFree(
+            newGame({
+              mode: "free",
+              difficulty,
+              seed: p.seed,
+              puzzle: p.puzzle,
+              solution: p.solution,
+            }),
+          );
         } finally {
           generatingRef.current = false;
           setGenerating(null);
         }
       }, 30);
     },
-    [openGame],
+    [beginFree],
+  );
+
+  /** 共有された盤面をフリープレイとして始める（記録・実績にも数える） */
+  const startShared = useCallback(
+    (shared: SharedPuzzle) => {
+      if (generatingRef.current) return;
+      setSheet(null);
+      beginFree(
+        newGame({
+          mode: "free",
+          difficulty: shared.difficulty,
+          seed: shared.seed,
+          puzzle: shared.puzzle,
+          solution: shared.solution,
+        }),
+      );
+    },
+    [beginFree],
   );
 
   const requestFree = useCallback(
     (difficulty: Difficulty) => {
-      const cur = loadGame(KEYS.free);
-      if (cur && cur.status !== "solved" && cur.history.length > 0) {
+      if (freeInProgress()) {
         sfx.tap();
         setSheet({ kind: "confirmFree", difficulty });
       } else {
@@ -802,6 +853,20 @@ export function App() {
           body="途中のフリープレイは消えます。"
           confirm="新しく始める"
           onConfirm={() => startFree(sheet.difficulty)}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {sheet?.kind === "confirmShared" && (
+        <ConfirmSheet
+          title="共有された問題を始めますか？"
+          body={`${DIFFICULTY_LABEL[sheet.shared.difficulty]}のフリープレイとして始めます。${
+            sheet.replace ? "途中のフリープレイは消えます。" : ""
+          }`}
+          confirm="始める"
+          onConfirm={() => {
+            sfx.tap();
+            startShared(sheet.shared);
+          }}
           onClose={() => setSheet(null)}
         />
       )}

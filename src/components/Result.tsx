@@ -8,6 +8,7 @@ import { techniqueRows } from "@/lib/sudoku/practice";
 import { formatPoints } from "@/lib/game/score";
 import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
 import type { FreeClear } from "@/lib/client/stats";
+import { shareUrl } from "@/lib/client/sharedPuzzle";
 import type { Achievement } from "@/lib/client/achievements";
 import { AchievementLine } from "./AchievementLine";
 import type { DailyOutcome } from "./Game";
@@ -59,7 +60,8 @@ export function Result({
     const head = isDaily ? `ナンプレ 今日の一問（${label}）` : `ナンプレ（${label}）`;
     const rank = done?.rank ? ` / ${done.rank}位（${done.total}人中）` : "";
     const text = `${head} ${formatPoints(points)}点（${formatTime(time)}）${rank}`;
-    const url = location.origin;
+    // フリープレイは同じ盤面を遊べる URL。今日の一問の盤面は共有しない（フリープレイでヒントを使って解いてから本番に入れる）
+    const url = isDaily ? location.origin : shareUrl(game);
     try {
       if (navigator.share) {
         await navigator.share({ text, url });

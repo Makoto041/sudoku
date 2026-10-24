@@ -136,6 +136,19 @@ p {
   color: var(--ink-2);
 }
 
+/* 画面には出さず、読み上げだけに使う */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .small {
   font-size: 13px;
 }
@@ -792,11 +805,21 @@ p {
   overflow: hidden;
 }
 
-.cell:nth-child(9n) {
+/* 行（role="row"）は読み上げのための入れ物で、マスはそのまま盤面のグリッドに並べる */
+.board-row {
+  display: contents;
+}
+
+/* フォーカスの枠はマスの内側に描く（外側だと隣のマスと盤面の縁に隠れる） */
+.cell:focus-visible {
+  outline-offset: -2px;
+}
+
+.cell:last-child {
   border-right: 0;
 }
 
-.cell:nth-child(n + 73) {
+.board-row:last-child .cell {
   border-bottom: 0;
 }
 

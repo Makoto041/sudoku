@@ -113,6 +113,8 @@ test("フリープレイを最後まで解け、記録画面の始めた数・�
   await expect(
     page.getByRole("dialog", { name: "クリア" }).getByRole("heading", { name: "要る手筋", exact: true }),
   ).toBeVisible();
+  // 最後に置いた数字と、解き終えたことを読み上げ欄で知らせる
+  await expect(boardLive(page)).toHaveText(/に \d クリア$/);
   await page.waitForTimeout(700);
   await shot(page, "result-free");
 
@@ -503,6 +505,61 @@ test("置く音の録音を配信している", async ({ request }) => {
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("audio/mpeg");
   expect((await res.body()).length).toBeGreaterThan(1000);
+});
+
+test("CSP を付けて配り、ホーム・フリープレイ・設定・記録・遊び方・練習で CSP の違反が出ない", async ({
+  page,
+}) => {
+  const violations: string[] = [];
+  page.on("console", (m) => {
+    if (/Content Security Policy/i.test(m.text())) violations.push(m.text());
+  });
+  await page.exposeFunction("__cspViolation", (v: string) => violations.push(v));
+  await page.addInitScript(() =>
+    document.addEventListener("securitypolicyviolation", (e) =>
+      (window as unknown as { __cspViolation: (v: string) => void }).__cspViolation(
+        `${e.violatedDirective} ${e.blockedURI}`,
+      ),
+    ),
+  );
+  const res = await page.goto("/");
+  expect(res!.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(res!.headers()["content-security-policy"]).not.toContain("'unsafe-eval'");
+  expect(res!.headers()["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const first = g.puzzle.indexOf(0);
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${g.solution![first]}`);
+  // 置く音の録音は最初の入力で fetch で読む（connect-src）。Service Worker が返した分も Resource Timing に残る
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => performance.getEntriesByName(new URL("/sounds/clack.mp3", location.href).href).length,
+      ),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+
+  await page.getByRole("banner").getByRole("button", { name: "設定" }).click();
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "設定" })).toBeHidden();
+  await page.getByRole("banner").getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
+  await page.goBack();
+  await howtoButton(page).click();
+  await page.getByRole("dialog", { name: "遊び方" }).getByRole("button", { name: "練習してみる" }).click();
+  await expect(page.getByRole("heading", { name: practiceItem("naked-single").name })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator(".practice-row").first()).toBeVisible();
+  expect(violations).toEqual([]);
 });
 
 test("正しく置くと得点が浮かび、スコアが増える。間違えると減る", async ({ page }) => {
@@ -1071,6 +1128,220 @@ test("指のぶれ程度なら、隣のマスに掛かってもなぞったこ�
   await expect(page.locator(".cell.multi")).toHaveCount(0);
 });
 
+/** マスの呼び名（読み上げ名の先頭） */
+const cellAt = (i: number) => `${Math.floor(i / 9) + 1}行${(i % 9) + 1}列`;
+
+/** 盤面の読み上げ欄（置いた結果などを知らせる） */
+const boardLive = (page: Page) => page.locator(".board-wrap [role='status']");
+
+test("盤面は 9 行・81 マスの表として読み上げる。マスの名前で最初から・間違い・メモを言い、選んだマスは aria-selected で示す", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  await expect(board).toHaveAttribute("aria-multiselectable", "true");
+  const rows = board.getByRole("row");
+  await expect(rows).toHaveCount(9);
+  for (let r = 0; r < 9; r++) await expect(rows.nth(r).getByRole("gridcell")).toHaveCount(9);
+  const cells = board.getByRole("gridcell");
+  await expect(cells).toHaveCount(81);
+  // 行を挟んでも、マスは盤面の番号の順に並ぶ
+  await expect(rows.nth(4).getByRole("gridcell").nth(4)).toHaveAttribute("data-i", "40");
+  // 行を挟んでも、右端の列と下端の行のマスには外側の線を引かない
+  const borders = await board.evaluate((el) =>
+    [...el.querySelectorAll<HTMLElement>("[data-i]")].map((c) => {
+      const s = getComputedStyle(c);
+      return [parseFloat(s.borderRightWidth) > 0, parseFloat(s.borderBottomWidth) > 0];
+    }),
+  );
+  expect(borders[0]).toEqual([true, true]);
+  expect(borders[8]).toEqual([false, true]);
+  expect(borders[72]).toEqual([true, false]);
+  expect(borders[80]).toEqual([false, false]);
+
+  const g = await savedGame(page, "sudoku:free");
+  const given = g.puzzle.findIndex((v) => v !== 0);
+  const [a, b] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  await expect(cells.nth(given)).toHaveAttribute(
+    "aria-label",
+    `${cellAt(given)} 最初から ${g.puzzle[given]}`,
+  );
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} 空き`);
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(0);
+
+  await cells.nth(a).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await expect(cells.nth(a)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+  await page.keyboard.press("Shift+Digit3");
+  await page.keyboard.press("Shift+Digit1");
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} メモ1・3 空き`);
+  const wrong = (g.solution![a] % 9) + 1;
+  await page.keyboard.press(`Digit${wrong}`);
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} 間違い ${wrong}`);
+  await page.keyboard.press(`Digit${g.solution![a]}`);
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} ${g.solution![a]}`);
+
+  // 複数選択では、選んだマスすべてに付ける
+  await cells.nth(b).dispatchEvent("pointerdown", { pointerType: "mouse", button: 0, shiftKey: true });
+  await cells.nth(b).dispatchEvent("pointerup", { pointerType: "mouse", button: 0, shiftKey: true });
+  for (const i of [a, b]) await expect(cells.nth(i)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(2);
+});
+
+test("Tab では盤面の 1 マスにだけ止まり、矢印キーで選ぶとフォーカスも動く。フォーカスしたマスは Enter・Space で選ぶ", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  const cells = board.getByRole("gridcell");
+  const stop = board.locator("[tabindex='0']");
+  const pause = page.getByRole("button", { name: "一時停止", exact: true });
+  // 何も選んでいなければ、中央のマスに止まる
+  await expect(stop).toHaveCount(1);
+  await expect(stop).toHaveAttribute("data-i", "40");
+  await expect(board.locator("[tabindex='-1']")).toHaveCount(80);
+
+  if (isIphone(info)) {
+    // iPhone の Safari は Tab でボタンに止まらないので、フォーカスを直接移す
+    await cells.nth(40).focus();
+  } else {
+    // 盤面の前のボタンから Tab で入るとそのマスに止まり、もう一度 Tab で盤面の外へ出る
+    await pause.focus();
+    await page.keyboard.press("Tab");
+    await expect(cells.nth(40)).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(board.locator(":focus")).toHaveCount(0);
+    await expect(page.locator(":focus")).toHaveCount(1);
+    await page.keyboard.press("Shift+Tab");
+    await expect(cells.nth(40)).toBeFocused();
+  }
+
+  // 矢印キーで選ぶと、フォーカスも付いてくる（何も選んでいなければ中央から動く）
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(41)).toBeFocused();
+  await expect(cells.nth(41)).toHaveAttribute("aria-selected", "true");
+  await expect(stop).toHaveCount(1);
+  await expect(stop).toHaveAttribute("data-i", "41");
+  await page.keyboard.press("ArrowDown");
+  await expect(cells.nth(50)).toBeFocused();
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+
+  // 選択を外しても、止まるのは最後に選んだマス。フォーカスしたマスは Enter・Space で選ぶ（Space で一時停止にしない）
+  await page.keyboard.press("Escape");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(0);
+  await expect(stop).toHaveAttribute("data-i", "50");
+  await page.keyboard.press("Enter");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Space");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await expect(pause).toBeVisible();
+
+  // 選択を外した後の矢印キーは、中央ではなくフォーカスしているマスから動かす
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(51)).toBeFocused();
+  await expect(cells.nth(51)).toHaveAttribute("aria-selected", "true");
+
+  // 盤面の外にフォーカスがあるときは、矢印キーで選んでもフォーカスを動かさない
+  const key = page.locator(".pad-key").first();
+  await key.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(cells.nth(50)).toHaveAttribute("aria-selected", "true");
+  await expect(key).toBeFocused();
+
+  // 戻すで選択が動いても、フォーカスは動かさない（動いた先のマスは読み上げ欄で知らせる）
+  const g = await savedGame(page, "sudoku:free");
+  const e = g.puzzle.findIndex((v, i) => !v && i % 9 < 8);
+  await cells.nth(e).focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press(`Digit${g.solution![e]}`);
+  await page.keyboard.press("ArrowRight");
+  await expect(cells.nth(e + 1)).toBeFocused();
+  await page.keyboard.press("z");
+  await expect(cells.nth(e)).toHaveAttribute("aria-selected", "true");
+  await expect(cells.nth(e)).toHaveAttribute("aria-label", `${cellAt(e)} 空き`);
+  await expect(boardLive(page)).toHaveText(`戻す ${cellAt(e)} 空き`);
+  await expect(cells.nth(e + 1)).toBeFocused();
+});
+
+test("click だけが届く操作（読み上げソフトのダブルタップなど）でも、マスと数字キーが 1 回ずつ効く。置いた結果とヒントを読み上げ欄で知らせる", async ({
+  page,
+}) => {
+  const sounds = await countSounds(page);
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+  await expect(board).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const [a, b, c] = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const cells = board.getByRole("gridcell");
+  const keys = page.locator(".pad-key");
+  const live = boardLive(page);
+  const notesTool = page.getByRole("button", { name: /^(ON|OFF) ?メモ$/ });
+
+  // 選ぶ音の数で、選ぶ処理が何回動いたかを数える。押した時点で選ぶ（pointerdown だけ）のを 1 回とする
+  const selectSounds = async (act: () => Promise<void>) => {
+    await nextFrames(page);
+    const before = await sounds();
+    await act();
+    await nextFrames(page);
+    return (await sounds()) - before;
+  };
+  const once = await selectSounds(() =>
+    cells.nth(b).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 }),
+  );
+  expect(once).toBeGreaterThan(0);
+  // 実際のクリック（pointerdown の後に click）でも、click だけでも 1 回
+  expect(await selectSounds(() => cells.nth(c).click())).toBe(once);
+  await expect(cells.nth(c)).toHaveAttribute("aria-selected", "true");
+  expect(await selectSounds(() => cells.nth(a).dispatchEvent("click"))).toBe(once);
+  await expect(cells.nth(a)).toHaveAttribute("aria-selected", "true");
+  await expect(board.locator("[aria-selected='true']")).toHaveCount(1);
+
+  // 数字キーも click だけで 1 回入る
+  await keys.nth(g.solution![a] - 1).dispatchEvent("click");
+  await expect(cells.nth(a)).toHaveAttribute("aria-label", `${cellAt(a)} ${g.solution![a]}`);
+  await expect(live).toHaveText(`${cellAt(a)}に ${g.solution![a]}`);
+
+  // メモは、実際のクリックでも click だけでも 1 回ずつ切り替わる
+  await cells.nth(c).click();
+  await notesTool.click();
+  await keys.nth(2).click();
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} メモ3 空き`);
+  await expect(live).toHaveText(`${cellAt(c)} メモ3 追加`);
+  await keys.nth(2).dispatchEvent("click");
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} 空き`);
+  await expect(live).toHaveText(`${cellAt(c)} メモ3 削除`);
+  await keys.nth(2).dispatchEvent("click");
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} メモ3 空き`);
+
+  // 間違いは「間違い」を付けて知らせる
+  await notesTool.click();
+  const wrong = (g.solution![c] % 9) + 1;
+  await keys.nth(wrong - 1).click();
+  await expect(cells.nth(c)).toHaveAttribute("aria-label", `${cellAt(c)} 間違い ${wrong}`);
+  await expect(live).toHaveText(`${cellAt(c)}に ${wrong} 間違い`);
+
+  // ヒント（違う数字のヒントは説明から見せる）は、名前と説明と対象のマスを知らせる
+  await page.getByRole("button", { name: "ヒント", exact: true }).click();
+  await expect(page.locator(".hint-panel")).toBeVisible();
+  await expect(live).toHaveText(`ヒント 違う数字があります このマスの数字が違います 対象 ${cellAt(c)}`);
+});
+
 test("色を ON にすると数字パッドが色に変わり、選んだマスに色を付け外しする。消す・戻す・C キー・再読み込み", async ({
   page,
 }) => {
@@ -1231,8 +1502,10 @@ test("色を付けたマスでも、間違い・手筋ヒント・複数選択�
         style: getComputedStyle(el).textDecorationStyle,
       }));
 
-  // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない
-  await page.keyboard.press("h");
+  // 手筋ヒントで注目する範囲のマスは、色を付けても点線の枠で分かる。色を変えてもヒントは閉じない。
+  // ヒントはボタンで開く（キーを受け付けるのは盤面を描いた後の useEffect からなので、描いた直後の H キーは
+  // 取りこぼすことがある。H キーは「ヒントの前に確認」のテストで確かめる）
+  await page.getByRole("button", { name: "ヒント", exact: true }).click();
   await expect(page.locator(".cell.hint-focus").first()).toBeVisible();
   const focus = Number(await page.locator(".cell.hint-focus").first().getAttribute("data-i"));
   await press(focus);
@@ -1529,6 +1802,7 @@ test("手筋の練習：シングルを置いて正解し、次へ進む。戻�
   await page.keyboard.press(`Digit${digit}`);
   const result = page.locator(".practice-result");
   await expect(result).toContainText("正解");
+  await expect(boardLive(page)).toHaveText(/^正解/);
   await shot(page, "practice-correct");
   // 正解したら盤面は変えず、キーを押しても音を鳴らさない（消す・移動・メモ切替・色切替・数字）
   await nextFrames(page);
@@ -2580,15 +2854,150 @@ test.describe("毎日の通知", () => {
   });
 });
 
+/** 共有の URL で開く盤面（解が 1 つで、手筋のレベル 6。鬼・極） */
+const SHARED_PUZZLE = "100006004060000000200000078000800000074000100500302040800000009001000020000760001";
+const gridOf = (p: string) => [...p].map(Number);
+/** 共有の URL で開いたときに、始めるかを確かめるシート */
+const sharedSheet = (page: Page) => page.getByRole("dialog", { name: "共有された問題を始めますか？" });
+
+test.describe("共有した盤面", () => {
+  test.skip(({ browserName }) => browserName !== "chromium", "デスクトップだけ");
+
+  const board = (page: Page) => page.getByRole("grid", { name: "ナンプレの盤面" });
+  const storedStats = async (page: Page) =>
+    JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats"))) ?? "{}");
+
+  test("URL の盤面は、確かめるシートで始めるを押したときだけフリープレイとして始める。やめると何も変えない。URL から盤面を消す", async ({
+    page,
+    baseURL,
+  }) => {
+    const confirm = sharedSheet(page);
+    await page.goto(`/?from=e2e&p=${SHARED_PUZZLE}&d=extreme`);
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByText("極のフリープレイとして始めます。", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+    await confirm.getByRole("button", { name: "やめる", exact: true }).click();
+    await expect(confirm).toBeHidden();
+    await expect(board(page)).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("sudoku:free"))).toBeNull();
+    expect((await storedStats(page)).extreme).toBeUndefined();
+
+    await page.goto(`/?from=e2e&p=${SHARED_PUZZLE}&d=extreme`);
+    await confirm.getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("極");
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+    const g = await savedGame(page, "sudoku:free");
+    expect(g.puzzle).toEqual(gridOf(SHARED_PUZZLE));
+    expect(g.solution).toEqual(solve(gridOf(SHARED_PUZZLE)));
+    await expect(page.getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 最初から 1");
+    await expect(page.getByRole("gridcell").nth(1)).toHaveAccessibleName("1行2列 空き");
+    expect((await storedStats(page)).extreme.started).toBe(1);
+
+    // ホームに戻っても、URL に盤面は戻らない
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/?from=e2e`);
+  });
+
+  test("読めない盤面では、ホームに知らせて始めない。URL から盤面を消す。ゲームを開くと知らせは消える", async ({
+    page,
+    baseURL,
+  }) => {
+    const notice = page.getByText("読み込めない盤面です", { exact: true });
+    // 形が違う・解が 2 つ以上
+    const multiple = `00${"530070000600195000098000060800060003400803001700020006060000280000419005000080079".slice(2)}`;
+    for (const p of ["123", multiple]) {
+      await page.goto(`/?p=${p}&d=easy`);
+      await expect(notice, p).toBeVisible();
+      await expect(page).toHaveURL(`${baseURL}/`);
+      await expect(board(page)).toHaveCount(0);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      expect(await page.evaluate(() => localStorage.getItem("sudoku:free"))).toBeNull();
+    }
+    await page.locator(".free-easy").click();
+    await expect(board(page)).toBeVisible();
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test("途中のフリープレイがあれば、消えることを示して確かめる。やめると途中の問題が残る", async ({
+    page,
+    baseURL,
+  }) => {
+    await page.goto("/");
+    await page.locator(".free-easy").click();
+    await expect(board(page)).toBeVisible();
+    const before = await savedGame(page, "sudoku:free");
+    const first = before.puzzle.indexOf(0);
+    await page
+      .getByRole("gridcell")
+      .nth(first)
+      .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${before.solution![first]}`);
+    await expect.poll(async () => (await savedGame(page, "sudoku:free")).history.length).toBe(1);
+
+    await page.goto(`/?p=${SHARED_PUZZLE}`);
+    const confirm = sharedSheet(page);
+    await expect(confirm).toBeVisible();
+    await expect(
+      confirm.getByText("鬼のフリープレイとして始めます。途中のフリープレイは消えます。", { exact: true }),
+    ).toBeVisible();
+    await expect(page).toHaveURL(`${baseURL}/`);
+    await confirm.getByRole("button", { name: "やめる", exact: true }).click();
+    await expect(confirm).toBeHidden();
+    expect((await savedGame(page, "sudoku:free")).puzzle).toEqual(before.puzzle);
+    expect((await storedStats(page)).master).toBeUndefined();
+
+    await page.goto(`/?p=${SHARED_PUZZLE}`);
+    await confirm.getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("鬼");
+    expect((await savedGame(page, "sudoku:free")).puzzle).toEqual(gridOf(SHARED_PUZZLE));
+    const stats = await storedStats(page);
+    expect(stats.easy.started).toBe(1);
+    expect(stats.master.started).toBe(1);
+  });
+
+  test("フリープレイの結果を共有すると、同じ盤面を開く URL を文に入れてコピーする", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    // 共有のシートを使わず、コピーにする
+    await page.addInitScript(() =>
+      Object.defineProperty(navigator, "share", { value: undefined, configurable: true }),
+    );
+    // 完成した盤面から 4 マスを空けた問題（かんたん）
+    const solution = solve(gridOf(SHARED_PUZZLE))!;
+    const puzzle = solution.map((v, i) => ([0, 10, 40, 80].includes(i) ? 0 : v));
+    const p = puzzle.join("");
+    await page.goto(`/?p=${p}`);
+    await sharedSheet(page).getByRole("button", { name: "始める", exact: true }).click();
+    await expect(board(page)).toBeVisible();
+    await fill(page, puzzle, solution);
+    const result = page.getByRole("dialog", { name: "クリア" });
+    await expect(result).toBeVisible();
+    await result.getByRole("button", { name: "結果を共有", exact: true }).click();
+    await expect(result.getByRole("button", { name: "コピーしました", exact: true })).toBeVisible();
+    const [text, url] = (await page.evaluate(() => navigator.clipboard.readText())).split("\n");
+    expect(text).toMatch(/^ナンプレ（かんたん） [\d,]+点（\d{2}:\d{2}）$/);
+    expect(url).toBe(`${SITE_ORIGIN}/?p=${p}&d=easy`);
+  });
+});
+
 const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 
 /**
  * 旧 URL と新しい URL への通信を、テストのサーバー（baseURL）に振り向ける。ページからは https の 2 つの URL に見える。
  * 本文は圧縮せずに受け取る（受け取った本文は展開済みなので、圧縮の印が残るとブラウザが展開し直して壊れる）。
- * headers は振り向けた通信に足す（x-forwarded-for で回数制限の枠を分ける）。振り向けた通信（メソッドと URL）を返す
+ * headers は振り向けた通信に足す（x-forwarded-for で回数制限の枠を分ける）。
+ * 振り向けた通信（メソッドと URL）と、テストの終わり（afterEach）に呼ぶ end を返す
  */
 async function routeHosts(context: BrowserContext, baseURL: string, headers: Record<string, string> = {}) {
   const routed: string[] = [];
+  let ended = false;
   // 振り向け漏れが本番に届かないよう、テストのサーバー以外への https の通信はすべて止める
   // （後から登録した route が優先されるので、下の振り向けはそのまま動く）
   const local = new URL(baseURL).origin;
@@ -2601,20 +3010,33 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
       const req = route.request();
       const url = new URL(req.url());
       routed.push(`${req.method()} ${url.origin}${url.pathname}`);
-      const response = await context.request.fetch(baseURL + url.pathname + url.search, {
-        method: req.method(),
-        data: req.postDataBuffer() ?? undefined,
-        headers: {
-          ...headers,
-          "content-type": req.headers()["content-type"] ?? "",
-          "accept-encoding": "identity",
-        },
-        maxRedirects: 0,
-      });
-      await route.fulfill({ response });
+      try {
+        const response = await context.request.fetch(baseURL + url.pathname + url.search, {
+          method: req.method(),
+          data: req.postDataBuffer() ?? undefined,
+          headers: {
+            ...headers,
+            "content-type": req.headers()["content-type"] ?? "",
+            "accept-encoding": "identity",
+          },
+          maxRedirects: 0,
+        });
+        await route.fulfill({ response });
+      } catch (e) {
+        // 後片付けの context.close() は、ページを閉じる前に context.request を破棄し、受け取った本文も消す。
+        // テストが待たずに終えた通信（最後に開いたページの履歴の取得など）が振り向けの途中だと、
+        // fetch や fulfill が失敗する（Fetch response has been disposed）。テストの後なので失敗にしない。
+        // unrouteAll({ behavior: "ignoreErrors" }) と同じだが、route は外さない（外すと残りの通信が本番に届く）
+        if (!ended) throw e;
+      }
     });
   }
-  return routed;
+  return {
+    routed,
+    end: () => {
+      ended = true;
+    },
+  };
 }
 
 /** 旧 URL の端末にだけ保存データを入れる（新しい URL の端末は空のまま） */
@@ -2649,12 +3071,15 @@ test.describe("URL の移行", () => {
 
   /** 振り向けた通信（routeHosts） */
   let routed: string[] = [];
+  let endRouting = () => {};
   /** このテストの要求元（ページからの通信と issueCode で同じ IP にする） */
   let ip: Record<string, string> = {};
   test.beforeEach(async ({ context, baseURL }, info) => {
     ip = ipHeaders(info);
-    routed = await routeHosts(context, baseURL!, ip);
+    ({ routed, end: endRouting } = await routeHosts(context, baseURL!, ip));
   });
+  // afterEach は後片付け（context.close）より前に必ず走る
+  test.afterEach(() => endRouting());
   const claimRequests = () => routed.filter((r) => r === `POST ${SITE_ORIGIN}/api/player/claim`);
 
   const MOVE_PLAYER = { id: "77777777-7777-4777-8777-777777777777", name: "旧URL" };
@@ -2766,6 +3191,21 @@ test.describe("URL の移行", () => {
     await expect(moveBar(page)).toHaveCount(0);
     expect(await storageOf(context, LEGACY_ORIGIN)).toEqual({});
     expect(await storageOf(context, SITE_ORIGIN)).toHaveProperty("sudoku:player");
+  });
+
+  test("旧 URL で記録の無い端末は、共有した盤面の URL でも新しい URL へ移り、その盤面を始める", async ({
+    page,
+    context,
+  }) => {
+    await page.goto(`${LEGACY_ORIGIN}/?p=${SHARED_PUZZLE}&d=extreme`);
+    await sharedSheet(page).getByRole("button", { name: "始める", exact: true }).click();
+    await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+    await expect(page.locator(".bar-main")).toHaveText("極");
+    await expect(page).toHaveURL(`${SITE_ORIGIN}/`);
+    expect(await storageOf(context, LEGACY_ORIGIN)).toEqual({});
+    expect(JSON.parse((await storageOf(context, SITE_ORIGIN))["sudoku:free"]).puzzle).toEqual(
+      gridOf(SHARED_PUZZLE),
+    );
   });
 
   test("iPhone のホーム画面に追加したアプリでは、新しい URL を開かずにコードと手順を出す", async ({

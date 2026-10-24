@@ -66,6 +66,14 @@ export function keyCommand(e: KeyInput, paused: boolean): KeyCommand | null {
   return null;
 }
 
+/**
+ * 矢印キーの移動に、フォーカスしているマス（focused、無ければ null）を起点として添える。
+ * 起点は選んでいるマスが無いときだけ使う（選択を外した後に、フォーカスしているマスから動かす）
+ */
+export function withFocusedCell(run: Action, focused: number | null): Action {
+  return run.type === "move" && focused !== null ? { ...run, from: focused } : run;
+}
+
 /** 設定などのシート（aria-modal のダイアログ）を開いているか */
 const modalOpen = () => document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
 
@@ -98,7 +106,10 @@ export function useGameKeys({
       if (cmd.prevent) e.preventDefault();
       if (!enabled) return;
       if (cmd.run === "hint") onHint();
-      else dispatch(cmd.run);
+      else {
+        const cell = target?.closest<HTMLElement>(".board [data-i]");
+        dispatch(withFocusedCell(cmd.run, cell ? Number(cell.dataset.i) : null));
+      }
       if (cmd.sound) sfx[cmd.sound]();
     };
     window.addEventListener("keydown", onKey);
