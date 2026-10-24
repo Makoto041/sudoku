@@ -5,7 +5,7 @@ import { BlockList, isIP, type LookupFunction } from "node:net";
 import { parse as legacyParse } from "node:url";
 import webpush from "web-push";
 import { jstDateKey } from "@/lib/sudoku/generator";
-import { ipRateName, ipv6Words } from "./ip";
+import { ipv6Words, withinIpLimit } from "./ip";
 import { RankingError, assertPlayerId } from "./ranking";
 import type { PushSub, RankingStore } from "./store";
 
@@ -216,7 +216,7 @@ function sameAuth(stored: string, given: string): boolean {
  * 1 人 PUSH_MAX_PER_PLAYER 件の上限とは別に、使い捨ての登録を繰り返して全体の上限を埋めるのを遅らせる
  */
 export const PUSH_RATE_LIMITS = {
-  /** 登録元の IP ごと */
+  /** 登録元の IP ごと（IPv6 は /64 と、その 8 倍の /48。ip.ts の withinIpLimit） */
   ip: { limit: 20, windowSec: 60 * 60 },
   /** プレイヤーごと */
   player: { limit: 10, windowSec: 24 * 60 * 60 },
@@ -225,9 +225,7 @@ export const PUSH_RATE_LIMITS = {
 /** 新規登録を 1 回数え、上限を超えたら 429。IP を先に数え、IP で超えたらプレイヤーの分は数えない */
 async function limitNewSubscription(store: RankingStore, ip: string | null, playerId: string, now: number) {
   const { ip: byIp, player: byPlayer } = PUSH_RATE_LIMITS;
-  if ((await store.incrRateWindow(ipRateName(ip), byIp.windowSec, now)) > byIp.limit) {
-    throw new RankingError(429, "rate limited");
-  }
+  if (!(await withinIpLimit(store, "", ip, byIp, now))) throw new RankingError(429, "rate limited");
   if ((await store.incrRateWindow(`player:${playerId}`, byPlayer.windowSec, now)) > byPlayer.limit) {
     throw new RankingError(429, "rate limited");
   }

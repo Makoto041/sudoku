@@ -953,6 +953,7 @@ describe("新規登録の回数制限", () => {
     expect(store.rateWindowKeys()).toEqual(
       [
         ipKey("203.0.113.7", T0),
+        ipKey("2001:db8:1:2::/64", T0),
         ipKey("2001:db8:1::/48", T0),
         ipKey("198.51.100.9", T0),
         ...[0, 1, 2].map((i) => playerKey(player(i), T0)),
@@ -962,18 +963,18 @@ describe("新規登録の回数制限", () => {
     for (const s of [...ips, "198.51.100.9", "2001:db8"]) expect(text).not.toContain(s);
   });
 
-  it("IPv6 は同じ /48 のアドレス（/64 が違っても、書き方が違っても）をまとめて数え、別の /48 は別に数える。IPv4 射影は IPv4 として数える", async () => {
+  it("IPv6 は同じ /64 のアドレス（書き方が違っても）を 20 件までまとめて数え、同じ /48 の別の /64 は通す。IPv4 射影は IPv4 として数える", async () => {
+    // /48 の枠（/64 の 8 倍）の数え方は ip.test.ts で確かめる
     const store = new MemoryStore();
     for (let i = 0; i < 20; i++) {
-      // /64 を 1 つずつ替える（/48 を配る回線では、/64 を 65,536 個使い分けられる）
-      const ip = i % 2 === 0 ? `2001:db8:1:${i.toString(16)}::1` : `2001:0DB8:0001:${i}:ffff:0:0:1`;
+      const ip = i % 2 === 0 ? `2001:db8:1:2::${i.toString(16)}` : `2001:0DB8:0001:0002:ffff:0:0:${i}`;
       await expect(register(store, player(i), fcm(`v${i}`), T0 + i, ip)).resolves.toEqual({ ok: true });
     }
     await expectStatus(
-      register(store, player(20), fcm("v20"), T0 + 20, "2001:db8:1:ffff:ffff:ffff:ffff:ffff"),
+      register(store, player(20), fcm("v20"), T0 + 20, "2001:db8:1:2:ffff:ffff:ffff:ffff"),
       429,
     );
-    await expect(register(store, player(21), fcm("v21"), T0 + 21, "2001:db8:2::1")).resolves.toEqual({
+    await expect(register(store, player(21), fcm("v21"), T0 + 21, "2001:db8:1:3::1")).resolves.toEqual({
       ok: true,
     });
     for (let i = 0; i < 20; i++)
@@ -1042,6 +1043,33 @@ describe("新規登録の回数制限", () => {
       ["incr", `sdk:push:rl:player:x:${Math.floor(now / DAY)}`],
       ["expire", `sdk:push:rl:player:x:${Math.floor(now / DAY)}`, 86400],
     ]);
+  });
+
+  it("カウンタを読むだけのときは、同じキーを GET で読み、無ければ 0（RedisStore は Redis にはつながない。MemoryStore は数えない）", async () => {
+    const gets: unknown[] = [];
+    const values: Record<string, unknown> = {};
+    const redis = {
+      get: async (key: string) => {
+        gets.push(key);
+        return values[key] ?? null;
+      },
+    };
+    const store = new RedisStore(redis as unknown as Redis);
+    const now = T0 + 5;
+    const key = `sdk:push:rl:xfer:total:${Math.floor(now / HOUR)}`;
+    expect(await store.peekRateWindow("xfer:total", 3600, now)).toBe(0);
+    values[key] = 7;
+    expect(await store.peekRateWindow("xfer:total", 3600, now)).toBe(7);
+    expect(gets).toEqual([key, key]);
+
+    const memory = new MemoryStore();
+    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(0);
+    await memory.incrRateWindow("ip:abc", 3600, now);
+    await memory.incrRateWindow("ip:abc", 3600, now);
+    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(2);
+    expect(await memory.peekRateWindow("ip:abc", 3600, now)).toBe(2);
+    // 次の窓は別のカウンタ
+    expect(await memory.peekRateWindow("ip:abc", 3600, now + HOUR)).toBe(0);
   });
 });
 

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as startRoute } from "@/app/api/daily/start/route";
 import { POST as submitRoute } from "@/app/api/daily/submit/route";
@@ -14,8 +13,12 @@ import {
   NAME_MAX,
   RANKING_MAX_BODY_BYTES,
   RANKING_RATE_LIMITS,
+  RankingError,
   SUBMIT_MAX_BODY_BYTES,
   TRANSFER_MAX_BODY_BYTES,
+  claimTransfer,
+  createTransfer,
+  startDaily,
 } from "./ranking";
 import { MemoryStore, getStore } from "./store";
 
@@ -110,12 +113,22 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
   // 上限までの数え方と断った要求の扱いは ranking.test.ts で確かめる。ここでは route が要求元の IP を渡して数えることだけ
   const pid = (test: number, i: number) =>
     `${test.toString(16).padStart(4, "0")}${i.toString(16).padStart(4, "0")}-3333-4333-8333-333333333333`;
-  const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
+  /** 同じ IP からの要求を、route を通さずに保存先へ直接 1 回送る（route と同じ数え方で数える） */
+  const direct = {
+    start: (ip: string, i: number, hour: number) =>
+      startDaily(getStore()!, { playerId: pid(hour, i), difficulty: "easy" }, Date.now(), { ip }),
+    transfer: (ip: string, i: number, hour: number) =>
+      createTransfer(getStore()!, { playerId: pid(hour, i) }, Date.now(), { ip }),
+    claim: (ip: string) =>
+      claimTransfer(getStore()!, { code: "ABCD-EFGH" }, Date.now(), { ip }).catch((e: RankingError) =>
+        expect(e.status).toBe(404),
+      ),
+  };
   const COUNTED = [
     {
       what: "今日の一問の開始",
-      counter: "daily",
       rule: RANKING_RATE_LIMITS.start,
+      fill: direct.start,
       ok: 200,
       send: (headers: Record<string, string>) =>
         startRoute(
@@ -124,8 +137,8 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
     },
     {
       what: "引き継ぎコードの発行",
-      counter: "xfer",
       rule: RANKING_RATE_LIMITS.transfer,
+      fill: direct.transfer,
       ok: 200,
       send: (headers: Record<string, string>) =>
         transferRoute(
@@ -134,8 +147,8 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
     },
     {
       what: "引き継ぎコードの使用",
-      counter: "claim",
       rule: RANKING_RATE_LIMITS.claim,
+      fill: direct.claim,
       // 形の正しい、発行していないコード
       ok: 404,
       send: (headers: Record<string, string>) =>
@@ -145,14 +158,12 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
 
   it.each(COUNTED.map((r, i) => ({ ...r, hour: 10 + i })))(
     "$what：x-forwarded-for の最初の要素の IP で数え、上限を超えたら 429 で、応答に IP を含めない。別の IP は通る",
-    async ({ counter, rule, ok, send, hour }) => {
+    async ({ rule, fill, ok, send, hour }) => {
       at(hour);
       const IP = `203.0.113.${70 + hour}`;
       expect((await send({ "x-forwarded-for": `${IP}, 10.0.0.1` })).status).toBe(ok);
-      // route と同じカウンタを、上限まで route を通さずに進める（route の 1 回目が数えられていなければ、次は通る）
-      for (let i = 1; i < rule.limit; i++) {
-        await getStore()!.incrRateWindow(`${counter}:ip:${sha256(IP)}`, rule.windowSec, Date.now());
-      }
+      // 同じ IP の残りの枠を、route を通さずに使い切る（route の 1 回目が同じ IP で数えられていなければ、次は通る）
+      for (let i = 1; i < rule.limit; i++) await fill(IP, i, hour);
       expect(await read(await send({ "x-forwarded-for": `${IP}, 10.0.0.2` }), [IP])).toEqual({
         status: 429,
         body: { error: "rate limited" },
@@ -160,6 +171,22 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
       expect((await send({ "x-real-ip": "198.51.100.70" })).status).toBe(ok);
     },
   );
+
+  it("引き継ぎコードの発行：全体の上限を超えたら 503 too many codes で、Retry-After に窓が変わるまでの秒数を付ける", async () => {
+    // 1 時間の窓の 15 分目
+    at(14, 15 * 60 * 1000);
+    for (let i = 0; i < RANKING_RATE_LIMITS.transferTotal.limit; i++) {
+      await direct.transfer(`198.18.${i >> 8}.${i & 0xff}`, i, 14);
+    }
+    const res = await transferRoute(
+      post("/api/player/transfer", JSON.stringify({ playerId: ALICE, name: null, stats: null }), {
+        "x-forwarded-for": "192.0.2.14",
+      }),
+    );
+    expect(res.headers.get("retry-after")).toBe(String(45 * 60));
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await read(res, ["192.0.2.14"])).toEqual({ status: 503, body: { error: "too many codes" } });
+  });
 
   it("今日の一問の送信と名前の変更は回数を数えない", async () => {
     at(13);

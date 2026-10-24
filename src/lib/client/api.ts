@@ -159,3 +159,13 @@ export function describeError(err: unknown): string {
   }
   return "通信に失敗しました";
 }
+
+/**
+ * 引き継ぎコードを発行できなかったときの文言。全体の上限（503 too many codes）は、保存先が無い 503 と応答の error で
+ * 見分ける。ほかは describeError
+ */
+export function describeIssueError(err: unknown): string {
+  return err instanceof ApiError && err.status === 503 && err.message === "too many codes"
+    ? "いまは発行できません。しばらくしてからもう一度試してください"
+    : describeError(err);
+}

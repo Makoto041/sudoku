@@ -310,7 +310,7 @@ describe("記録の同期", () => {
     const at = Math.floor(T0 / HOUR) * HOUR;
     const alice = await signedIn(s, ALICE, b64("cred-1"));
     const bob = await signedIn(s, BOB, b64("cred-bob"));
-    const { limit } = AUTH_RATE_LIMITS.stats;
+    const limit = 120;
     for (let i = 0; i < limit; i++) await putStats(s.deps({ now: at }), alice.session, { stats: {} });
     await expectError(putStats(s.deps({ now: at }), alice.session, { stats: {} }), 429, "rate limited");
     await putStats(s.deps({ now: at }), bob.session, { stats: {} });
@@ -369,7 +369,7 @@ describe("履歴の取り込み", () => {
     const at = Math.floor(T0 / DAY) * DAY;
     const alice = await signedIn(s, ALICE, b64("cred-1"));
     const bob = await signedIn(s, BOB, b64("cred-bob"));
-    const { limit } = AUTH_RATE_LIMITS.merge;
+    const limit = 20;
     const merge = (session: Session, fromPlayerId: string, now = at) =>
       mergePlayer(s.deps({ now }), session, { fromPlayerId });
     for (let i = 0; i < 5; i++) await merge(alice.session, ALICE);

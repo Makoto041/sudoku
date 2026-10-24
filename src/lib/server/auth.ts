@@ -21,7 +21,7 @@ import {
   type ChallengeRecord,
   type StoredCredential,
 } from "./auth-store";
-import { ipRateName } from "./ip";
+import { withinIpLimit } from "./ip";
 import { MAX_STATS_BYTES, RankingError, assertPlayerId } from "./ranking";
 import { historyField, type RankingStore } from "./store";
 
@@ -238,7 +238,12 @@ async function limit(d: AuthDeps, name: string, rule: { limit: number; windowSec
   }
 }
 
-const chalRateName = (d: AuthDeps) => `auth:chal:${ipRateName(d.ip ?? null)}`;
+/** 要求元の IP の枠で数える（IPv6 は /64 と /48。ip.ts の withinIpLimit） */
+async function limitIp(d: AuthDeps, prefix: string, rule: { limit: number; windowSec: number }, now: number) {
+  if (!(await withinIpLimit(d.store, prefix, d.ip ?? null, rule, now))) {
+    throw new RankingError(429, "rate limited");
+  }
+}
 
 async function accountView(d: AuthDeps, account: Account): Promise<AccountView> {
   const [names, creds, stats] = await Promise.all([
@@ -360,7 +365,7 @@ export async function signupOptions(
 ): Promise<{ options: PublicKeyCredentialCreationOptionsJSON }> {
   const now = d.now ?? Date.now();
   const playerId = assertPlayerId(input.playerId);
-  await limit(d, chalRateName(d), AUTH_RATE_LIMITS.chal, now);
+  await limitIp(d, "auth:chal:", AUTH_RATE_LIMITS.chal, now);
   if (await d.auth.accountOfPlayer(playerId)) throw new RankingError(409, "already linked");
   if ((await d.auth.countAccounts()) >= AUTH_MAX_ACCOUNTS) throw new RankingError(503, "too many accounts");
   const accountId = randomUUID();
@@ -385,7 +390,7 @@ export async function signupVerify(
   const cred = await verifyNewCredential(d, response, challenge, rec.accountId, now);
   if ((await d.auth.countAccounts()) >= AUTH_MAX_ACCOUNTS) throw new RankingError(503, "too many accounts");
   if (await d.auth.accountOfPlayer(rec.playerId)) throw new RankingError(409, "already linked");
-  await limit(d, `auth:signup:${ipRateName(d.ip ?? null)}`, AUTH_RATE_LIMITS.signup, now);
+  await limitIp(d, "auth:signup:", AUTH_RATE_LIMITS.signup, now);
   const account: Account = { id: rec.accountId, playerId: rec.playerId, createdAt: now };
   const created = await d.auth.createAccount(account, cred);
   if (created === "linked") throw new RankingError(409, "already linked");
@@ -397,7 +402,7 @@ export async function signupVerify(
 /** ログインの options。パスキーを指定せず、端末に保存されたパスキーから選ばせる */
 export async function loginOptions(d: AuthDeps): Promise<{ options: PublicKeyCredentialRequestOptionsJSON }> {
   const now = d.now ?? Date.now();
-  await limit(d, chalRateName(d), AUTH_RATE_LIMITS.chal, now);
+  await limitIp(d, "auth:chal:", AUTH_RATE_LIMITS.chal, now);
   const options = await webauthn(d).authenticationOptions({
     rpID: d.config.rpID,
     allowCredentials: [],
@@ -503,7 +508,7 @@ export async function passkeyOptions(
   const account = await requireAccount(d, s);
   const creds = await d.auth.listCredentials(account.id);
   if (creds.length >= AUTH_MAX_PASSKEYS) throw new RankingError(409, "too many passkeys");
-  await limit(d, chalRateName(d), AUTH_RATE_LIMITS.chal, now);
+  await limitIp(d, "auth:chal:", AUTH_RATE_LIMITS.chal, now);
   const options = await buildRegistrationOptions(
     d,
     account.id,
