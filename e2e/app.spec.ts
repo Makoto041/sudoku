@@ -101,6 +101,9 @@ test("フリープレイを最後まで解け、記録画面の始めた数・�
     g.solution!,
   );
   await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
+  await expect(
+    page.getByRole("dialog", { name: "クリア" }).getByRole("heading", { name: "要る手筋", exact: true }),
+  ).toBeVisible();
   await page.waitForTimeout(700);
   await shot(page, "result-free");
 

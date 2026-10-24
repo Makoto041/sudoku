@@ -9,6 +9,7 @@ import {
   practiceItems,
   practiceKeyOf,
   startNotes,
+  techniqueRows,
   type PracticePosition,
 } from "./practice";
 import { PRACTICE_POSITIONS } from "./practice-data";
@@ -232,5 +233,21 @@ describe("練習の答え合わせ", () => {
     const values = p.values.slice();
     values[cell] = p.solution[cell];
     expect(checkPractice(p, answer, values, cleared).correct).toBe(true);
+  });
+});
+
+describe("手筋の内訳の表示", () => {
+  it("ポインティングとクレーミングを 1 つにまとめ、練習の項目の順に並べる。0 回の手筋は出さない", () => {
+    expect(
+      techniqueRows({ swordfish: 1, claiming: 2, "hidden-single": 5, pointing: 3, "naked-pair": 0 }),
+    ).toEqual([
+      { key: "hidden-single", name: "ヒドゥンシングル", count: 5 },
+      { key: "pointing", name: "ロックドキャンディデート", count: 5 },
+      { key: "swordfish", name: "ソードフィッシュ", count: 1 },
+    ]);
+    expect(techniqueRows({ claiming: 1 })).toEqual([
+      { key: "pointing", name: "ロックドキャンディデート", count: 1 },
+    ]);
+    expect(techniqueRows({})).toEqual([]);
   });
 });
