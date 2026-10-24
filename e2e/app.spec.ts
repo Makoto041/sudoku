@@ -12,6 +12,8 @@ import {
 } from "@playwright/test";
 import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
+import { TECHNIQUE_NAME } from "../src/lib/sudoku/hint";
+import { candidatesOf, findAllSteps } from "../src/lib/sudoku/logic";
 import { answerOf, practiceItems, startNotes, type PracticeItem } from "../src/lib/sudoku/practice";
 import { PRACTICE_POSITIONS } from "../src/lib/sudoku/practice-data";
 import { solve } from "../src/lib/sudoku/solver";
@@ -118,6 +120,66 @@ test("フリープレイを最後まで解け、記録画面の始めた数・�
   await expect(metric(page, "フリープレイ", "最速")).toHaveText(/^\d{2}:\d{2}$/);
   // 途中で間違えたので、ノーミス最速は無い
   await expect(metric(page, "フリープレイ", "ノーミス最速")).toHaveText("-");
+});
+
+/** クリアの結果の「最初の誤り」の欄 */
+const firstMistakeRegion = (page: Page) =>
+  page.getByRole("dialog", { name: "クリア" }).getByRole("region", { name: "最初の誤り", exact: true });
+
+test("結果に最初の誤りを出す。間違いの表示がオフでも記録し、戻すで消しても、開き直しても残る", async ({
+  page,
+}) => {
+  // 間違いの表示をオフにする（再読み込みでは入れ直さない）
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("sudoku:settings"))
+      localStorage.setItem("sudoku:settings", JSON.stringify({ showMistakes: false }));
+  });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const solution = g.solution!;
+  const cells = page.getByRole("gridcell");
+  // 2 マスに正しく置いてから、重複しない違う数字を入れられるマス（候補が 2 つ以上）に入れる（3 手目）。
+  // その盤面でシングルで決まるマス（ヒドゥンシングル）があればそこにする
+  const values = g.puzzle.slice();
+  for (const i of g.puzzle.flatMap((v, i) => (v ? [] : [i])).slice(0, 2)) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${solution[i]}`);
+    values[i] = solution[i];
+  }
+  const cands = candidatesOf(values);
+  const open = (i: number) => values[i] === 0 && digitsOf(cands[i]).length >= 2;
+  const step = findAllSteps(values, cands).find((s) => s.placement && open(s.placement.cell));
+  const cell = step ? step.placement!.cell : values.findIndex((_, i) => open(i));
+  const wrong = digitsOf(cands[cell]).find((d) => d !== solution[cell])!;
+  await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${wrong}`);
+  // 重複していないので、間違いの表示がオフなら「間違い」と読まない
+  await expect(cells.nth(cell)).toHaveAttribute("aria-label", `${cellAt(cell)} ${wrong}`);
+  // 戻すで盤面から消し、開き直す
+  await page.keyboard.press("KeyZ");
+  await expect.poll(async () => (await savedGame(page, "sudoku:free")).values[cell]).toBe(0);
+  await page.reload();
+  await page.getByRole("button", { name: /続きから/ }).click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  await fill(page, values, solution);
+
+  const region = firstMistakeRegion(page);
+  await expect(region).toBeVisible();
+  await expect(
+    region.getByText(`3手目 ${cellAt(cell)} ${wrong}（正解 ${solution[cell]}）`, { exact: true }),
+  ).toBeVisible();
+  const techniqueLine = region.getByText(/^その時点で確定できた手筋: /);
+  if (step)
+    await expect(techniqueLine).toHaveText(
+      `その時点で確定できた手筋: ${TECHNIQUE_NAME[step.trace.technique]}`,
+    );
+  else await expect(techniqueLine).toHaveCount(0);
+  await shot(page, "result-first-mistake");
 });
 
 test("途中のフリープレイを上書きして始めると、開始数と途中でやめた時間を記録する", async ({ page }) => {
@@ -290,6 +352,8 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
   await page.keyboard.press(`Digit${solution[last]}`);
   await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
   await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  // ミスなしで解いたので、最初の誤りは出さない
+  await expect(firstMistakeRegion(page)).toHaveCount(0);
   await shot(page, "result-daily");
 
   await page.getByRole("button", { name: "ランキングを見る" }).click();
@@ -585,7 +649,9 @@ test("極の問題を作って遊び始められる", async ({ page }) => {
   await expect(page.locator(".bar-main")).toHaveText("極");
 });
 
-test("今日の一問を解くと連続日数が付き、記録画面のカレンダーに残る", async ({ page }, info) => {
+test("今日の一問を解くと連続日数が付き、記録画面のカレンダーに残る。結果に最初の誤りを出す", async ({
+  page,
+}, info) => {
   test.setTimeout(120_000);
   await page.goto("/");
   await page.locator(".daily-row").first().click();
@@ -597,6 +663,14 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
   );
   const g = await savedGame(page, key);
   const solution = solve(g.puzzle)!;
+  // 1 手目に違う数字を入れておく（解くときに正しい数字で上書きする）
+  const first = g.puzzle.indexOf(0);
+  const wrong = (solution[first] % 9) + 1;
+  await page
+    .getByRole("gridcell")
+    .nth(first)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${wrong}`);
   const last = await fill(page, g.puzzle, solution, true);
   await page.waitForTimeout(15_500);
   await page
@@ -605,6 +679,11 @@ test("今日の一問を解くと連続日数が付き、記録画面のカレ�
     .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
   await page.keyboard.press(`Digit${solution[last]}`);
   await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  await expect(
+    firstMistakeRegion(page).getByText(`1手目 ${cellAt(first)} ${wrong}（正解 ${solution[first]}）`, {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "ホーム", exact: true }).click();
   await expect(page.locator(".streak-chip")).toHaveText("1日連続");
   await page.getByRole("button", { name: "記録" }).click();
@@ -2313,6 +2392,8 @@ test("実績：フリープレイの合計 100 問目をヒントもミスもな
   const line = result.getByText("実績: ノーミスクリア、100問クリア", { exact: true });
   await expect(line).toBeVisible();
   await expectWithin(line, 320);
+  // ミスなしで解いたので、最初の誤りは出さない
+  await expect(firstMistakeRegion(page)).toHaveCount(0);
   await shot(page, "result-achievement-320");
 
   await result.getByRole("button", { name: "ホーム", exact: true }).click();
