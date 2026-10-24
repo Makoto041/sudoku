@@ -1430,6 +1430,18 @@ describe("最初の誤り", () => {
     expect(JSON.parse(JSON.stringify(persisted(s)))).not.toHaveProperty("firstMistake");
   });
 
+  it("置いた回数が整数でない保存データ（書き換えたもの）では、数えず記録しない", () => {
+    const { p, s: s0 } = freeGame();
+    const [a, b] = empties(s0);
+    for (const placed of ["3", 1.5, null, Number.NaN]) {
+      const broken = { ...s0, placed } as unknown as GameState;
+      const s = run(broken, ...put(a, p.solution[a]), ...put(b, wrongOf(p.solution[b]))).s;
+      expect(s.mistakes, String(placed)).toBe(1);
+      expect(s.placed, String(placed)).toBeUndefined();
+      expect(s.firstMistake, String(placed)).toBeUndefined();
+    }
+  });
+
   it("それまでにミスがあれば（解答の無い日次で重複を数えたなど）、後の誤りは最初とは呼ばないので記録しない", () => {
     const p = generatePuzzle("first-mistake-nosolution", "easy");
     const s0 = newGame({

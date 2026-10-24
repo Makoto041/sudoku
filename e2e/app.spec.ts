@@ -143,18 +143,23 @@ test("結果に最初の誤りを出す。間違いの表示がオフでも記�
   const g = await savedGame(page, "sudoku:free");
   const solution = g.solution!;
   const cells = page.getByRole("gridcell");
-  // 2 マスに正しく置いてから、その盤面でシングルで決まるマスに違う数字を入れる（3 手目）
+  // 2 マスに正しく置いてから、重複しない違う数字を入れられるマス（候補が 2 つ以上）に入れる（3 手目）。
+  // その盤面でシングルで決まるマス（ヒドゥンシングル）があればそこにする
   const values = g.puzzle.slice();
   for (const i of g.puzzle.flatMap((v, i) => (v ? [] : [i])).slice(0, 2)) {
     await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
     await page.keyboard.press(`Digit${solution[i]}`);
     values[i] = solution[i];
   }
-  const step = findAllSteps(values, candidatesOf(values)).find((s) => s.placement)!;
-  const cell = step.placement!.cell;
-  const wrong = (solution[cell] % 9) + 1;
+  const cands = candidatesOf(values);
+  const open = (i: number) => values[i] === 0 && digitsOf(cands[i]).length >= 2;
+  const step = findAllSteps(values, cands).find((s) => s.placement && open(s.placement.cell));
+  const cell = step ? step.placement!.cell : values.findIndex((_, i) => open(i));
+  const wrong = digitsOf(cands[cell]).find((d) => d !== solution[cell])!;
   await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
   await page.keyboard.press(`Digit${wrong}`);
+  // 重複していないので、間違いの表示がオフなら「間違い」と読まない
+  await expect(cells.nth(cell)).toHaveAttribute("aria-label", `${cellAt(cell)} ${wrong}`);
   // 戻すで盤面から消し、開き直す
   await page.keyboard.press("KeyZ");
   await expect.poll(async () => (await savedGame(page, "sudoku:free")).values[cell]).toBe(0);
@@ -168,9 +173,12 @@ test("結果に最初の誤りを出す。間違いの表示がオフでも記�
   await expect(
     region.getByText(`3手目 ${cellAt(cell)} ${wrong}（正解 ${solution[cell]}）`, { exact: true }),
   ).toBeVisible();
-  await expect(
-    region.getByText(`その時点で確定できた手筋: ${TECHNIQUE_NAME[step.trace.technique]}`, { exact: true }),
-  ).toBeVisible();
+  const techniqueLine = region.getByText(/^その時点で確定できた手筋: /);
+  if (step)
+    await expect(techniqueLine).toHaveText(
+      `その時点で確定できた手筋: ${TECHNIQUE_NAME[step.trace.technique]}`,
+    );
+  else await expect(techniqueLine).toHaveCount(0);
   await shot(page, "result-first-mistake");
 });
 

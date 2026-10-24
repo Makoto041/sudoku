@@ -1,17 +1,13 @@
 import { TECHNIQUE_NAME } from "@/lib/sudoku/hint";
-import type { TechniqueId } from "@/lib/sudoku/logic";
 import { cellName } from "./a11y";
-import type { FirstMistake } from "./state";
+import { isSingleTechnique, type FirstMistake } from "./state";
 
 const isInt = (x: unknown, min: number, max: number): x is number =>
   Number.isInteger(x) && (x as number) >= min && (x as number) <= max;
 
-const isTechnique = (x: unknown): x is TechniqueId =>
-  typeof x === "string" && Object.prototype.hasOwnProperty.call(TECHNIQUE_NAME, x);
-
 /**
  * 保存データの最初の誤りを確かめる。形の違うものは null（書き換えられた・壊れた保存データでも結果を出す）。
- * 手筋だけが知らないものなら、手筋の行を出さないだけにする
+ * 手筋だけがシングル（ネイキッド・ヒドゥン）でなければ、手筋の行を出さないだけにする
  */
 export function validFirstMistake(x: unknown): FirstMistake | null {
   if (typeof x !== "object" || x === null || Array.isArray(x)) return null;
@@ -23,7 +19,7 @@ export function validFirstMistake(x: unknown): FirstMistake | null {
     cell: m.cell,
     digit: m.digit,
     answer: m.answer,
-    technique: isTechnique(m.technique) ? m.technique : null,
+    technique: isSingleTechnique(m.technique) ? m.technique : null,
   };
 }
 

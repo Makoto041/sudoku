@@ -76,7 +76,8 @@ export type GameState = {
   /**
    * 数字を置いた回数（ヒントで置いた分を含む）。最初の誤りの「何手目」に使う。
    * メモ・消す・色・戻す・進む・間違える前まで戻すでは変えない（戻しても置いた事実は残る）。
-   * 古い保存データには無く、そのときは数えない（それまでの回数が分からないので、最初の誤りも記録しない）
+   * 古い保存データには無く、そのときは数えない（それまでの回数が分からないので、最初の誤りも記録しない）。
+   * 整数でない値（書き換えた保存データ）も無いものとして扱う
    */
   placed?: number;
   /** 最初に置いた、解答と違う数字（クリアの結果で振り返る）。無ければ undefined */
@@ -95,9 +96,15 @@ export type FirstMistake = {
   digit: number;
   /** 正しい数字 */
   answer: number;
-  /** 置く直前の盤面の数字だけから、そのマスに正しい数字を 1 手で置けた手筋（シングル）。無ければ null */
-  technique: TechniqueId | null;
+  /** 置く直前の盤面の数字だけから、そのマスに正しい数字を 1 手で置けた手筋。無ければ null */
+  technique: SingleTechnique | null;
 };
+
+/** 1 手で数字を置ける手筋（findAllSteps で置く手になるのはこの 2 つだけ） */
+export type SingleTechnique = Extract<TechniqueId, "naked-single" | "hidden-single">;
+
+export const isSingleTechnique = (x: unknown): x is SingleTechnique =>
+  x === "naked-single" || x === "hidden-single";
 
 type Move = {
   cell: number;
@@ -311,13 +318,13 @@ function commitNotes(s: GameState, notes: number[], effect: Effect): [GameState,
  * まだミスが無い盤面で呼ぶので、盤面の数字はどれも正しく、候補に答えが残る。置ける手になるのはシングルだけ。
  * 最初の誤りの 1 回だけ呼ぶ（findAllSteps は途中の盤面で 1 回 0.2〜2ms ほど。手元の Mac）
  */
-function singleAt(values: Grid, cell: number, answer: number): TechniqueId | null {
+function singleAt(values: Grid, cell: number, answer: number): SingleTechnique | null {
   const grid = values.slice();
   grid[cell] = 0;
-  const step = findAllSteps(grid, candidatesOf(grid)).find(
+  const technique = findAllSteps(grid, candidatesOf(grid)).find(
     (st) => st.placement?.cell === cell && st.placement.digit === answer,
-  );
-  return step?.trace.technique ?? null;
+  )?.trace.technique;
+  return isSingleTechnique(technique) ? technique : null;
 }
 
 /** マスの色。古い保存データには無いので、そのときは色なしとして扱う */
@@ -354,18 +361,14 @@ function place(
   let delta: ScoreDelta | null = null;
   if (s.solution && score)
     [score, delta] = applyPlacement(score, { cell, digit, t, viaHint }, s.solution, s.difficulty);
-  const placed = s.placed === undefined ? undefined : s.placed + 1;
+  // 回数を持たない・整数でない（古い・書き換えた保存データ）なら数えない
+  const placed = Number.isInteger(s.placed) ? s.placed! + 1 : undefined;
   // 最初の誤りは、まだミスが無いときだけ記録する（古い保存データでそれまでにミスがあれば、後の誤りは最初ではない）。
   // 練習は結果を出さないので記録しない
+  const answer = s.solution?.[cell];
   const firstMistake: FirstMistake | undefined =
-    wrong && s.solution && s.mistakes === 0 && placed !== undefined && s.mode !== "practice"
-      ? {
-          move: placed,
-          cell,
-          digit,
-          answer: s.solution[cell],
-          technique: singleAt(s.values, cell, s.solution[cell]),
-        }
+    wrong && answer && s.mistakes === 0 && placed !== undefined && s.mode !== "practice"
+      ? { move: placed, cell, digit, answer, technique: singleAt(s.values, cell, answer) }
       : s.firstMistake;
   const next = commit(s, move, {
     values,

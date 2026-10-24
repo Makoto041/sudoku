@@ -32,7 +32,7 @@ describe("最初の誤りの表示", () => {
     expect(firstMistakeLines(null)).toBeNull();
   });
 
-  it("形の違う保存データは出さない。手筋だけが知らないものなら、手筋の行を出さない", () => {
+  it("形の違う保存データは出さない。手筋だけがシングルでなければ、手筋の行を出さない", () => {
     for (const bad of [
       "14手目",
       [14, 22, 7, 4],
@@ -50,7 +50,8 @@ describe("最初の誤りの表示", () => {
       expect(validFirstMistake(bad), JSON.stringify(bad)).toBeNull();
       expect(firstMistakeLines(bad)).toBeNull();
     }
-    for (const technique of ["unknown", "toString", "__proto__", 1, undefined]) {
+    // 1 手で置けるのはシングルだけなので、ほかの手筋（書き換えた保存データ）も出さない
+    for (const technique of ["x-wing", "pointing", "naked-pair", "unknown", 1, undefined]) {
       expect(validFirstMistake({ ...MISTAKE, technique })).toEqual({ ...MISTAKE, technique: null });
       expect(firstMistakeLines({ ...MISTAKE, technique })).toEqual({
         main: "14手目 3行5列 7（正解 4）",

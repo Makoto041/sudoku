@@ -55,7 +55,7 @@ export function Result({
     return { rows: techniqueRows(counts), stalled };
   }, [game.puzzle]);
   // このプレイで最初に置いた解答と違う数字。端末の保存データにだけあり、共有する文には入れない
-  const mistake = useMemo(() => firstMistakeLines(game.firstMistake), [game.firstMistake]);
+  const mistake = firstMistakeLines(game.firstMistake);
 
   const share = async () => {
     sfx.tap();
