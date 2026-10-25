@@ -2308,6 +2308,23 @@ p {
   font-weight: 700;
 }
 
+/*
+ * 連続を途切れさせなかった休みの日。クリアした日の塗りと色だけで見分けさせないよう、点線の枠と「休」の文字で示す。
+ * 日付と文字を縦に並べる（どちらも行の高さを文字の大きさにして、狭い画面の特大でも円に収める）
+ */
+.cal-day.is-rest {
+  align-content: center;
+  line-height: 1;
+  border: 1.5px dashed var(--accent);
+}
+
+.cal-rest {
+  font-family: var(--font-ui);
+  font-size: 0.5625rem;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
 .cal-day.is-today {
   box-shadow: inset 0 0 0 2px var(--accent);
 }

@@ -61,10 +61,40 @@ describe("今日の一問の実績", () => {
     const set = achieved({ records: [...days("2026-09-01", 3), rec("2026-10-17")] });
     expect(set.has("streak-3")).toBe(true);
     expect(set.has("streak-7")).toBe(false);
-    // 1 日あいていれば続かない
+    // 2 日あいていれば続かない
     expect(
-      achieved({ records: [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-04")] }).has("streak-3"),
+      achieved({ records: [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-05")] }).has("streak-3"),
     ).toBe(false);
+  });
+
+  it("連続日数の実績は休みを挟んだ連続でも数える。休みの日は日数に数えない（記録画面の最長と同じ数え方）", () => {
+    // 10-03 が休み。クリアした 3 日で 3日連続
+    const rested = [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-04")];
+    expect(achieved({ records: rested }).has("streak-3")).toBe(true);
+    expect(achieved({ records: [rec("2026-10-01"), rec("2026-10-03")] }).has("streak-3")).toBe(false);
+    // 8 日のうち 1 日休んで 7 日クリアなら 7日連続。6 日では達成しない
+    const week = [...days("2026-10-01", 3), ...days("2026-10-05", 4)];
+    expect(achieved({ records: week }).has("streak-7")).toBe(true);
+    expect(achieved({ records: week.slice(0, -1) }).has("streak-7")).toBe(false);
+    // 休みの 6 日後にもう 1 日休むと途切れるので、30 日には届かない
+    const twice = [...days("2026-09-01", 3), ...days("2026-09-05", 5), ...days("2026-09-11", 22)];
+    expect(summarize(twice, TODAY).longest).toBe(22);
+    expect(achieved({ records: twice }).has("streak-30")).toBe(false);
+    // 7 日後なら続く（3 + 6 + 21 = 30 日）
+    const spaced = [...days("2026-09-01", 3), ...days("2026-09-05", 6), ...days("2026-09-12", 21)];
+    expect(summarize(spaced, TODAY).longest).toBe(30);
+    expect(achieved({ records: spaced }).has("streak-30")).toBe(true);
+    // 今日がまだで昨日を休みにして続いている途中でも、最長はクリアした日だけで数える
+    expect(achieved({ records: days("2026-10-14", 2), today: "2026-10-17" }).has("streak-3")).toBe(false);
+  });
+
+  it("連続日数の実績の名前と説明は変えていない", () => {
+    expect(ACHIEVEMENTS.filter((a) => a.id.startsWith("streak-"))).toEqual([
+      { id: "streak-3", name: "3日連続", desc: "3日続けて今日の一問をクリア" },
+      { id: "streak-7", name: "7日連続", desc: "7日続けて今日の一問をクリア" },
+      { id: "streak-30", name: "30日連続", desc: "30日続けて今日の一問をクリア" },
+      { id: "streak-100", name: "100日連続", desc: "100日続けて今日の一問をクリア" },
+    ]);
   });
 
   it("皆勤は月初めから月末まで毎日クリアした月があるとき。過去の月も数える", () => {

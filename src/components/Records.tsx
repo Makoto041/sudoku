@@ -122,11 +122,17 @@ export function Records({ today, playerId, onBack }: Props) {
           {month.days.map((d) => (
             <span
               key={d.date}
-              className={`cal-day${d.count ? " is-played" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
+              className={`cal-day${d.count ? " is-played" : ""}${d.isRest ? " is-rest" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
               style={d.count ? { ["--n" as string]: d.count } : undefined}
-              aria-label={`${d.day}日 ${d.count ? `${d.count}問クリア` : ""}`}
+              aria-label={`${d.day}日 ${d.count ? `${d.count}問クリア` : d.isRest ? "休み" : ""}`}
             >
               {d.day}
+              {/* 休みは色だけでなく、文字と点線の枠でも示す */}
+              {d.isRest && (
+                <span className="cal-rest" role="img" aria-label="休み">
+                  休
+                </span>
+              )}
             </span>
           ))}
         </div>
