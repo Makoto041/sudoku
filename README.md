@@ -150,7 +150,7 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
   - 数えるのは形の検査（400）を通った要求だけ。今日の一問の送信・名前の変更・表と履歴の取得は数えない。
   - 端末は 429 で「しばらくしてからもう一度試してください」と出す。
 - 本文の上限（UTF-8 のバイト数。超えたら 413）: 今日の一問の送信は 64KB（2,000 手の記録が収まる）、引き継ぎコードの発行は 8KB（保存する中身は 4096 バイトまで）、ほかは 1KB。
-- `GET /api/leaderboard` は、`playerId` の無い要求の成功した応答だけ `Cache-Control: public, s-maxage=10, stale-while-revalidate=30`（CDN のキャッシュ）。`playerId` 付きとエラーは `no-store`。
+- `GET /api/leaderboard` は、`playerId` の無い要求の成功した応答だけ `Cache-Control: public, s-maxage=10, stale-while-revalidate=30`（CDN のキャッシュ）。`playerId` 付き（`x-player-id` ヘッダーか、移行期間のクエリ）は `private, no-store`、エラーは `no-store`。どの応答にも `Vary: x-player-id` を付ける（「GET での playerId の受け渡し」を参照）。
 - 想定外のエラーは、エラーの名前だけを記録する（`request failed (<名前>)`。Upstash のエラーには送ったコマンド＝playerId・引き継ぎコード・記録が含まれうる）。どの API かは Vercel のログの要求のパスで分かる。通知・アカウントの API も同じ。
 - 既知の限界:
   - IP ごとの枠（ランキング・アカウント・通知の購読のすべて）は、IPv6 では /64 と、その 8 倍の上限の /48 で数える。/64 を 1 つしか使わない人では /48 の巻き込みは起きない（/64 の上限で止まり、/48 には数えない）が、/64 を 8 つ以上使えると、同じ /48 の他人もまとめて 429 にできる（世帯ごとに /56 を配る ISP・携帯のキャリアの共有プール・大学など。/56 の段は入れていない）。IPv4 の NAT の内側でも、同じ IP の利用者は枠を共有する。
@@ -160,7 +160,21 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
   - 混雑の段に入ると、共有の IP（携帯の CGNAT・学校や会社の NAT）で、その 1 時間にすでに 2 回以上発行されていた利用者は、その 1 時間の残りは発行できない（429）。
   - 名前の変更（`POST /api/player`）は回数を制限せず、どの playerId でも受け付けるので、名前の表（`sdk:names`。期限なし）を増やせる。遊んだことのある playerId だけに絞ると、遊ぶ前に設定で付けた名前（アカウントのパスキーの名前に使う）を保存できなくなる。
   - playerId ごとの制限は、playerId を作り直せば回避できる。主な歯止めは IP ごとの制限で、多数の IP を使われると防げない。429 で断った要求も、カウンタの分だけ保存先のコマンドを使う。Vercel の WAF・レート制限のルールの併用を勧める。
-  - アプリの表の取得は必ず `playerId` を付けるので、CDN のキャッシュが効くのはアプリ以外からの要求だけ。
+  - アプリの表の取得は必ず `x-player-id` を付けるので、CDN のキャッシュが効くのはアプリ以外からの要求だけ。
+
+### GET での playerId の受け渡し
+
+- playerId は持ち主を示す秘密なので、GET（`/api/leaderboard`・`/api/player/history`）では `x-player-id` ヘッダーで送る（名前は `src/lib/player-id-header.ts`）。fetch の URL のクエリは、Vercel のアクセスログ・CDN のキャッシュのキー・途中のプロキシ・開発者ツールと HAR に残りうる（fetch の URL はブラウザの履歴と Referer には入らない）。GET 以外は今までどおり本文で送る。
+- サーバーはヘッダーを先に見る（`src/lib/server/player-id.ts` の `requestPlayerId`）。ヘッダーがあれば（空でも）その値を検査し、形が違えば 400 `invalid player id`（クエリに正しい値があっても使わない）。
+- 移行期間: ヘッダーを送らない古い端末（開いたままのタブなど）のため、`2026-12-20T00:00:00+09:00`（`PLAYER_ID_QUERY_SUNSET`。この時刻から受け付けない）より前は、ヘッダーの無い要求ではクエリの `playerId` も受け付ける（8 週間）。その成功した応答には `Deprecation`（RFC 9745）と `Sunset`（RFC 8594）を付ける（エラーには付けない）。サーバーは playerId を記録しない（Vercel のアクセスログには要求の URL が残る）。
+- 期限からは、クエリに `playerId` があれば（ヘッダーがあっても、空でも）400 `player id in query`。クエリを無視しないのは、表では playerId の入った URL への応答が公開の応答になり、ID を含む URL が CDN のキャッシュのキーになるため。期限後に消すものは「やること」を参照。
+- キャッシュ: playerId のある成功した応答は `Cache-Control: private, no-store`（どのキャッシュにも載せない）。表の playerId の無い成功した応答は今までどおり CDN にキャッシュさせる。表の応答にはすべて `Vary: x-player-id` を付ける。アプリの要求は公開の要求と URL が同じなので、付けないと CDN がヘッダー付きの要求に、保存した公開の応答（自分の順位が無い）を返す。Vercel の CDN は、Vary に挙げた要求ヘッダーの値をキャッシュのキーに入れる（Vercel のドキュメント「Vercel CDN Cache」の Vary header）。
+- Service Worker（`public/sw.js`）は `/api/` を扱わない（キャッシュしない）ので、ヘッダーはそのキャッシュに関わらない。端末の fetch は `cache: "no-store"`。
+- CORS の許可（`Access-Control-Allow-*`）はどこにも付けていない。ほかの origin のページからは `x-player-id` を付けた要求を送れない（カスタムヘッダーには preflight が要り、許可が無いので通らない）。同じ origin の要求には preflight が要らず、CSP の `connect-src 'self'` のままでよい。
+- 既知の限界:
+  - この変更より前の要求と、期限後に届く古い端末の要求の URL には ID が入っており、保持期間のあいだ Vercel のログに残る。
+  - Vary を見ない CDN やプロキシを前に置くと、ヘッダー付きの要求に公開の応答（自分の順位が無い）が最大 40 秒返りうる。別の人の順位は返らない（playerId のある応答は保存されない）。
+  - 本番の Vercel で、ヘッダー付きの要求が公開の応答のキャッシュに当たらないことは確かめていない（テストは応答のヘッダーと、Vary を見るキャッシュの模型で確かめる）。
 
 ## 音源
 
@@ -238,7 +252,7 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 - サイズの上限: 本文は検証 API が 16KB、記録の同期が 8KB、ほかは 1KB。登録の attestationObject は base64url で 4096 文字、保存する公開鍵は 1KB、同期した記録は 4096 バイト。
 - 既知の限界:
   - プレイヤー ID は、既存の API ではそれを知っていれば使える秘密のまま。他人のプレイヤー ID を知っていれば、まだ紐づいていなければ自分のアカウントに紐づけられ（先着 1 つ）、履歴の取り込みで、そのプレイヤーの履歴の空いている日に別のプレイヤー ID の行を書き込める（履歴の読み取りは既存の `GET /api/player/history` でできる）。
-  - プレイヤー ID は GET のクエリ（`/api/leaderboard`・`/api/player/history`）に入り、Vercel のログに残る。
+  - 端末はプレイヤー ID を GET（`/api/leaderboard`・`/api/player/history`）では `x-player-id` ヘッダーで送るが、移行期間（2026-12-20 の日本時間 0 時より前）はクエリでも受け付けるので、ヘッダーを送らない古い端末からの要求では Vercel のログに残る（「GET での playerId の受け渡し」を参照）。
   - RP ID は変えられない（ドメインを変えると、登録済みのパスキーではログインできない）。
   - 2 台で同時に遊ぶと、記録は良い方・多い方で合わせるので、回数（始めた数・クリア数など）は足されず、少なく数えられる。
   - 記録の同期は読んでから書くので、2 台が同時に同期すると片方の分が保存されないことがある（その端末が次に同期したときに戻る）。
@@ -272,3 +286,14 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
   - 失敗の日は、その日に同じプッシュサービス（Apple・Windows・Mozilla・FCM）へ 1 件以上送れたときだけ数える（設定の誤りや、そのサービスだけの障害・拒否で購読を失わないため）。名前解決の失敗（存在しないサブドメインなど）と、保存済みの endpoint が今の検査を通らないものは、どのサービスでも 1 件送れていれば数える。
 - 既知の限界: 購読 API には認証が無いので、多数の IP を使われると全体の上限（20,000 件）を埋められうる。利用者のいないサービス（例 `*.notify.windows.com`）の配下に作られた購読が 403 などを返し続けると、消えずに残る。完全に防ぐには Vercel の WAF・レート制限のルールなどを併用する。
 - cron の応答は件数と、失敗の種類別の件数（`failures`: `blocked`・`dns`・`timeout`・`deadline`・`http4xx`・`http5xx`・`invalid`・`other`）だけ。
+
+## やること
+
+- 2026-12-20 の日本時間 0 時（`PLAYER_ID_QUERY_SUNSET`）を過ぎたら、GET の playerId をクエリで受け付ける分岐を消す（「GET での playerId の受け渡し」）。
+  - 消すもの:
+    - `src/lib/server/player-id.ts`: `requestPlayerId` のクエリの値を使う分岐と `fromQuery`、`handlePlayerGet` の `fromQuery` で Deprecation と Sunset を付ける分岐、`PLAYER_ID_QUERY_DEPRECATED`・`QUERY_DEPRECATION`、冒頭とコメントの移行期間の記述。
+    - route のコメントの移行期間の記述（`src/app/api/leaderboard/route.ts`・`src/app/api/player/history/route.ts`）。
+    - `src/lib/server/ranking-route.test.ts`: 「GET の playerId」の describe の、クエリを受け付けるテストと期限の 1ms 前の確かめ。「ランキングの表の Cache-Control」の describe の、クエリを前提にした期待（空のクエリで公開の応答、クエリの playerId で private, no-store、クエリの形の違う値で 400 invalid player id。どれも 400 player id in query に変わる）。
+    - README の移行期間の記述（この節、「ランキング API の回数制限と本文の上限」の `GET /api/leaderboard` の行、アカウントの既知の限界）。
+  - 残すもの: クエリに `playerId` があれば 400 `player id in query` にする検査（ID を含む URL を CDN のキャッシュのキーにしない）。期限後は無条件にする（`PLAYER_ID_QUERY_SUNSET` と時刻の比較を消す）。
+  - 消す前に、Vercel のログで、クエリに playerId を付けた要求がまだ届いているかを確かめる。
