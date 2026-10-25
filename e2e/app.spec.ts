@@ -3091,6 +3091,8 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
       const req = route.request();
       const url = new URL(req.url());
       routed.push(`${req.method()} ${url.origin}${url.pathname}`);
+      // GET の playerId はヘッダーで届く（落とすと履歴の取得が 400 になる）
+      const playerId = req.headers()["x-player-id"];
       try {
         const response = await context.request.fetch(baseURL + url.pathname + url.search, {
           method: req.method(),
@@ -3098,6 +3100,7 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
           headers: {
             ...headers,
             "content-type": req.headers()["content-type"] ?? "",
+            ...(playerId === undefined ? {} : { "x-player-id": playerId }),
             "accept-encoding": "identity",
           },
           maxRedirects: 0,
