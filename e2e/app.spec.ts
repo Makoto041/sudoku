@@ -2905,13 +2905,14 @@ test("実績：端末の結果に日付でない記録や年が 1000 未満の�
   await expectAchievementCount(page, 1);
 });
 
-test("連続日数の休み：1 日だけ解かなかった日はカレンダーに「休」と点線の枠で示し、連続日数・最長・実績は休みを挟んで数える", async ({
+test("連続日数の休み：カレンダーの休みの日に「休」の文字と点線の枠を付け、日の読み上げに「休み」を入れる。幅 320px・特大の文字でもマスに収まる", async ({
   page,
 }) => {
-  // 日本時間の 2026-10-20 12:00。10-08 と 10-16 が休みで、10-13 は 10-08 から 7 日たっていないので途切れる
+  // 日本時間の 2026-10-20 12:00。10-08 は休み（前の 6 日と次の日をクリア）、10-19 は今日がまだなので暫定の休み。
+  // 10-12 は前の 6 日に 10-08 が入るので休みにしない
   await page.clock.setFixedTime(new Date("2026-10-20T03:00:00Z"));
   await page.addInitScript(() => {
-    for (const day of [5, 6, 7, 9, 10, 11, 12, 14, 15, 17, 18, 19]) {
+    for (const day of [2, 3, 4, 5, 6, 7, 9, 10, 11, 13, 14, 15, 16, 17, 18]) {
       const date = `2026-10-${String(day).padStart(2, "0")}`;
       localStorage.setItem(
         `sudoku:result:${date}:easy`,
@@ -2920,29 +2921,22 @@ test("連続日数の休み：1 日だけ解かなかった日はカレンダー
     }
   });
   await page.goto("/");
-  await expect(page.locator(".streak-chip")).toHaveText("5日連続");
   await page.getByRole("button", { name: "記録" }).click();
-  await expect(page.locator(".streak-num")).toHaveText("5");
-  await expect(page.locator(".streak-sub")).toHaveText(/^最長 7日/);
 
   const calendar = page.getByRole("region", { name: "カレンダー", exact: true });
   await expect(calendar.getByText("2026年10月", { exact: true })).toBeVisible();
   const rests = calendar.locator(".cal-day.is-rest");
   await expect(rests).toHaveCount(2);
   await expect(rests.nth(0)).toHaveAttribute("aria-label", "8日 休み");
-  await expect(rests.nth(1)).toHaveAttribute("aria-label", "16日 休み");
-  // 色だけでなく文字（読み上げは「休み」）と点線の枠で示す
-  await expect(rests.nth(0)).toHaveText("8休");
-  await expect(calendar.getByRole("img", { name: "休み" })).toHaveCount(2);
-  await expect(rests.nth(0)).toHaveCSS("border-top-style", "dashed");
-  // 休みの日は遊んだ日に数えない。途切れた 10-13 は休みにしない
-  await expect(calendar.locator(".cal-day.is-played")).toHaveCount(12);
+  await expect(rests.nth(1)).toHaveAttribute("aria-label", "19日 休み");
+  await expect(calendar.locator('.cal-day[aria-label^="12日"]')).not.toHaveClass(/is-rest/);
+  // 色だけでなく文字と点線の枠で示す。読み上げは日の aria-label だけ（「休」は読ませない）
+  for (const i of [0, 1]) {
+    await expect(rests.nth(i).locator(".cal-rest")).toHaveText("休");
+    await expect(rests.nth(i).locator(".cal-rest")).toHaveAttribute("aria-hidden", "true");
+    await expect(rests.nth(i)).toHaveCSS("border-top-style", "dashed");
+  }
   await expect(calendar.locator(".cal-day.is-played.is-rest")).toHaveCount(0);
-  await expect(calendar.locator('.cal-day[aria-label^="13日"]')).not.toHaveClass(/is-rest/);
-  await expect(calendar.getByText("12 / 20 日", { exact: true })).toBeVisible();
-  // 実績も休みを挟んだ最長（7 日）で数える
-  await expect(doneMark(achievementItem(page, "7日連続"))).toBeVisible();
-  await expect(doneMark(achievementItem(page, "30日連続"))).toHaveCount(0);
   await shot(page, "records-rest");
 
   // 幅 320px・特大の文字でも、「休」が日付のマスに収まり、カレンダーが画面からはみ出さない

@@ -77,8 +77,8 @@ export function mergeRecords(...lists: ClearRecord[][]): ClearRecord[] {
   return [...map.values()];
 }
 
-/** 休みを使った日から、次の休みを使えるようになるまでの日数（ローリング 7 日） */
-export const REST_INTERVAL_DAYS = 7;
+/** 休みを判定する窓の日数。休みの日を含むこの日数の間に、クリアしなかった日は休みの 1 日だけ */
+export const REST_WINDOW_DAYS = 7;
 
 export type Streaks = Pick<RecordSummary, "streak" | "longest" | "restDays">;
 
@@ -86,52 +86,51 @@ export type Streaks = Pick<RecordSummary, "streak" | "longest" | "restDays">;
  * 今日の一問をクリアした日（日本時間の「2026-10-17」。順番と重複は問わない）から、連続日数・最長・休みの日を決める。
  * 同じ日付の列と今日からは、いつも同じ結果になる。
  *
- * 休み: クリアしなかった日が 1 日だけで、その前後の日をクリアしていれば、連続は途切れない。休みの日は連続日数に数えない。
- * - 休みを使えるのは、最後に休みを使った日の 7 日後から（10/8 に使ったら 10/15 から）。どの 7 日の間にも休みは 1 日まで。
- *   連続が途切れても数え直さない（途切れた連続で使った休みからも 7 日数える）
- * - 2 日続けてクリアしないと途切れる
- * - 古い日から順に決める。ある日の休み・途切れは、それより後の記録では変わらない
- *   （新しい日から数えると、後の休みが前の休みを押しのけて、その時点で途切れていた連続がつながってしまう）
+ * 休み: クリアしなかった日 g は、その前の 6 日（g−6〜g−1）をすべてクリアしていて、次の日（g+1）もクリアしていれば休みにし、
+ * 連続を途切れさせない。休みの日は連続日数に数えない。
+ * - 休みの日を含む 7 日（g−6〜g）の間に、クリアしなかった日は g だけ。窓に 2 日以上あれば休みにしない。
+ *   そのため休みは 7 日に 1 日までで、2 日続けてクリアしないと途切れる
+ * - 休みかどうかは g の前後の日だけで決まり、ほかの休みには左右されない。別の端末やアカウントの同期で過去の日のクリアが
+ *   増えても、休みが休みでなくなるのは、その日がクリアになったときだけなので、連続日数と最長は減らない
+ *   （前に休みを使った日から数える決め方だと、過去の日が増えて前の休みが前にずれ、後の休みが使えなくなって減る）
  * - 今日（と、時計のずれなどで付いた先の日）は休みにしない（まだ解ける）。今日がまだで、昨日をクリアしておらず、
- *   おとといまで連続していて休みを使えるなら、昨日を休みとして連続が続く（今日も解かなければ、次の日には途切れ、
- *   昨日は休みでなくなる）
- * - 休みの無い連続は今までと同じに数えるので、この規則で連続日数と最長が減ることはない
+ *   昨日の前の 6 日をすべてクリアしていれば、昨日を暫定の休みとして連続が続く。今日クリアすれば休みのまま、
+ *   今日も解かなければ次の日には途切れ、昨日は休みでなくなる
+ * - 休みの無い連続は前と同じに数えるので、休みが無かったときの数え方より連続日数と最長が減ることもない
  */
 export function streaks(dates: Iterable<string>, today: string): Streaks {
   // 記録が無くても日付の計算を 1 回する（日付を読めない環境では例外にして、実績の判定を止める。achievements.ts）
   const yesterday = addDays(today, -1);
+  const played = new Set(dates);
+  /** g の前の 6 日をすべてクリアしていて、g が今日より前なら、g を休みにできる（g の次の日は呼び出し側で見る） */
+  const restable = (g: string) => {
+    if (g >= today) return false;
+    for (let k = 1; k < REST_WINDOW_DAYS; k++) if (!played.has(addDays(g, -k))) return false;
+    return true;
+  };
   const restDays = new Set<string>();
-  const canRest = (day: string, lastRest: string | null) =>
-    day < today && (lastRest === null || addDays(lastRest, REST_INTERVAL_DAYS) <= day);
-  /** クリアした日ごとの、その日までの連続日数と、その日の時点で最後に休みを使った日 */
-  const at = new Map<string, { run: number; lastRest: string | null }>();
+  /** クリアした日ごとの、その日までの連続日数 */
+  const runAt = new Map<string, number>();
   let run = 0;
   let longest = 0;
-  let lastRest: string | null = null;
   let prev: string | null = null;
-  for (const d of [...new Set(dates)].sort()) {
+  for (const d of [...played].sort()) {
     const next: string | null = prev === null ? null : addDays(prev, 1);
     if (next === d) run++;
-    else if (next !== null && addDays(next, 1) === d && canRest(next, lastRest)) {
+    else if (next !== null && addDays(next, 1) === d && restable(next)) {
       restDays.add(next);
-      lastRest = next;
       run++;
     } else run = 1;
     longest = Math.max(longest, run);
-    at.set(d, { run, lastRest });
+    runAt.set(d, run);
     prev = d;
   }
 
   // 先の日付の記録は、今日までの連続には入れない（その日までの値を使う）
-  let streak = 0;
-  const end = at.get(today) ?? at.get(yesterday);
-  if (end) streak = end.run;
-  else {
-    const before = at.get(addDays(today, -2));
-    if (before && canRest(yesterday, before.lastRest)) {
-      streak = before.run;
-      restDays.add(yesterday);
-    }
+  let streak = runAt.get(today) ?? runAt.get(yesterday) ?? 0;
+  if (!played.has(today) && !played.has(yesterday) && restable(yesterday)) {
+    restDays.add(yesterday);
+    streak = runAt.get(addDays(today, -2)) ?? 0;
   }
   return { streak, longest, restDays };
 }

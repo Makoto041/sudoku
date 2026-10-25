@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DIFFICULTIES, type Difficulty } from "@/lib/sudoku/core";
 import { practiceItems, type PracticeItem } from "@/lib/sudoku/practice";
 import { PRACTICE_POSITIONS } from "@/lib/sudoku/practice-data";
+import { createRng } from "@/lib/sudoku/rng";
 import {
   ACHIEVEMENTS,
   evaluate,
@@ -61,31 +62,47 @@ describe("今日の一問の実績", () => {
     const set = achieved({ records: [...days("2026-09-01", 3), rec("2026-10-17")] });
     expect(set.has("streak-3")).toBe(true);
     expect(set.has("streak-7")).toBe(false);
-    // 2 日あいていれば続かない
+    // 1 日あいていれば続かない（休みには前の 6 日のクリアが要る）
     expect(
-      achieved({ records: [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-05")] }).has("streak-3"),
+      achieved({ records: [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-04")] }).has("streak-3"),
     ).toBe(false);
   });
 
   it("連続日数の実績は休みを挟んだ連続でも数える。休みの日は日数に数えない（記録画面の最長と同じ数え方）", () => {
-    // 10-03 が休み。クリアした 3 日で 3日連続
-    const rested = [rec("2026-10-01"), rec("2026-10-02"), rec("2026-10-04")];
-    expect(achieved({ records: rested }).has("streak-3")).toBe(true);
-    expect(achieved({ records: [rec("2026-10-01"), rec("2026-10-03")] }).has("streak-3")).toBe(false);
-    // 8 日のうち 1 日休んで 7 日クリアなら 7日連続。6 日では達成しない
-    const week = [...days("2026-10-01", 3), ...days("2026-10-05", 4)];
+    // 10-07 が休み。8 日のうちクリアした 7 日で 7日連続。6 日では達成しない
+    const week = [...days("2026-10-01", 6), rec("2026-10-08")];
+    expect(summarize(week, TODAY).longest).toBe(7);
     expect(achieved({ records: week }).has("streak-7")).toBe(true);
     expect(achieved({ records: week.slice(0, -1) }).has("streak-7")).toBe(false);
-    // 休みの 6 日後にもう 1 日休むと途切れるので、30 日には届かない
-    const twice = [...days("2026-09-01", 3), ...days("2026-09-05", 5), ...days("2026-09-11", 22)];
-    expect(summarize(twice, TODAY).longest).toBe(22);
-    expect(achieved({ records: twice }).has("streak-30")).toBe(false);
-    // 7 日後なら続く（3 + 6 + 21 = 30 日）
-    const spaced = [...days("2026-09-01", 3), ...days("2026-09-05", 6), ...days("2026-09-12", 21)];
+    // 今日がまだで昨日を暫定の休みにして続いている途中でも、最長はクリアした日だけで数える
+    expect(achieved({ records: days("2026-10-09", 6), today: "2026-10-16" }).has("streak-7")).toBe(false);
+    // 9-07・9-14 が休み（6 + 6 + 18 = 30 日）
+    const spaced = [...days("2026-09-01", 6), ...days("2026-09-08", 6), ...days("2026-09-15", 18)];
     expect(summarize(spaced, TODAY).longest).toBe(30);
     expect(achieved({ records: spaced }).has("streak-30")).toBe(true);
-    // 今日がまだで昨日を休みにして続いている途中でも、最長はクリアした日だけで数える
-    expect(achieved({ records: days("2026-10-14", 2), today: "2026-10-17" }).has("streak-3")).toBe(false);
+    // 9-13 は前の 6 日に 9-07 が入るので休みにならず途切れ、30 日には届かない
+    const twice = [...days("2026-09-01", 6), ...days("2026-09-08", 5), ...days("2026-09-14", 19)];
+    expect(summarize(twice, TODAY).longest).toBe(19);
+    expect(achieved({ records: twice }).has("streak-30")).toBe(false);
+  });
+
+  it("クリアした日が増えても（ほかの端末やアカウントから届いた過去の日など）、達成していた連続日数の実績は達成したまま", () => {
+    const rng = createRng("streak-achievements");
+    const ids = ["streak-3", "streak-7", "streak-30", "streak-100"] as const;
+    const start = "2026-06-01";
+    for (let n = 0; n < 500; n++) {
+      // 130 日のうち、多めに遊んだ日を選ぶ
+      const p = 0.75 + rng() * 0.25;
+      const all = Array.from({ length: 130 }, (_, i) => addDays(start, i));
+      const records = all.filter(() => rng() < p).map((d) => rec(d));
+      const missing = all.filter((d) => !records.some((r) => r.date === d));
+      if (!missing.length) continue;
+      const added = rec(missing[Math.floor(rng() * missing.length)]);
+      const today = addDays(start, 120 + Math.floor(rng() * 14));
+      const before = achieved({ records, today });
+      const after = achieved({ records: [...records, added], today });
+      for (const id of ids) if (before.has(id)) expect(after.has(id), `${id} +${added.date}`).toBe(true);
+    }
   });
 
   it("連続日数の実績の名前と説明は変えていない", () => {

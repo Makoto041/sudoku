@@ -128,22 +128,25 @@ export function Records({ today, playerId, onBack, onPractice }: Props) {
           {Array.from({ length: month.firstWeekday }, (_, k) => (
             <span key={`b${k}`} />
           ))}
-          {month.days.map((d) => (
-            <span
-              key={d.date}
-              className={`cal-day${d.count ? " is-played" : ""}${d.isRest ? " is-rest" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
-              style={d.count ? { ["--n" as string]: d.count } : undefined}
-              aria-label={`${d.day}日 ${d.count ? `${d.count}問クリア` : d.isRest ? "休み" : ""}`}
-            >
-              {d.day}
-              {/* 休みは色だけでなく、文字と点線の枠でも示す */}
-              {d.isRest && (
-                <span className="cal-rest" role="img" aria-label="休み">
-                  休
-                </span>
-              )}
-            </span>
-          ))}
+          {month.days.map((d) => {
+            const status = d.count ? `${d.count}問クリア` : d.isRest ? "休み" : "";
+            return (
+              <span
+                key={d.date}
+                className={`cal-day${d.count ? " is-played" : ""}${d.isRest ? " is-rest" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
+                style={d.count ? { ["--n" as string]: d.count } : undefined}
+                aria-label={`${d.day}日 ${status}`}
+              >
+                {d.day}
+                {/* 休みは色だけでなく、文字と点線の枠でも示す（読み上げは日の aria-label の「休み」） */}
+                {d.isRest && (
+                  <span className="cal-rest" aria-hidden="true">
+                    休
+                  </span>
+                )}
+              </span>
+            );
+          })}
         </div>
         <div className="cal-foot muted small">
           {month.played} / {month.target} 日
