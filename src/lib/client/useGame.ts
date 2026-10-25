@@ -122,21 +122,34 @@ function playEffects(effects: Effect[]) {
 /**
  * ゲームの状態と入力。入力ごとに音・触覚・アニメーション・読み上げの知らせを出し、localStorage に保存する（練習は保存しない）。
  * フリープレイの時計はここで進め、画面が隠れたら自動で一時停止する。
+ * showPoints が false の間（時計と得点を隠す設定・練習）は、浮かべる得点を作らない（点数の計算は変わらない）
  */
-export function useGame(initial: GameState, options: { showMistakes: boolean; autoClearNotes: boolean }) {
+export function useGame(
+  initial: GameState,
+  options: { showMistakes: boolean; autoClearNotes: boolean; showPoints: boolean },
+) {
   const [game, setGame] = useState(initial);
   const [fx, setFx] = useState<Fx>(EMPTY_FX);
   const gameRef = useRef(game);
   gameRef.current = game;
   const fxKey = useRef(0);
+  const { showPoints } = options;
+  // dispatch の依存に入れると、切り替えたときに時計の interval を作り直し、刻んでいない時間を落とすので ref で読む
+  const showPointsRef = useRef(showPoints);
+  showPointsRef.current = showPoints;
 
   /** 入力を反映する。状態が変わったかを返す */
   const dispatch = useCallback(
     (raw: Action): boolean => {
-      // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すかの設定を付ける
+      // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すか・間違いの表示（ミスの上限が効くか）の設定を付ける
       const action: Action =
         raw.type === "input" || raw.type === "hint"
-          ? { ...raw, t: elapsedOf(gameRef.current), clearPeers: options.autoClearNotes }
+          ? {
+              ...raw,
+              t: elapsedOf(gameRef.current),
+              clearPeers: options.autoClearNotes,
+              showMistakes: options.showMistakes,
+            }
           : raw;
       const [next, effects] = reduce(gameRef.current, action);
       const changed = next !== gameRef.current;
@@ -159,6 +172,7 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
       );
       const key = ++fxKey.current;
       const say = announcementOf(effects, next, options.showMistakes);
+      const withPoints = showPointsRef.current;
       setFx((prev) => {
         const out: Fx = { ...prev };
         if (say) out.say = { text: say, key };
@@ -195,13 +209,18 @@ export function useGame(initial: GameState, options: { showMistakes: boolean; au
             }
           }
         }
-        if (popups.length) out.popups = [...prev.popups, ...popups].slice(-6);
+        if (popups.length && withPoints) out.popups = [...prev.popups, ...popups].slice(-6);
         return out;
       });
       return changed;
     },
     [options.showMistakes, options.autoClearNotes],
   );
+
+  // 得点を隠したら、残っている浮かべた得点も消す（出すことに戻したときに、前の得点がもう一度浮かばないように）
+  useEffect(() => {
+    if (!showPoints) setFx((prev) => (prev.popups.length ? { ...prev, popups: [] } : prev));
+  }, [showPoints]);
 
   // フリープレイの時計
   useEffect(() => {

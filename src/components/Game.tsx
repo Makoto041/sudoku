@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { sfx } from "@/lib/audio";
 import { DIFFICULTY_LABEL, serializeGrid } from "@/lib/sudoku/core";
-import { elapsedOf, formatTime, stuckCells, type GameState } from "@/lib/game/state";
+import {
+  activeMistakeLimit,
+  elapsedOf,
+  formatTime,
+  isInProgress,
+  stuckCells,
+  type GameState,
+} from "@/lib/game/state";
 import { api, ApiError, describeError, type SubmitResponse } from "@/lib/client/api";
 import type { Player } from "@/lib/client/player";
 import type { Settings } from "@/lib/client/settings";
@@ -18,7 +25,7 @@ import { formatPoints } from "@/lib/game/score";
 import { Board } from "./Board";
 import { NumberPad, Tools } from "./Controls";
 import { HintPanel, applyHint, firstStage, hintHighlight, useHintAnnouncement } from "./HintPanel";
-import { Result } from "./Result";
+import { Failed, Result } from "./Result";
 import { ConfirmSheet } from "./Sheets";
 import { findHint, type Hint } from "@/lib/sudoku/hint";
 import { ChevronLeft, Gear, Pause, Play } from "./icons";
@@ -35,6 +42,8 @@ type Props = {
   onOpenSettings: () => void;
   onRanking: (game: GameState) => void;
   onNewFree: (game: GameState) => void;
+  /** ミスが上限に達した問題を、同じ盤面で新しく始める */
+  onRetry: (game: GameState) => void;
 };
 
 export type DailyOutcome =
@@ -52,10 +61,14 @@ export function Game({
   onOpenSettings,
   onRanking,
   onNewFree,
+  onRetry,
 }: Props) {
+  // 時計と得点を隠すのは表示だけ。時間と点数の計算・送信・記録・結果はそのまま
+  const hideClock = settings.hideClock;
   const { game, fx, dispatch, announce } = useGame(initial, {
     showMistakes: settings.showMistakes,
     autoClearNotes: settings.autoClearNotes,
+    showPoints: !hideClock,
   });
   const gameRef = useRef(game);
   gameRef.current = game;
@@ -128,8 +141,17 @@ export function Game({
     }
     if (newlyUnlocked.length) setFresh((a) => [...a, ...newlyUnlocked]);
   }, [onCleared]);
-  const [showResult, setShowResult] = useState(initial.status === "solved");
+  // 結果（クリア・ミスの上限）。終えた問題を開き直したときはすぐ出す
+  const [showResult, setShowResult] = useState(!isInProgress(initial));
   const [dismissed, setDismissed] = useState(false);
+  // 同じ盤面でやり直すのは 1 回だけ（続けて押すと、始めた数を二重に数える）
+  const retried = useRef(false);
+  const retry = () => {
+    if (retried.current) return;
+    retried.current = true;
+    sfx.tap();
+    onRetry(game);
+  };
 
   const submit = useCallback(
     async (g: GameState) => {
@@ -180,7 +202,9 @@ export function Game({
     [player, checkAchievements],
   );
 
-  // クリアしたら記録する。日次はサーバーに送って順位を受け取る。練習は記録しない
+  // クリアしたら記録する。日次はサーバーに送って順位を受け取る。練習は記録しない。
+  // ミスが上限に達して終えた問題（failed）はクリアではないので、記録（クリア数・時間・実績）に数えない
+  // （途中でやめた時間には、次に新しく始めたときに足す。App の beginFree）
   const handled = useRef(initial.status === "solved");
   useEffect(() => {
     if (game.status !== "solved" || handled.current) return;
@@ -194,13 +218,14 @@ export function Game({
     }
   }, [game, submit, checkAchievements]);
 
-  // 盤面のアニメーションを見せてから結果を出す
-  const solved = game.status === "solved";
+  // 盤面のアニメーション（解き終えた波・間違いの揺れ）を見せてから結果を出す
+  const ended = !isInProgress(game);
+  const initialEnded = !isInProgress(initial);
   useEffect(() => {
-    if (!solved || initial.status === "solved") return;
+    if (!ended || initialEnded) return;
     const t = setTimeout(() => setShowResult(true), 900);
     return () => clearTimeout(t);
-  }, [solved, initial.status]);
+  }, [ended, initialEnded]);
 
   // 日次で送信前に閉じた場合、開き直したときに送る
   useEffect(() => {
@@ -238,6 +263,8 @@ export function Game({
   useStuckAlert(isStuck);
 
   const isDaily = game.mode === "daily";
+  // 今効いているミスの上限（フリープレイで、間違いの表示がオンのときだけ。0 は上限なし）
+  const mistakeLimit = activeMistakeLimit(game, settings.showMistakes);
   const filled = game.values.filter((v, i) => v && !game.puzzle[i]).length;
   const toFill = game.puzzle.filter((v) => !v).length;
 
@@ -259,15 +286,29 @@ export function Game({
       </header>
 
       <div className="status-row">
+        {/* 隠すときも 3 列の枠は残す（右のミス・一時停止を右に置いたままにする）。時計は描かず、読み上げにも出さない */}
         <div className="stat score-stat">
-          <span className="stat-label">スコア</span>
-          <span key={game.score?.points ?? 0} className="stat-value score-value">
-            {formatPoints(game.score?.points ?? 0)}
-          </span>
+          {!hideClock && (
+            <>
+              <span className="stat-label">スコア</span>
+              <span key={game.score?.points ?? 0} className="stat-value score-value">
+                {formatPoints(game.score?.points ?? 0)}
+              </span>
+            </>
+          )}
         </div>
-        <Clock game={game} />
+        {hideClock ? <div /> : <Clock game={game} />}
         <div className="stat stat-end">
-          {settings.showMistakes ? (
+          {mistakeLimit ? (
+            // 「2/3」は読み上げで日付や分数に読まれうるので、読み上げには言葉で渡す
+            <span className="stat-pair mistake-limit">
+              <span className="stat-label">ミス</span>
+              <span className="stat-value" aria-hidden="true">
+                {game.mistakes}/{mistakeLimit}
+              </span>
+              <span className="sr-only">{`${game.mistakes}回 上限${mistakeLimit}回`}</span>
+            </span>
+          ) : settings.showMistakes ? (
             <span className="stat-pair">
               <span className="stat-label">ミス</span>
               <span className="stat-value">{game.mistakes}</span>
@@ -289,7 +330,7 @@ export function Game({
                 dispatch({ type: game.status === "paused" ? "resume" : "pause" });
                 sfx.tap();
               }}
-              disabled={game.status === "solved"}
+              disabled={!isInProgress(game)}
               aria-label={game.status === "paused" ? "再開" : "一時停止"}
             >
               {game.status === "paused" ? <Play size={18} /> : <Pause size={18} />}
@@ -313,6 +354,7 @@ export function Game({
             onToggle={onToggle}
             onExtend={onExtend}
           />
+          {/* 時計と得点を隠している間は、useGame が得点を作らず、残りも消すので空になる */}
           <div className="popups" aria-hidden="true">
             {fx.popups.map((p) => (
               <span
@@ -410,6 +452,7 @@ export function Game({
           }}
         />
       )}
+      {showResult && game.status === "failed" && <Failed game={game} onRetry={retry} onHome={onExit} />}
       {dismissed && !showResult && (
         <button
           type="button"

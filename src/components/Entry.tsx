@@ -46,8 +46,12 @@ type Props = {
  */
 export function Entry({ settings, onBack, onOpenSettings, onStart }: Props) {
   const [initial] = useState(newEntry);
-  // 解答が無いので、間違いとして示すのは重複だけ（設定によらない）。メモは使わない
-  const { game, fx, dispatch } = useGame(initial, { showMistakes: true, autoClearNotes: false });
+  // 解答が無いので、間違いとして示すのは重複だけ（設定によらない）。メモと得点は使わない
+  const { game, fx, dispatch } = useGame(initial, {
+    showMistakes: true,
+    autoClearNotes: false,
+    showPoints: false,
+  });
   const act = useCallback(
     (action: Action) => {
       const a = entryAction(action);

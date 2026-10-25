@@ -165,6 +165,27 @@ describe("入力の結果の知らせ", () => {
   it("間違える前まで戻した手の数", () => {
     expect(announcementOf([{ kind: "rewind", steps: 3 }], s0, true)).toBe("戻す 3手");
   });
+
+  it("ミスが上限に達したことを、置いた数字の後に知らせる", () => {
+    const limited = newGame({
+      mode: "free",
+      difficulty: "easy",
+      seed: "x",
+      puzzle: s0.puzzle,
+      solution,
+      mistakeLimit: 3,
+    });
+    const wrongOf = (i: number) => (solution[i] % 9) + 1;
+    const [c] = empties.slice(2);
+    const put = (cell: number): Action[] => [
+      { type: "select", cell },
+      { type: "input", digit: wrongOf(cell), showMistakes: true },
+    ];
+    const second = run(limited, ...put(a), ...put(b));
+    expect(say(second)).toBe(`${cellName(b)}に ${wrongOf(b)} 間違い`);
+    const third = run(second.s, ...put(c));
+    expect(say(third)).toBe(`${cellName(c)}に ${wrongOf(c)} 間違い ミスが上限に達しました`);
+  });
 });
 
 describe("ヒントの知らせ", () => {

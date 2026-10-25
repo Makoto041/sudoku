@@ -26,7 +26,16 @@ export type Mode = "free" | "daily" | "practice";
 
 /** 間違える前まで戻すときに、1 つの盤面が解けるかを確かめる置く回数の上限（作った問題なら数千回で終わる） */
 export const REWIND_MAX_NODES = 200_000;
-export type Status = "playing" | "paused" | "solved";
+/** failed はミスが上限に達して終えた（フリープレイだけ）。解き終えたのと同じく、それ以上は操作できない */
+export type Status = "playing" | "paused" | "solved" | "failed";
+
+/** ミスの上限（設定の「ミス上限」）。0 は上限なし */
+export const MISTAKE_LIMITS = [0, 3, 5] as const;
+export type MistakeLimit = (typeof MISTAKE_LIMITS)[number];
+
+/** 保存した値を読む。決まった値（0・3・5）でなければ上限なし（0）にする */
+export const parseMistakeLimit = (x: unknown): MistakeLimit =>
+  (MISTAKE_LIMITS as readonly unknown[]).includes(x) ? (x as MistakeLimit) : 0;
 
 export type GameState = {
   version: 1;
@@ -82,6 +91,12 @@ export type GameState = {
   placed?: number;
   /** 最初に置いた、解答と違う数字（クリアの結果で振り返る）。無ければ undefined */
   firstMistake?: FirstMistake;
+  /**
+   * ミスの上限（フリープレイだけ）。始めたときの設定で決め、途中で設定を変えてもこの問題では変えない。
+   * 効くのは間違いの表示がオンの間だけ（activeMistakeLimit）。オフの間に数字を置くと 0 にする（見えない間違いを上限に数えない）。
+   * 古い保存データには無く、上限なしとして扱う。決まった値でないもの（書き換えた保存データ）も上限なし
+   */
+  mistakeLimit?: MistakeLimit;
 };
 
 /**
@@ -145,6 +160,8 @@ export type Effect =
   | { kind: "hint"; cell: number; digit: number; units: number[][]; bonus: number }
   /** timeBonus は解き終えたときの時間ボーナス（日次はサーバーが測り直す） */
   | { kind: "solved"; cell: number; timeBonus: number }
+  /** ミスが上限に達して終えた */
+  | { kind: "failed"; cell: number }
   | { kind: "rewind"; steps: number }
   | { kind: "notes"; filled: boolean }
   | { kind: "blocked" };
@@ -159,16 +176,23 @@ export type Action =
   | { type: "move"; dr: number; dc: number; from?: number }
   /**
    * t は開始からの経過 ms（スコアの速さに使う）。clearPeers は周りのメモからその数字を消すか（省略時は消す）。
-   * どちらも dispatch 側で付ける
+   * showMistakes は間違いの表示がオンか（ミスの上限が効くか。省略時はオフとして扱う）。どれも dispatch 側で付ける
    */
-  | { type: "input"; digit: number; asNote?: boolean; t?: number; clearPeers?: boolean }
+  | {
+      type: "input";
+      digit: number;
+      asNote?: boolean;
+      t?: number;
+      clearPeers?: boolean;
+      showMistakes?: boolean;
+    }
   /** colors は色を外すか（省略時は色モードに従う）。手筋ヒントの「消す」は数字を消すので false を付ける */
   | { type: "erase"; colors?: boolean }
   | { type: "undo" }
   /** 元に戻した手をやり直す */
   | { type: "redo" }
   /** cell を指定すると、そのマスに正解を置く（手筋ヒントの「置く」） */
-  | { type: "hint"; t?: number; cell?: number; clearPeers?: boolean }
+  | { type: "hint"; t?: number; cell?: number; clearPeers?: boolean; showMistakes?: boolean }
   /** メモをまとめて置き換える（手筋ヒントの「メモに反映」） */
   | { type: "setNotes"; notes: number[] }
   /** 自動メモ：候補をすべて書く。すでに候補どおりなら全部消す */
@@ -192,7 +216,10 @@ export function newGame(input: {
   daily?: GameState["daily"];
   /** 始めのメモ（練習の局面）。省略するとメモなし */
   notes?: number[];
+  /** ミスの上限（設定の値）。フリープレイだけ持ち、日次と練習では無視する */
+  mistakeLimit?: MistakeLimit;
 }): GameState {
+  const mistakeLimit = input.mode === "free" ? parseMistakeLimit(input.mistakeLimit) : 0;
   return {
     version: 1,
     mode: input.mode,
@@ -216,8 +243,35 @@ export function newGame(input: {
     score: emptyScore(input.puzzle),
     moves: [],
     placed: 0,
+    ...(mistakeLimit ? { mistakeLimit } : {}),
   };
 }
+
+/**
+ * 同じ盤面でやり直す新しいゲーム（ミス・手・最初の誤り・時間・色・メモを消す）。
+ * mistakeLimit は今の設定の値（新しく始める問題と同じく、今の設定で決める）
+ */
+export const restartGame = (s: GameState, mistakeLimit: MistakeLimit): GameState =>
+  newGame({
+    mode: s.mode,
+    difficulty: s.difficulty,
+    seed: s.seed,
+    puzzle: s.puzzle,
+    solution: s.solution,
+    daily: s.daily,
+    mistakeLimit,
+  });
+
+/**
+ * 今効いているミスの上限。0 なら上限なし。
+ * 効くのはフリープレイで、間違いの表示がオンのときだけ（オフで上限だけ効くと、ミスに気づけない）。
+ * 日次（ランキングの公平さ）と練習（答え合わせが目的）には効かせない
+ */
+export const activeMistakeLimit = (s: GameState, showMistakes: boolean): MistakeLimit =>
+  s.mode === "free" && showMistakes ? parseMistakeLimit(s.mistakeLimit) : 0;
+
+/** 途中の問題か（解き終えていない・ミスの上限で終えていない）。続きから遊べる */
+export const isInProgress = (s: Pick<GameState, "status">) => s.status === "playing" || s.status === "paused";
 
 export const isGiven = (s: GameState, i: number) => s.puzzle[i] !== 0;
 
@@ -340,6 +394,8 @@ function place(
   countHint = true,
   /** 周りのメモからこの数字を消すか。消さなければ元に戻すときも周りのメモには触れない */
   clearPeers: boolean,
+  /** 間違いの表示がオンか。オフなら、この問題のミスの上限を外す */
+  showMistakes: boolean,
 ): [GameState, Effect[]] {
   const values = s.values.slice();
   const notes = s.notes.slice();
@@ -380,6 +436,9 @@ function place(
     moves: s.mode === "daily" && !viaHint ? [...(s.moves ?? []), [Math.round(t), cell, digit]] : s.moves,
     placed,
     firstMistake,
+    // 間違いの表示がオフの間に置いたら、この問題では上限を外す（見えない間違いを上限に数えない。
+    // 表示をオンに戻しても付け直さないので、上限を超えたミスの数のまま上限が効くことはない）
+    ...(s.mistakeLimit && !showMistakes ? { mistakeLimit: 0 as const } : {}),
   });
   const units = wrong ? [] : completedUnits(next, values, cell);
   const effects: Effect[] = [
@@ -403,6 +462,14 @@ function place(
     next.status = "solved";
     next.selected = null;
     effects.push({ kind: "solved", cell, timeBonus: bonus });
+    return [next, effects];
+  }
+  // ミスの数が上限に達したら終える（ミスの数は戻す・間違える前まで戻すでも減らないので、達したら戻れない）
+  const limit = activeMistakeLimit(next, showMistakes);
+  if (wrong && limit && next.mistakes >= limit) {
+    next.status = "failed";
+    next.selected = null;
+    effects.push({ kind: "failed", cell });
   }
   return [next, effects];
 }
@@ -467,7 +534,16 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         ];
       }
       if (s.values[cell] === action.digit) return erase(s, cell);
-      return place(s, cell, action.digit, false, action.t ?? 0, true, action.clearPeers ?? true);
+      return place(
+        s,
+        cell,
+        action.digit,
+        false,
+        action.t ?? 0,
+        true,
+        action.clearPeers ?? true,
+        action.showMistakes ?? false,
+      );
     }
     case "erase": {
       if (action.colors ?? s.colorMode) return eraseColors(s);
@@ -550,6 +626,7 @@ export function reduce(s: GameState, action: Action): [GameState, Effect[]] {
         action.t ?? 0,
         action.cell === undefined,
         action.clearPeers ?? true,
+        action.showMistakes ?? false,
       );
       return [next, effects];
     }
@@ -574,7 +651,8 @@ function undoOnce(s: GameState): GameState {
  * すべて埋まっているのに解けていないときは、重複しているマスを返す。
  */
 export function stuckCells(s: GameState): number[] {
-  if (s.status === "solved") return [];
+  // 終えた問題（ミスの上限で終えたものも）は操作できないので、行き詰まりも知らせない
+  if (s.status === "solved" || s.status === "failed") return [];
   const out: number[] = [];
   let empty = 0;
   for (let i = 0; i < 81; i++) {
