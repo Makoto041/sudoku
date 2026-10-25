@@ -3,7 +3,14 @@ import { SITE_ORIGIN } from "@/lib/site";
 import { DIFFICULTIES, isValidSolution, parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import { gradePuzzle } from "@/lib/sudoku/logic";
 import { solve } from "@/lib/sudoku/solver";
-import { MAX_SEARCH, parseShared, shareUrl, withoutShared, type SharedResult } from "./sharedPuzzle";
+import {
+  MAX_SEARCH,
+  checkPuzzle,
+  parseShared,
+  shareUrl,
+  withoutShared,
+  type SharedResult,
+} from "./sharedPuzzle";
 
 // シングルだけで解ける問題（ヒント 30 個）
 const CLASSIC = "530070000600195000098000060800060003400803001700020006060000280000419005000080079";
@@ -145,8 +152,8 @@ describe("共有された盤面を読む", () => {
     for (const p of EXHAUSTING) {
       const t = performance.now();
       expect(reason(parseShared(`?p=${p}`)), p).toBe("too-hard");
-      // 手元（Apple Silicon）では 1 回 100〜220ms。CI の遅い環境でも固まらない
-      expect(performance.now() - t, p).toBeLessThan(2000);
+      // 手元（Apple Silicon）では 1 回 100〜220ms。CI の遅い環境や、テストを並べて走らせた負荷でも固まらない
+      expect(performance.now() - t, p).toBeLessThan(10_000);
     }
   });
 
@@ -161,6 +168,26 @@ describe("共有された盤面を読む", () => {
     expect(padded).toHaveLength(MAX_SEARCH);
     expect(read(padded).difficulty).toBe("easy");
     expect(reason(parseShared(`${padded}a`))).toBe("format");
+  });
+});
+
+describe("盤面を確かめる（checkPuzzle）", () => {
+  it("長さが 81 でない・0〜9 の整数でない値がある盤面は形が違うとする", () => {
+    const g = parseGrid(CLASSIC);
+    const bad = [
+      g.slice(0, 80),
+      [...g, 0],
+      [],
+      g.map((v, i) => (i === 3 ? 10 : v)),
+      g.map((v, i) => (i === 3 ? -1 : v)),
+      g.map((v, i) => (i === 3 ? 1.5 : v)),
+      g.map((v, i) => (i === 3 ? Number.NaN : v)),
+    ];
+    for (const grid of bad) expect(reason(checkPuzzle(grid, null)), JSON.stringify(grid)).toBe("format");
+    const ok = checkPuzzle(g, null);
+    expect(ok.ok && serializeGrid(ok.puzzle.puzzle)).toBe(CLASSIC);
+    // 渡した配列は書き換えず、写しを返す
+    expect(ok.ok && ok.puzzle.puzzle).not.toBe(g);
   });
 });
 

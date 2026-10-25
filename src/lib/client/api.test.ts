@@ -1,5 +1,49 @@
-import { describe, expect, it } from "vitest";
-import { ApiError, describeError, describeIssueError } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError, api, describeError, describeIssueError } from "./api";
+
+describe("GET の playerId", () => {
+  // ダミーの ID
+  const ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+  /** fetch を差し替え、送った URL とヘッダーを返す */
+  function stubFetch(body: unknown) {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => Response.json(body));
+    vi.stubGlobal("fetch", fetch);
+    return () =>
+      fetch.mock.calls.map(([url, init]) => ({
+        url,
+        headers: new Headers(init?.headers),
+        method: init?.method,
+      }));
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("表と履歴の取得は、playerId をクエリに入れず x-player-id ヘッダーで送る", async () => {
+    const sent = stubFetch({ entries: [] });
+    await api.leaderboard({ scope: "daily", difficulty: "easy", date: "2026-10-25", playerId: ID });
+    await api.history(ID);
+    const [board, history] = sent();
+    expect(board.url).toBe("/api/leaderboard?scope=daily&difficulty=easy&date=2026-10-25");
+    expect(history.url).toBe("/api/player/history");
+    for (const req of [board, history]) {
+      expect(req.url).not.toContain(ID);
+      expect(req.url).not.toContain("playerId");
+      expect(req.method).toBeUndefined();
+      expect(req.headers.get("x-player-id")).toBe(ID);
+    }
+  });
+
+  it("playerId の無い表の取得は、ヘッダーを付けない（CDN のキャッシュに載る公開の要求）", async () => {
+    const sent = stubFetch({ entries: [] });
+    await api.leaderboard({ scope: "best", difficulty: "hard" });
+    const [board] = sent();
+    expect(board.url).toBe("/api/leaderboard?scope=best&difficulty=hard");
+    expect(board.headers.has("x-player-id")).toBe(false);
+  });
+});
 
 describe("describeError", () => {
   it("回数の上限（429）は時間をおくよう示す。ほかの状態は今までどおり", () => {
