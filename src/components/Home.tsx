@@ -1,7 +1,7 @@
 "use client";
 
 import { DIFFICULTIES, DIFFICULTY_LABEL, type Difficulty } from "@/lib/sudoku/core";
-import { elapsedOf, formatTime, type GameState } from "@/lib/game/state";
+import { elapsedOf, formatTime, isInProgress, type GameState } from "@/lib/game/state";
 import type { SubmitResponse } from "@/lib/client/api";
 import { bestScores } from "@/lib/client/stats";
 import { formatPoints } from "@/lib/game/score";
@@ -49,7 +49,8 @@ function longDate(date: string) {
 export function Home(props: Props) {
   const { today, daily, free, starting, generating, error, hideClock } = props;
   const best = bestScores();
-  const freeInProgress = free && free.status !== "solved" ? free : null;
+  // ミスの上限で終えた問題は続けられないので出さない
+  const freeInProgress = free && isInProgress(free) ? free : null;
 
   return (
     <div className="screen home">

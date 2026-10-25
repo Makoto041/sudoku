@@ -82,6 +82,9 @@ export function announcementOf(
       case "solved":
         parts.push("クリア");
         break;
+      case "failed":
+        parts.push("ミスが上限に達しました");
+        break;
       case "blocked":
         break;
     }

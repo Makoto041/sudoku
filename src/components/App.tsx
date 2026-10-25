@@ -5,7 +5,7 @@ import { setSoundEnabled, sfx, unlockAudio } from "@/lib/audio";
 import { setHapticsEnabled } from "@/lib/haptics";
 import { DIFFICULTIES, DIFFICULTY_LABEL, parseGrid, type Difficulty } from "@/lib/sudoku/core";
 import { generateExtremeAsync, generatePuzzle, jstDateKey } from "@/lib/sudoku/generator";
-import { newGame, withSolution, type GameState } from "@/lib/game/state";
+import { isInProgress, newGame, restartGame, withSolution, type GameState } from "@/lib/game/state";
 import { api, describeError, type SubmitResponse } from "@/lib/client/api";
 import { adoptPlayer, getPlayer, setPlayerName, type Player } from "@/lib/client/player";
 import { deviceRecords, loadRecords } from "@/lib/client/history";
@@ -108,10 +108,12 @@ function loadGame(key: string): GameState | null {
   return g && g.version === 1 && Array.isArray(g.values) && g.values.length === 81 ? g : null;
 }
 
-/** 途中のフリープレイがあるか（1 手以上進めて、解き終えていない）。新しく始めるときは確かめる */
+/**
+ * 途中のフリープレイがあるか（1 手以上進めて、解き終えていない・ミスの上限で終えていない）。新しく始めるときは確かめる
+ */
 function freeInProgress(): boolean {
   const cur = loadGame(KEYS.free);
-  return !!cur && cur.status !== "solved" && cur.history.length > 0;
+  return !!cur && isInProgress(cur) && cur.history.length > 0;
 }
 
 export function App() {
@@ -352,7 +354,10 @@ export function App() {
   // 問題を作っている間は新しく始めない。続けて押されると、先に作った問題を途中の問題として開始数を二重に数える
   // （state はボタンを描き直すまで反映されないので ref で止める）
   const generatingRef = useRef(false);
-  /** フリープレイを始める。途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない） */
+  /**
+   * フリープレイを始める。途中のフリープレイを上書きするなら、その経過時間も記録に足す（解き終えた問題は足さない）。
+   * ミスの上限で終えた問題は、途中でやめた問題と同じく経過時間を足す（クリアには数えない）
+   */
   const beginFree = useCallback(
     (game: GameState) => {
       const prev = loadGame(KEYS.free);
@@ -384,6 +389,7 @@ export function App() {
               seed: p.seed,
               puzzle: p.puzzle,
               solution: p.solution,
+              mistakeLimit: settings.mistakeLimit,
             }),
           );
         } finally {
@@ -392,7 +398,7 @@ export function App() {
         }
       }, 30);
     },
-    [beginFree],
+    [beginFree, settings.mistakeLimit],
   );
 
   /** 共有された盤面をフリープレイとして始める（記録・実績にも数える） */
@@ -407,10 +413,11 @@ export function App() {
           seed: shared.seed,
           puzzle: shared.puzzle,
           solution: shared.solution,
+          mistakeLimit: settings.mistakeLimit,
         }),
       );
     },
-    [beginFree],
+    [beginFree, settings.mistakeLimit],
   );
 
   const requestFree = useCallback(
@@ -719,6 +726,8 @@ export function App() {
             remove(KEYS.free);
             startFree(g.difficulty);
           }}
+          // 同じ盤面の新しいゲーム（ミスと手を消す）。終えた問題は消さずに beginFree に渡し、始めた数と途中でやめた時間に数える
+          onRetry={(g) => beginFree(restartGame(g, settings.mistakeLimit))}
         />
       )}
       {view.name === "records" && (
