@@ -3487,6 +3487,276 @@ test.describe("共有した盤面", () => {
   });
 });
 
+/** 盤面の入力で入れる問題（シングルだけで解ける。ヒント 30 個） */
+const ENTRY_PUZZLE = "530070000600195000098000060800060003400803001700020006060000280000419005000080079";
+/** 入力の画面（ホームの「盤面を入力」から開く） */
+const entryScreen = (page: Page) => page.locator(".entry");
+/** 入力の画面のヒントの数（n/81） */
+const entryCount = (page: Page) => entryScreen(page).locator(".entry-status .stat-value");
+/** 入力の画面の、始められない理由（始められるなら難易度） */
+const entryCheck = (page: Page) => entryScreen(page).locator(".entry-check");
+/** 入力の画面の「始める」（確かめるシートの「始める」とは別） */
+const entryStart = (page: Page) => entryScreen(page).getByRole("button", { name: "始める", exact: true });
+/** 入力した盤面を始めるかを確かめるシート */
+const entrySheet = (page: Page) => page.getByRole("dialog", { name: "入力した問題を始めますか？" });
+
+async function openEntry(page: Page) {
+  await page.getByRole("button", { name: "盤面を入力", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "盤面を入力", exact: true })).toBeVisible();
+  await expect(entryScreen(page).getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+}
+
+/** 入力の盤面に、文字列（0 は空き）の数字をマスを選んでキーで入れる */
+async function enterGrid(page: Page, p: string) {
+  const cells = entryScreen(page).getByRole("gridcell");
+  for (const [i, ch] of [...p].entries()) {
+    if (ch === "0") continue;
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${ch}`);
+  }
+}
+
+test.describe("盤面の入力", () => {
+  const storedStats = async (page: Page) =>
+    JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats"))) ?? "{}");
+  const allStorage = (page: Page) => page.evaluate(() => ({ ...localStorage }));
+
+  test("ホームから開いて入れた盤面を、確かめるシートで始めるとフリープレイとして遊べる。ヒントの数を出し、ブラウザの戻るでホームへ", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await openEntry(page);
+    // 何も入れていなければ、少なすぎて始められない
+    await expect(entryCount(page)).toHaveText("0/81");
+    await expect(entryCheck(page)).toHaveText("ヒントが少なすぎます（17 個以上）");
+    await expect(entryStart(page)).toBeDisabled();
+    await expect(entryScreen(page).getByRole("gridcell")).toHaveCount(81);
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+
+    await openEntry(page);
+    await enterGrid(page, ENTRY_PUZZLE);
+    await expect(entryCount(page)).toHaveText("30/81");
+    await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+    await expect(entryStart(page)).toBeEnabled();
+    const cells = entryScreen(page).getByRole("gridcell");
+    await expect(cells.nth(0)).toHaveAccessibleName("1行1列 5");
+    await expect(cells.nth(2)).toHaveAccessibleName("1行3列 空き");
+    // 始めるまでは何も保存しない
+    expect(await page.evaluate(() => localStorage.getItem("sudoku:free"))).toBeNull();
+
+    await entryStart(page).click();
+    const confirm = entrySheet(page);
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByText("かんたんのフリープレイとして始めます。", { exact: true })).toBeVisible();
+    await confirm.getByRole("button", { name: "始める", exact: true }).click();
+    await expect(confirm).toBeHidden();
+    const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+    await expect(board).toBeVisible();
+    await expect(entryScreen(page)).toHaveCount(0);
+    await expect(page.locator(".bar-main")).toHaveText("かんたん");
+    const g = await savedGame(page, "sudoku:free");
+    expect(g.puzzle).toEqual(gridOf(ENTRY_PUZZLE));
+    expect(g.solution).toEqual(solve(gridOf(ENTRY_PUZZLE)));
+    expect((await storedStats(page)).easy.started).toBe(1);
+    await expect(board.getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 最初から 5");
+    // 入れた盤面で遊べる
+    await board
+      .getByRole("gridcell")
+      .nth(2)
+      .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${g.solution![2]}`);
+    await expect(board.getByRole("gridcell").nth(2)).toHaveAccessibleName(`1行3列 ${g.solution![2]}`);
+
+    // ゲームから戻るとホーム（入力の画面には戻らない）
+    await page.getByRole("button", { name: "ホームに戻る" }).click();
+    await expect(page.getByRole("heading", { name: "ナンプレ", exact: true })).toBeVisible();
+  });
+
+  test.describe("デスクトップ", () => {
+    test.skip(({ browserName }) => browserName !== "chromium", "デスクトップだけ");
+
+    test("矢印キーで選ぶとフォーカスも動き、数字・Shift+数字・Backspace で入れて消す。メモのキーは使わない", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await openEntry(page);
+      const cells = entryScreen(page).getByRole("gridcell");
+      // 複数のマスは選べないので、複数選択の印を付けない
+      await expect(entryScreen(page).getByRole("grid")).not.toHaveAttribute("aria-multiselectable");
+      await expect(entryScreen(page).locator("[tabindex='0']")).toHaveAttribute("data-i", "40");
+      await cells.nth(40).focus();
+      await page.keyboard.press("ArrowRight");
+      await expect(cells.nth(41)).toBeFocused();
+      await expect(cells.nth(41)).toHaveAttribute("aria-selected", "true");
+      await page.keyboard.press("n");
+      await page.keyboard.press("Shift+Digit3");
+      await expect(cells.nth(41)).toHaveAccessibleName("5行6列 3");
+      await expect(boardLive(page)).toHaveText("5行6列に 3");
+      await expect(entryCount(page)).toHaveText("1/81");
+      await page.keyboard.press("Backspace");
+      await expect(cells.nth(41)).toHaveAccessibleName("5行6列 空き");
+      await expect(boardLive(page)).toHaveText("5行6列 消去");
+      await expect(entryCount(page)).toHaveText("0/81");
+      // 数字パッドでも入れられる
+      await page.locator(".pad-key").nth(6).click();
+      await expect(cells.nth(41)).toHaveAccessibleName("5行6列 7");
+    });
+
+    test("始められない理由を示す（矛盾・解が無い・解が 2 つ以上・空きマスが無い）。矛盾したマスは波線と読み上げで示す", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await openEntry(page);
+      await enterGrid(page, ENTRY_PUZZLE);
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      const cells = entryScreen(page).getByRole("gridcell");
+      const select = (i: number) =>
+        cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+
+      // 始められる盤面を変えた直後は、確かめ終わる（入力が 300ms 止まる）まで「始める」を押せない。
+      // 理由の欄は確かめている間も前の文のまま（空にして入れ直さない）。キーを押してすぐ、同じページの中で読む
+      await select(2);
+      const answer = solve(gridOf(ENTRY_PUZZLE))![2];
+      const justAfter = await page.evaluate(async (digit) => {
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", { key: String(digit), code: `Digit${digit}`, bubbles: true }),
+        );
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        return {
+          count: document.querySelector(".entry-status .stat-value")?.textContent,
+          disabled: document.querySelector<HTMLButtonElement>(".entry-start")?.disabled,
+          text: document.querySelector(".entry-check")?.textContent,
+        };
+      }, answer);
+      expect(justAfter).toEqual({ count: "31/81", disabled: true, text: "難易度 かんたん" });
+      await expect(entryStart(page)).toBeEnabled();
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      await page.keyboard.press("Backspace");
+      await expect(entryCount(page)).toHaveText("30/81");
+
+      // 1 行目の 3 マス目に、同じ行の 5 を入れる
+      await select(2);
+      await page.keyboard.press("Digit5");
+      await expect(entryCheck(page)).toHaveText("矛盾があります");
+      await expect(entryStart(page)).toBeDisabled();
+      for (const i of [0, 2]) {
+        await expect(cells.nth(i)).toHaveClass(/wrong/);
+        await expect(cells.nth(i)).toHaveAccessibleName(`1行${i + 1}列 間違い 5`);
+      }
+      await expect(boardLive(page)).toHaveText("1行3列に 5 間違い");
+      // 波線の下線を引く（色だけに頼らない）
+      const underline = await cells
+        .nth(2)
+        .locator(".digit")
+        .evaluate((el) => getComputedStyle(el).textDecorationStyle);
+      expect(underline).toBe("wavy");
+      await page.keyboard.press("Backspace");
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      await expect(cells.nth(0)).not.toHaveClass(/wrong/);
+
+      // 1 マス目の 5 を 1 にすると、重複は無いが解が無い
+      await select(0);
+      await page.keyboard.press("Digit1");
+      await expect(entryCheck(page)).toHaveText("解がありません");
+      await expect(entryStart(page)).toBeDisabled();
+      await page.keyboard.press("Digit5");
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+
+      // 最初の 2 つのヒントを消すと、解が 2 つ以上になる。戻すで戻せる
+      await page.keyboard.press("Backspace");
+      await select(1);
+      await page.keyboard.press("Backspace");
+      await expect(entryCount(page)).toHaveText("28/81");
+      await expect(entryCheck(page)).toHaveText("解が 1 つに決まりません");
+      await expect(entryStart(page)).toBeDisabled();
+      const undo = entryScreen(page).getByRole("button", { name: "戻す", exact: true });
+      await undo.click();
+      await undo.click();
+      await expect(entryCount(page)).toHaveText("30/81");
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      await expect(entryStart(page)).toBeEnabled();
+
+      // 81 マスすべて埋めると、解き終えられないので始められない
+      const solution = solve(gridOf(ENTRY_PUZZLE))!;
+      await enterGrid(page, solution.map((v, i) => (ENTRY_PUZZLE[i] === "0" ? v : 0)).join(""));
+      await expect(entryCount(page)).toHaveText("81/81");
+      await expect(entryCheck(page)).toHaveText("空きマスがありません");
+      await expect(entryStart(page)).toBeDisabled();
+      // 埋めても解き終えにしない（入力の画面のまま）
+      await expect(page.getByRole("dialog", { name: "クリア" })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "盤面を入力", exact: true })).toBeVisible();
+    });
+
+    test("確かめ終わるまでに時間の掛かる盤面は、確かめきれないとして始めさせない", async ({ page }) => {
+      await page.goto("/");
+      await openEntry(page);
+      // ヒント 17 個の Norvig の hard1（解が 1 つか確かめる置く回数が上限を超える）
+      await enterGrid(
+        page,
+        "000006000059000008200008000045000000003000000006003054000325006000000000000000000",
+      );
+      await expect(entryCount(page)).toHaveText("17/81");
+      await expect(entryCheck(page)).toHaveText("解が 1 つか確かめきれません");
+      await expect(entryStart(page)).toBeDisabled();
+    });
+
+    test("確かめるシートでやめると何も変わらない。途中のフリープレイがあれば、消えることを示す", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await page.locator(".free-easy").click();
+      const board = page.getByRole("grid", { name: "ナンプレの盤面" });
+      await expect(board).toBeVisible();
+      const before = await savedGame(page, "sudoku:free");
+      const first = before.puzzle.indexOf(0);
+      await board
+        .getByRole("gridcell")
+        .nth(first)
+        .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+      await page.keyboard.press(`Digit${before.solution![first]}`);
+      await expect.poll(async () => (await savedGame(page, "sudoku:free")).history.length).toBe(1);
+      await page.getByRole("button", { name: "ホームに戻る" }).click();
+
+      await openEntry(page);
+      const stored = await allStorage(page);
+      expect(stored["sudoku:free"]).toBeTruthy();
+      await enterGrid(page, ENTRY_PUZZLE);
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      await entryStart(page).click();
+      const confirm = entrySheet(page);
+      await expect(
+        confirm.getByText("かんたんのフリープレイとして始めます。途中のフリープレイは消えます。", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await confirm.getByRole("button", { name: "やめる", exact: true }).click();
+      await expect(confirm).toBeHidden();
+      // 入れた盤面はそのまま。途中のフリープレイと記録は変わらず、入れた盤面はどこにも保存しない
+      // （履歴の取得などは裏で保存しうるので、ほかの保存データは比べない）
+      await expect(page.getByRole("heading", { name: "盤面を入力", exact: true })).toBeVisible();
+      await expect(entryCount(page)).toHaveText("30/81");
+      await expect(entryScreen(page).getByRole("gridcell").nth(0)).toHaveAccessibleName("1行1列 5");
+      const after = await allStorage(page);
+      expect(after["sudoku:free"]).toBe(stored["sudoku:free"]);
+      expect(after["sudoku:stats"]).toBe(stored["sudoku:stats"]);
+      const entered = [ENTRY_PUZZLE, JSON.stringify(gridOf(ENTRY_PUZZLE))];
+      expect(Object.values(after).filter((v) => entered.some((e) => v.includes(e)))).toEqual([]);
+      expect((await savedGame(page, "sudoku:free")).puzzle).toEqual(before.puzzle);
+
+      // もう一度押して始めると、途中のフリープレイと入れ替わる
+      await entryStart(page).click();
+      await confirm.getByRole("button", { name: "始める", exact: true }).click();
+      await expect(board).toBeVisible();
+      await expect(page.locator(".bar-main")).toHaveText("かんたん");
+      const g = await savedGame(page, "sudoku:free");
+      expect(g.puzzle).toEqual(gridOf(ENTRY_PUZZLE));
+      expect(g.history).toHaveLength(0);
+      expect((await storedStats(page)).easy.started).toBe(2);
+    });
+  });
+});
+
 const LEGACY_ORIGIN = `https://${LEGACY_HOST}`;
 
 /**

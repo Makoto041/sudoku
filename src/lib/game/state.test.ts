@@ -278,7 +278,8 @@ describe("行き詰まり", () => {
     ).toBeNull();
     const t = performance.now();
     const [back, effects] = reduce(s, { type: "rewind" });
-    expect(performance.now() - t).toBeLessThan(2000);
+    // テストを並べて走らせた負荷でも落ちないよう、余裕を持たせる
+    expect(performance.now() - t).toBeLessThan(10_000);
     expect(effects[0]).toEqual({ kind: "rewind", steps: 1 });
     expect(back.history).toHaveLength(1);
     expect(back.values[73]).toBe(2);

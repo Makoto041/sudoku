@@ -47,6 +47,7 @@ import {
 } from "@/lib/client/move";
 import { parseShared, withoutShared, type SharedPuzzle } from "@/lib/client/sharedPuzzle";
 import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
+import { Entry } from "./Entry";
 import { Game } from "./Game";
 import { Home, type DailyStatus } from "./Home";
 import { Practice } from "./Practice";
@@ -69,15 +70,19 @@ type View =
   | { name: "ranking"; difficulty: Difficulty; date?: string }
   | { name: "records" }
   | { name: "practiceList" }
-  | { name: "practice"; key: PracticeKey; index: number };
+  | { name: "practice"; key: PracticeKey; index: number }
+  /** 盤面を入力する画面 */
+  | { name: "entry" };
 
 type SheetState =
   | { kind: "settings" }
   | { kind: "howto" }
   | { kind: "name"; difficulty: Difficulty | null }
   | { kind: "confirmFree"; difficulty: Difficulty }
-  /** 開いた URL の共有された盤面を始めるか。replace は途中のフリープレイを消すか */
-  | { kind: "confirmShared"; shared: SharedPuzzle; replace: boolean }
+  /**
+   * 開いた URL の共有された盤面（entered なら入力した盤面）を始めるか。replace は途中のフリープレイを消すか
+   */
+  | { kind: "confirmShared"; shared: SharedPuzzle; replace: boolean; entered?: boolean }
   | { kind: "move" }
   | { kind: "claim"; code: string; push: boolean; replace: boolean }
   | { kind: "account" }
@@ -401,7 +406,7 @@ export function App() {
     [beginFree, settings.mistakeLimit],
   );
 
-  /** 共有された盤面をフリープレイとして始める（記録・実績にも数える） */
+  /** 共有された盤面・入力した盤面をフリープレイとして始める（記録・実績にも数える） */
   const startShared = useCallback(
     (shared: SharedPuzzle) => {
       if (generatingRef.current) return;
@@ -698,6 +703,10 @@ export function App() {
               setSheet({ kind: "settings" });
             }}
             onPractice={openPracticeList}
+            onEntry={() => {
+              sfx.tap();
+              go({ name: "entry" });
+            }}
             onHowto={openHowto}
             howtoHint={howtoHint}
             onCloseHowtoHint={dismissHowtoHint}
@@ -728,6 +737,20 @@ export function App() {
           }}
           // 同じ盤面の新しいゲーム（ミスと手を消す）。終えた問題は消さずに beginFree に渡し、始めた数と途中でやめた時間に数える
           onRetry={(g) => beginFree(restartGame(g, settings.mistakeLimit))}
+        />
+      )}
+      {view.name === "entry" && (
+        <Entry
+          settings={settings}
+          onBack={goHome}
+          onOpenSettings={() => {
+            sfx.tap();
+            setSheet({ kind: "settings" });
+          }}
+          // 共有された盤面と同じく、確かめるシートで押したときだけ始める
+          onStart={(shared) =>
+            setSheet({ kind: "confirmShared", shared, replace: freeInProgress(), entered: true })
+          }
         />
       )}
       {view.name === "records" && (
@@ -882,7 +905,7 @@ export function App() {
       )}
       {sheet?.kind === "confirmShared" && (
         <ConfirmSheet
-          title="共有された問題を始めますか？"
+          title={sheet.entered ? "入力した問題を始めますか？" : "共有された問題を始めますか？"}
           body={`${DIFFICULTY_LABEL[sheet.shared.difficulty]}のフリープレイとして始めます。${
             sheet.replace ? "途中のフリープレイは消えます。" : ""
           }`}

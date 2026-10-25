@@ -28,6 +28,8 @@ type Props = {
   stuck: ReadonlySet<number>;
   /** 手筋ヒントで照らすマス */
   hint?: { focus: ReadonlySet<number>; pattern: ReadonlySet<number>; targets: ReadonlySet<number> } | null;
+  /** 複数のマスを選べるか（読み上げの aria-multiselectable。盤面の入力では選べないので false） */
+  multiselectable?: boolean;
   onSelect: (cell: number) => void;
   /** 修飾キー付きクリック：選択にマスを足す・外す */
   onToggle: (cell: number) => void;
@@ -59,6 +61,7 @@ export function Board({
   unitFx,
   stuck,
   hint,
+  multiselectable = true,
   onSelect,
   onToggle,
   onExtend,
@@ -214,7 +217,7 @@ export function Board({
         className={`board${hidden ? " is-hidden" : ""}${wave ? " is-solved" : ""}${game.selection ? " is-multi" : ""}`}
         role="grid"
         aria-label="ナンプレの盤面"
-        aria-multiselectable="true"
+        aria-multiselectable={multiselectable ? "true" : undefined}
         key={fx.solvedKey ?? "board"}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
