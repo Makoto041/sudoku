@@ -10,6 +10,7 @@ import {
   type Response,
   type TestInfo,
 } from "@playwright/test";
+import { formatPoints } from "../src/lib/game/score";
 import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
 import { TECHNIQUE_NAME } from "../src/lib/sudoku/hint";
@@ -648,6 +649,145 @@ test("正しく置くと得点が浮かび、スコアが増える。間違え�
   await expect(page.locator(".popup.loss")).toBeVisible();
   expect(Number((await score.textContent())!.replace(/,/g, ""))).toBeLessThan(after);
   await shot(page, "score");
+});
+
+/** 設定の「時計と得点を隠す」を切り替える（ホームでもゲームの途中でも、ヘッダーの歯車から開く） */
+async function setHideClock(page: Page, on: boolean) {
+  await page.getByRole("button", { name: "設定" }).click();
+  const sheet = page.getByRole("dialog", { name: "設定" });
+  await sheet.getByRole("checkbox", { name: "時計と得点を隠す" }).setChecked(on);
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(sheet).toBeHidden();
+}
+
+/** プレイ中の画面に、時計（読み上げの timer を含む）・スコア・浮かぶ得点が無い */
+async function expectClockHidden(page: Page) {
+  await expect(page.getByRole("timer")).toHaveCount(0);
+  await expect(page.locator(".clock")).toHaveCount(0);
+  await expect(page.locator(".score-value")).toHaveCount(0);
+  await expect(page.locator(".status-row")).not.toContainText("スコア");
+  await expect(page.locator(".popups")).toHaveCount(0);
+}
+
+/** クリアの結果の点数とタイム */
+function resultFigures(page: Page) {
+  const dialog = page.getByRole("dialog", { name: "クリア" });
+  return {
+    points: dialog.locator(".result-score"),
+    time: dialog
+      .locator(".result-stats > div")
+      .filter({ has: page.locator("dt", { hasText: /^タイム$/ }) })
+      .locator("dd"),
+  };
+}
+
+test("時計と得点を隠すと、プレイ中に時計・スコア・浮かぶ得点を出さない。点数と時間は数え続け、結果には出す。オフに戻すと出る", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "設定" }).click();
+  const sheet = page.getByRole("dialog", { name: "設定" });
+  const toggle = sheet.getByRole("checkbox", { name: "時計と得点を隠す" });
+  // 既定はオフ
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(sheet).toBeHidden();
+  const settings = await page.evaluate(() => localStorage.getItem("sudoku:settings"));
+  expect(JSON.parse(settings!).hideClock).toBe(true);
+
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const empties = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const cells = page.getByRole("gridcell");
+  const saved = async () => {
+    const raw = await page.evaluate(() => localStorage.getItem("sudoku:free"));
+    return JSON.parse(raw!) as { score: { points: number }; elapsedMs: number };
+  };
+  await expectClockHidden(page);
+  // ミスの数と一時停止は隠さない
+  await expect(page.locator(".status-row")).toContainText("ミス");
+  await expect(page.getByRole("button", { name: "一時停止" })).toBeVisible();
+
+  // 正しく置いても間違えても得点は浮かばないが、点数と時間は数えている
+  const place = async (cell: number, digit: number) => {
+    await cells.nth(cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${digit}`);
+    // 置いたことを読み上げ欄で確かめてから、得点が浮かんでいないかを見る
+    await expect(boardLive(page)).toHaveText(new RegExp(`^${cellAt(cell)}に ${digit}`));
+  };
+  await place(empties[0], g.solution![empties[0]]);
+  await expectClockHidden(page);
+  await expect.poll(async () => (await saved()).score.points).toBeGreaterThan(0);
+  await place(empties[1], (g.solution![empties[1]] % 9) + 1);
+  await expectClockHidden(page);
+  await expect(page.locator(".status-row")).toContainText("ミス1");
+  await expect.poll(async () => (await saved()).elapsedMs).toBeGreaterThan(0);
+  await shot(page, "hide-clock");
+
+  // ゲームの途中でオフに戻すと、時計と、それまでに数えた点数のスコアが出て、置けば得点が浮かぶ
+  await setHideClock(page, false);
+  await expect(page.getByRole("timer", { name: "経過時間" })).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(page.locator(".score-value")).toHaveText(formatPoints((await saved()).score.points));
+  await place(empties[2], g.solution![empties[2]]);
+  await expect(page.locator(".popup.gain")).toBeVisible();
+
+  // もう一度隠すと、浮かんでいた得点も消える。解き終えても時間ボーナスは浮かべず、結果には点数とタイムを出す
+  await setHideClock(page, true);
+  await expectClockHidden(page);
+  await fill(
+    page,
+    g.puzzle.map((v, i) => (i === empties[0] || i === empties[2] ? 1 : v)),
+    g.solution!,
+  );
+  await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
+  await expect(page.locator(".popups")).toHaveCount(0);
+  const result = resultFigures(page);
+  await expect(result.points).toHaveText(/^[\d,]+点$/);
+  expect(Number((await result.points.textContent())!.replace(/[,点]/g, ""))).toBeGreaterThan(0);
+  await expect(result.time).toHaveText(/^\d{2}:\d{2}$/);
+  await shot(page, "hide-clock-result");
+});
+
+test("時計と得点を隠しても、今日の一問はプレイ中に出さずに解け、ランキングに載る。結果には点数とタイムを出す", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await setHideClock(page, true);
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`隠す${test.info().project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  await expectClockHidden(page);
+
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  const last = await fill(page, g.puzzle, solution, true);
+  await expectClockHidden(page);
+  // サーバーは 15 秒未満のクリアを受け付けない
+  await page.waitForTimeout(15_500);
+  await page
+    .getByRole("gridcell")
+    .nth(last)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[last]}`);
+  await expect(page.getByRole("dialog", { name: "クリア" })).toBeVisible();
+  await expect(page.getByText(/位/).first()).toBeVisible({ timeout: 10_000 });
+  const result = resultFigures(page);
+  await expect(result.points).toHaveText(/^[\d,]+点$/);
+  await expect(result.time).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(page.locator(".popups")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "ランキングを見る" }).click();
+  await expect(page.locator(".row.is-me")).toBeVisible();
 });
 
 test("極の問題を作って遊び始められる", async ({ page }) => {

@@ -52,9 +52,12 @@ export function Game({
   onRanking,
   onNewFree,
 }: Props) {
+  // 時計と得点を隠すのはプレイ中の表示だけ。時間と点数の計算・送信・記録・結果はそのまま
+  const hideClock = settings.hideClock;
   const { game, fx, dispatch, announce } = useGame(initial, {
     showMistakes: settings.showMistakes,
     autoClearNotes: settings.autoClearNotes,
+    showPoints: !hideClock,
   });
   const gameRef = useRef(game);
   gameRef.current = game;
@@ -255,13 +258,18 @@ export function Game({
       </header>
 
       <div className="status-row">
+        {/* 隠すときも 3 列の枠は残す（右のミス・一時停止を右に置いたままにする）。時計は描かず、読み上げにも出さない */}
         <div className="stat score-stat">
-          <span className="stat-label">スコア</span>
-          <span key={game.score?.points ?? 0} className="stat-value score-value">
-            {formatPoints(game.score?.points ?? 0)}
-          </span>
+          {!hideClock && (
+            <>
+              <span className="stat-label">スコア</span>
+              <span key={game.score?.points ?? 0} className="stat-value score-value">
+                {formatPoints(game.score?.points ?? 0)}
+              </span>
+            </>
+          )}
         </div>
-        <Clock game={game} />
+        {hideClock ? <div /> : <Clock game={game} />}
         <div className="stat stat-end">
           {settings.showMistakes ? (
             <span className="stat-pair">
@@ -309,17 +317,19 @@ export function Game({
             onToggle={onToggle}
             onExtend={onExtend}
           />
-          <div className="popups" aria-hidden="true">
-            {fx.popups.map((p) => (
-              <span
-                key={p.id}
-                className={`popup ${p.kind}`}
-                style={{ "--r": Math.floor(p.cell / 9), "--c": p.cell % 9 } as CSSProperties}
-              >
-                {p.text}
-              </span>
-            ))}
-          </div>
+          {!hideClock && (
+            <div className="popups" aria-hidden="true">
+              {fx.popups.map((p) => (
+                <span
+                  key={p.id}
+                  className={`popup ${p.kind}`}
+                  style={{ "--r": Math.floor(p.cell / 9), "--c": p.cell % 9 } as CSSProperties}
+                >
+                  {p.text}
+                </span>
+              ))}
+            </div>
+          )}
           {game.status === "paused" && (
             <button
               type="button"
