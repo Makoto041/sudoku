@@ -139,7 +139,8 @@ export function Ranking({ today, playerId, initialDifficulty, initialDate, onBac
                 <li key={k} className={`row${e.isMe ? " is-me" : ""}`}>
                   <span className={`rank rank-${e.rank <= 3 ? e.rank : "n"}`}>{e.rank}</span>
                   <span className="name">
-                    {e.name}
+                    {/* 名前は他人が決めるので、文字の向きが周り（順位・「あなた」）に及ばないよう切り離す */}
+                    <bdi>{e.name}</bdi>
                     {e.isMe && <span className="me-tag">あなた</span>}
                   </span>
                   <span className="score">

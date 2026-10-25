@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, describeError, describeIssueError } from "./api";
+import { ApiError, api, describeError, describeIssueError, isTooFast } from "./api";
 
 describe("GET の playerId", () => {
   // ダミーの ID
@@ -51,6 +51,21 @@ describe("describeError", () => {
     expect(describeError(new ApiError(0, "offline"))).toBe("オフラインです");
     expect(describeError(new ApiError(413, "too large"))).toBe("通信に失敗しました");
     expect(describeError(new Error("x"))).toBe("通信に失敗しました");
+  });
+
+  it("今日の一問の送信が下限より速い（422 too fast）ときはそう示す。ほかの 422 は今までどおり", () => {
+    expect(describeError(new ApiError(422, "too fast"))).toBe("速すぎるため記録できませんでした");
+    expect(describeError(new ApiError(422, "incorrect solution"))).toBe("記録できませんでした");
+    expect(describeError(new ApiError(422, "incomplete moves"))).toBe("記録できませんでした");
+  });
+});
+
+describe("isTooFast", () => {
+  it("422 too fast だけ（送り直せば記録できる）", () => {
+    expect(isTooFast(new ApiError(422, "too fast"))).toBe(true);
+    expect(isTooFast(new ApiError(422, "incomplete moves"))).toBe(false);
+    expect(isTooFast(new ApiError(400, "too fast"))).toBe(false);
+    expect(isTooFast(new Error("too fast"))).toBe(false);
   });
 });
 

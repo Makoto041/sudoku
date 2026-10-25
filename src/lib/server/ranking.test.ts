@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { DIFFICULTIES, parseGrid, serializeGrid } from "@/lib/sudoku/core";
-import { generateDaily } from "@/lib/sudoku/generator";
+import { PROFILES, generateDaily } from "@/lib/sudoku/generator";
 import { solve } from "@/lib/sudoku/solver";
 import {
+  MAX_MARK_RUN,
+  MAX_MOVES,
   MAX_STATS_BYTES,
-  MIN_PLAUSIBLE_MS,
   NAME_MAX,
   RankingError,
   TRANSFER_TOTAL_COUNTER,
@@ -19,7 +20,9 @@ import {
 } from "./ranking";
 import { normalizeCode } from "@/lib/transfer-code";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
-import { MemoryStore, fromRankValue, rankValue } from "./store";
+import { DIFFICULTY_FLOOR_MS, MIN_MS_PER_CELL, MIN_MS_PER_MOVE, minPlausibleMs } from "./ranking-floor";
+import { fromRankValue, rankValue } from "./rank-value";
+import { MemoryStore } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
 const BOB = "22222222-2222-4222-8222-222222222222";
@@ -27,15 +30,34 @@ const T0 = Date.parse("2026-10-15T03:00:00Z"); // JST 12:00
 
 const solutionOf = (puzzle: string) => serializeGrid(solve(parseGrid(puzzle))!);
 
+/** 空きマスを順に正しく埋めた手の記録（1 秒おき） */
+function movesFor(puzzle: string): MoveLog {
+  const p = parseGrid(puzzle);
+  const s = solve(p)!;
+  return p
+    .flatMap((v, i) => (v ? [] : [i]))
+    .map((c, k): [number, number, number] => [(k + 1) * 1000, c, s[c]]);
+}
+
 async function solveDaily(store: MemoryStore, playerId: string, elapsedMs: number, name = "テスト") {
   const started = await startDaily(store, { playerId, difficulty: "easy" }, T0);
   const solution = solutionOf(started.puzzle);
-  return submitDaily(store, { sessionId: started.sessionId, playerId, grid: solution, name }, T0 + elapsedMs);
+  const moves = movesFor(started.puzzle);
+  return submitDaily(
+    store,
+    { sessionId: started.sessionId, playerId, grid: solution, name, moves },
+    T0 + elapsedMs,
+  );
 }
 
 async function expectStatus(promise: Promise<unknown>, status: number) {
   await expect(promise).rejects.toBeInstanceOf(RankingError);
   await promise.catch((e: RankingError) => expect(e.status).toBe(status));
+}
+
+async function expectError(promise: Promise<unknown>, status: number, message: string) {
+  await expect(promise).rejects.toBeInstanceOf(RankingError);
+  await promise.catch((e: RankingError) => expect([e.status, e.message]).toEqual([status, message]));
 }
 
 describe("daily ranking", () => {
@@ -82,7 +104,13 @@ describe("daily ranking", () => {
     const store = new MemoryStore();
     const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
     const grid = solutionOf(started.puzzle);
-    const body = { sessionId: started.sessionId, playerId: ALICE, grid, name: "a" };
+    const body = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      grid,
+      name: "a",
+      moves: movesFor(started.puzzle),
+    };
     await submitDaily(store, body, T0 + 100_000);
     await expectStatus(submitDaily(store, body, T0 + 120_000), 409);
   });
@@ -93,11 +121,16 @@ describe("daily ranking", () => {
     const solution = parseGrid(solutionOf(started.puzzle));
     const wrong = solution.slice();
     [wrong[0], wrong[1]] = [wrong[1], wrong[0]];
-    const base = { sessionId: started.sessionId, playerId: ALICE, name: "a" };
+    const base = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      name: "a",
+      moves: movesFor(started.puzzle),
+    };
 
     await expectStatus(submitDaily(store, { ...base, grid: serializeGrid(wrong) }, T0 + 100_000), 422);
     await expectStatus(
-      submitDaily(store, { ...base, grid: serializeGrid(solution) }, T0 + MIN_PLAUSIBLE_MS - 1),
+      submitDaily(store, { ...base, grid: serializeGrid(solution) }, T0 + DIFFICULTY_FLOOR_MS.easy - 1),
       422,
     );
     await expectStatus(
@@ -133,7 +166,13 @@ describe("daily puzzle pinning", () => {
     expect(started.puzzle).toBe(pinned);
     const res = await submitDaily(
       store,
-      { sessionId: started.sessionId, playerId: ALICE, grid: solutionOf(pinned), name: "a" },
+      {
+        sessionId: started.sessionId,
+        playerId: ALICE,
+        grid: solutionOf(pinned),
+        name: "a",
+        moves: movesFor(pinned),
+      },
       T0 + 60_000,
     );
     expect(res.rank).toBe(1);
@@ -164,6 +203,7 @@ describe("daily puzzle pinning", () => {
       playerId: ALICE,
       grid: solutionOf(started.puzzle),
       name: "a",
+      moves: movesFor(started.puzzle),
     };
     await expect(submitDaily(store, body, T0 + 60_000)).rejects.toThrow("redis down");
     await expect(submitDaily(store, body, T0 + 61_000)).resolves.toMatchObject({ rank: 1, timeMs: 61_000 });
@@ -180,6 +220,349 @@ describe("sanitizeName", () => {
     expect(sanitizeName("👨\u200d👩\u200d👧")).toBe("👨\u200d👩\u200d👧");
     expect(sanitizeName("\u3164\u3164")).toBeNull();
     expect(sanitizeName("\u0301\u0301")).toBeNull();
+  });
+
+  it("向きを変える文字・ゼロ幅の文字・タグ文字・私用領域の文字を落とす", () => {
+    expect(sanitizeName("ab\u202ecd")).toBe("abcd");
+    expect(sanitizeName("\u202aa\u202bb\u202cc\u202dd")).toBe("abcd");
+    expect(sanitizeName("\u2066a\u2069\u2067b\u2069\u2068c\u2069")).toBe("abc");
+    expect(sanitizeName("a\u200eb\u200fc\u061cd")).toBe("abcd");
+    expect(sanitizeName("a\u200bb\u200cc\u2060d\ufeffe\u00adf")).toBe("abcdef");
+    expect(sanitizeName("a\u{e0041}b\ue000c")).toBe("abc");
+    expect(sanitizeName("\u202e\u200b\u2066")).toBeNull();
+  });
+
+  it(`続けて置ける結合文字（と ZWJ）は ${MAX_MARK_RUN} 個まで。先頭の結合文字・ZWJ と末尾の ZWJ は落とす`, () => {
+    const marks = (n: number) => "\u0301".repeat(n);
+    expect(sanitizeName(`x${marks(MAX_MARK_RUN)}y`)).toBe(`x${marks(MAX_MARK_RUN)}y`);
+    expect(sanitizeName(`x${marks(MAX_MARK_RUN + 1)}y`)).toBe(`x${marks(MAX_MARK_RUN)}y`);
+    expect(sanitizeName(`x${marks(30)}y`)).toBe(`x${marks(MAX_MARK_RUN)}y`);
+    // 種類の違う結合文字（上・下に付くもの）も、ZWJ を挟んでも、続いていれば 1 つの並びとして数える
+    expect(sanitizeName("x\u0301\u0316\u0302\u0317\u0303\u0318y")).toHaveLength(1 + MAX_MARK_RUN + 1);
+    expect(sanitizeName("x" + "\u200d\u0301".repeat(5) + "y")).toBe("x\u200d\u0301\u200d\u0301y");
+    // 減らしてから長さを数える（重ねた結合文字で NAME_MAX を使い切らせない）
+    expect(sanitizeName(`x${marks(20)}`.repeat(3))).toBe(
+      `x${marks(MAX_MARK_RUN)}`.repeat(2) + `x${marks(1)}`,
+    );
+    expect(sanitizeName(`${marks(3)}ab`)).toBe("ab");
+    expect(sanitizeName(`  ${marks(3)}ab`)).toBe("ab");
+    expect(sanitizeName("\u200d\ufe0fab")).toBe("ab");
+    expect(sanitizeName("ab\u200d")).toBe("ab");
+    // 落としたあとに空白を残さない
+    expect(sanitizeName("\u0301 abc")).toBe("abc");
+    expect(sanitizeName(" \u0301 \u200d abc")).toBe("abc");
+    expect(sanitizeName("abc \u200d")).toBe("abc");
+    expect(sanitizeName("abcdefghijk lmn")).toBe("abcdefghijk");
+    // 長さで切ったところが ZWJ の並びの途中でも、末尾に ZWJ を残さない
+    expect(sanitizeName("abcdefghij👨\u200d👩\u200d👧")).toBe("abcdefghij👨");
+  });
+
+  it("白紙に描かれる文字だけの名前は、見た目が空として受け付けない", () => {
+    for (const blank of [
+      "\u{1d159}",
+      "\u{1d159}\u{1d159}\u{1d159}",
+      "\u115f\u1160",
+      "\u3164",
+      "\uffa0",
+      "\u2800\u2800",
+      "\u17b4\u17b5",
+      "\u3164 \u2800 \u{1d159}\u0301",
+    ]) {
+      expect([blank, sanitizeName(blank)]).toEqual([blank, null]);
+    }
+    // ほかの文字と一緒なら名前として受け付ける
+    expect(sanitizeName("a\u{1d159}")).toBe("a\u{1d159}");
+  });
+
+  it("2 回通しても結果は変わらない", () => {
+    const samples = [
+      "  ＡＢＣ  ",
+      "\u0301 abc",
+      " \u0301 \u200d abc \u200d ",
+      "abcdefghijk lmn",
+      "abcdefghij👨\u200d👩\u200d👧",
+      `x${"\u0301".repeat(20)}`.repeat(3),
+      "x" + "\u200d\u0301".repeat(5) + "y",
+      "ab\u202ecd\u200b ef",
+      "👨\u200d👩\u200d👧\u200d👦 テスト",
+      "1\ufe0f\u20e3 ที่สุด",
+      "あいうえおかきくけこさしすせそ",
+    ];
+    for (const raw of samples) {
+      const once = sanitizeName(raw);
+      expect([raw, once === null ? null : sanitizeName(once)]).toEqual([raw, once]);
+    }
+  });
+
+  it("文字と結合文字の間の制御文字を除いてできた組は、1 回目で合成する（制御文字を NFKC より先に除く）", () => {
+    for (const [raw, expected] of [
+      // e・ゼロ幅スペース・アキュート → é（合成済みの U+00E9）
+      ["e\u200b\u0301x", "\u00e9x"],
+      // 半角のカ・ソフトハイフン・半角の濁点 → ガ（U+30AC）
+      ["\uff76\u00ad\uff9e", "\u30ac"],
+      // ハングルの字母 ᄀ・ゼロ幅スペース・ᅡ → 가（U+AC00）
+      ["\u1100\u200b\u1161", "\uac00"],
+      ["a\ufeff\u0308b\tc", "\u00e4bc"],
+    ]) {
+      expect([raw, sanitizeName(raw)]).toEqual([raw, expected]);
+      expect(sanitizeName(expected)).toBe(expected);
+    }
+  });
+
+  it("2 回通しても結果は変わらない（結合文字・制御文字・ZWJ の絵文字・半角カナ・ハングルを混ぜた 5,000 件）", () => {
+    const pieces = [
+      ..."abcexyz ",
+      "\uff21",
+      "\u3000",
+      "\u00a0",
+      "\u2028",
+      "\ufb01",
+      "\u2460",
+      "\u3300",
+      // 結合文字
+      "\u0301",
+      "\u0300",
+      "\u0308",
+      "\u0316",
+      "\u0327",
+      "\u3099",
+      "\u309a",
+      "\u20e3",
+      "\u034f",
+      // 制御文字・ゼロ幅の文字・向きを変える文字
+      "\u200b",
+      "\u200c",
+      "\u00ad",
+      "\ufeff",
+      "\u2060",
+      "\t",
+      "\n",
+      "\u0000",
+      "\u202e",
+      "\u2066",
+      "\u{e0041}",
+      "\ue000",
+      // ZWJ・異体字セレクタ・絵文字・国旗の文字・肌の色
+      "\u200d",
+      "\ufe0f",
+      "👨",
+      "👩",
+      "❤",
+      "🔥",
+      "🏽",
+      "🇯",
+      "🇵",
+      // かな・半角カナ・濁点
+      "か",
+      "は",
+      "\uff76",
+      "\uff8a",
+      "\uff9e",
+      "\uff9f",
+      "\uff73",
+      // ハングルの字母・音節・埋め字
+      "\u1100",
+      "\u1161",
+      "\u11a8",
+      "\uac00",
+      "\u3164",
+      "\uffa0",
+      "\u115f",
+      // タイ語・デーヴァナーガリー・チベット語・白紙に描かれる文字
+      "ท",
+      "\u0e35",
+      "\u0e48",
+      "क",
+      "\u094d",
+      "ष",
+      "བ",
+      "\u0f92",
+      "\u0f74",
+      "\u2800",
+      "\u{1d159}",
+    ];
+    // 決まった種の乱数（mulberry32）。失敗したときに同じ入力で再現できる
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let named = 0;
+    for (let n = 0; n < 5000; n++) {
+      const length = 1 + Math.floor(random() * 24);
+      const raw = Array.from({ length }, () => pieces[Math.floor(random() * pieces.length)]).join("");
+      const once = sanitizeName(raw);
+      if (once === null) continue;
+      named++;
+      expect([raw, sanitizeName(once)]).toEqual([raw, once]);
+    }
+    // ほとんどの入力が名前として残る（空の判定だけを確かめていない）
+    expect(named).toBeGreaterThan(4000);
+  });
+
+  it("正当な名前（日本語・半角カナ・濁点・絵文字の ZWJ・異体字セレクタ・国旗・キーキャップ・肌の色、タイ語・ヒンディー語・チベット語）は壊さない", () => {
+    for (const name of [
+      "1\ufe0f\u20e3",
+      "👨\u200d👩\u200d👧\u200d👦",
+      "👩🏽\u200d💻",
+      "❤\ufe0f\u200d🔥",
+      "🏳\ufe0f\u200d🌈",
+      "ที่สุด",
+      "नमस्ते",
+      "क्षत्रिय",
+      "བསྒྲུབས",
+      "テスト太郎",
+      "ガギグゲゴ",
+      "カ\u3099キ\u3099",
+      "ﾃｽﾄﾀﾛｳ",
+      "ｶﾞｷﾞﾊﾟ",
+      "🇯🇵🇺🇸",
+      "#\ufe0f\u20e3",
+    ]) {
+      expect(sanitizeName(name)).toBe(name.normalize("NFKC"));
+      expect(sanitizeName(sanitizeName(name))).toBe(name.normalize("NFKC"));
+    }
+  });
+
+  it("保存済みの名前も、表に出す前に今の規則で整える", async () => {
+    const store = new MemoryStore();
+    await solveDaily(store, ALICE, 100_000, "アリス");
+    await solveDaily(store, BOB, 100_000, "ボブ");
+    // 今の規則より前に保存された（今は受け付けない）名前、という想定で保存先に直接入れる
+    await store.setName(ALICE, `x${"\u0301".repeat(11)}`);
+    await store.setName(BOB, "\u0301\u0301");
+    const board = await getLeaderboard(
+      store,
+      { scope: "daily", difficulty: "easy", date: "2026-10-15", playerId: ALICE },
+      T0,
+    );
+    expect(board.entries.map((e) => e.name).sort()).toEqual(
+      [`x${"\u0301".repeat(MAX_MARK_RUN)}`, "名無し"].sort(),
+    );
+    expect(board.me?.name).toBe(`x${"\u0301".repeat(MAX_MARK_RUN)}`);
+  });
+});
+
+describe("記録できる最短の時間（下限）", () => {
+  it("難易度ごとの下限・空きマス数 × 0.25 秒・手の記録の件数 × 0.05 秒のいちばん長いもの", () => {
+    for (const d of DIFFICULTIES) expect(minPlausibleMs(d, 0, 0)).toBe(DIFFICULTY_FLOOR_MS[d]);
+    expect(DIFFICULTY_FLOOR_MS.easy).toBe(15_000);
+    // かんたんの下限 15 秒は、空きマス 60（15 秒）までは変わらず、61 から空きマスの項が上回る
+    expect(minPlausibleMs("easy", 60, 60)).toBe(15_000);
+    expect(minPlausibleMs("easy", 61, 61)).toBe(61 * MIN_MS_PER_CELL);
+    expect(minPlausibleMs("easy", 64, 64)).toBe(16_000);
+    // 手の記録が 300 件を超えると、件数の項が上回る
+    expect(minPlausibleMs("easy", 51, 300)).toBe(15_000);
+    expect(minPlausibleMs("easy", 51, 301)).toBe(301 * MIN_MS_PER_MOVE);
+    expect(minPlausibleMs("master", 64, MAX_MOVES)).toBe(MAX_MOVES * MIN_MS_PER_MOVE);
+  });
+
+  it("今の生成の範囲では、空きマスの項は難易度ごとの下限を超えない（歴代ベストの点検は難易度ごとの下限で判定できる）", () => {
+    for (const d of DIFFICULTIES) {
+      expect([d, (81 - PROFILES[d].minGivens) * MIN_MS_PER_CELL <= DIFFICULTY_FLOOR_MS[d]]).toEqual([
+        d,
+        true,
+      ]);
+    }
+  });
+
+  it("難易度ごとに、下限より 1 ms でも速い送信は断り、同じセッションを下限ちょうどに送り直せば記録する", async () => {
+    // 盤面は生成の速いかんたんのものを、どの難易度にも固定して使う（空きマスの項は下限より短い）
+    const pinned = serializeGrid(generateDaily("2026-10-15", "easy").puzzle);
+    const empties = [...pinned].filter((c) => c === "0").length;
+    expect(empties * MIN_MS_PER_CELL).toBeLessThan(DIFFICULTY_FLOOR_MS.easy);
+    for (const difficulty of DIFFICULTIES) {
+      const store = new MemoryStore();
+      await store.pinDailyPuzzle("2026-10-15", difficulty, pinned);
+      const started = await startDaily(store, { playerId: ALICE, difficulty }, T0);
+      const body = {
+        sessionId: started.sessionId,
+        playerId: ALICE,
+        grid: solutionOf(pinned),
+        name: "a",
+        moves: movesFor(pinned),
+      };
+      const floor = DIFFICULTY_FLOOR_MS[difficulty];
+      await expectError(submitDaily(store, body, T0 + floor - 1), 422, "too fast");
+      await expect(submitDaily(store, body, T0 + floor)).resolves.toMatchObject({
+        difficulty,
+        timeMs: floor,
+      });
+    }
+  });
+
+  it("空きマスの多い盤面では、空きマス数 × 0.25 秒が下限になる（盤面はセッションのもの）", async () => {
+    // ヒント 17 個（空きマス 64）の、解が 1 つの問題
+    const sparse = "000000010400000000020000000000050407008000300001090000300400200050100000000806000";
+    const store = new MemoryStore();
+    await store.pinDailyPuzzle("2026-10-15", "easy", sparse);
+    const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const body = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      grid: solutionOf(sparse),
+      name: "a",
+      moves: movesFor(sparse),
+    };
+    await expectError(submitDaily(store, body, T0 + 64 * MIN_MS_PER_CELL - 1), 422, "too fast");
+    await expect(submitDaily(store, body, T0 + 64 * MIN_MS_PER_CELL)).resolves.toMatchObject({ rank: 1 });
+  });
+
+  it("手の記録が多いと、件数 × 0.05 秒が下限になる", async () => {
+    const store = new MemoryStore();
+    const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const filled = movesFor(started.puzzle);
+    const [, cell, digit] = filled[0];
+    // 同じマスで違う数字を置いてから正しい数字に戻す、を繰り返して 400 件にする
+    const extra: MoveLog = Array.from({ length: 400 - filled.length }, (_, k) => [
+      100_000 + k,
+      cell,
+      k % 2 ? digit : (digit % 9) + 1,
+    ]);
+    const body = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      grid: solutionOf(started.puzzle),
+      name: "a",
+      moves: [...filled, ...extra],
+    };
+    await expectError(submitDaily(store, body, T0 + 400 * MIN_MS_PER_MOVE - 1), 422, "too fast");
+    await expect(submitDaily(store, body, T0 + 400 * MIN_MS_PER_MOVE)).resolves.toMatchObject({ rank: 1 });
+  });
+
+  it("空きマスのどれかに正しい数字を置いた手が無い送信は記録しない（時刻は見ない）", async () => {
+    const store = new MemoryStore();
+    const started = await startDaily(store, { playerId: ALICE, difficulty: "easy" }, T0);
+    const puzzle = parseGrid(started.puzzle);
+    const filled = movesFor(started.puzzle);
+    const [lastT, lastCell, lastDigit] = filled[filled.length - 1];
+    const given = puzzle.findIndex((v) => v !== 0);
+    const base = {
+      sessionId: started.sessionId,
+      playerId: ALICE,
+      grid: solutionOf(started.puzzle),
+      name: "a",
+    };
+    const at = T0 + 100_000;
+    for (const moves of [
+      undefined,
+      [],
+      filled.slice(0, -1),
+      // 最後のマスだけ違う数字
+      [...filled.slice(0, -1), [lastT, lastCell, (lastDigit % 9) + 1]],
+      // 足りない分を最初から入っているマスで数を合わせる
+      [...filled.slice(0, -1), [lastT, given, puzzle[given]]],
+    ]) {
+      await expectError(submitDaily(store, { ...base, moves }, at), 422, "incomplete moves");
+    }
+    // 下限より速くても、手の記録が足りなければ incomplete moves（送り直しても記録できないので、too fast にしない）
+    await expectError(submitDaily(store, { ...base, moves: [] }, T0 + 1), 422, "incomplete moves");
+    await expectError(submitDaily(store, { ...base, moves: filled }, T0 + 1), 422, "too fast");
+    // 時刻が開始より前や、経過時間より後でも、置いた手があれば足りる（時刻は端末が決めるので見ない）
+    const shifted: MoveLog = filled.map(([, c, d], k) => [k % 2 ? -1000 : 10_000_000, c, d]);
+    await expect(submitDaily(store, { ...base, moves: shifted }, at)).resolves.toMatchObject({ rank: 1 });
   });
 });
 

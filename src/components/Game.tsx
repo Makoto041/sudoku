@@ -11,7 +11,7 @@ import {
   stuckCells,
   type GameState,
 } from "@/lib/game/state";
-import { api, ApiError, describeError, type SubmitResponse } from "@/lib/client/api";
+import { api, ApiError, describeError, isTooFast, type SubmitResponse } from "@/lib/client/api";
 import type { Player } from "@/lib/client/player";
 import type { Settings } from "@/lib/client/settings";
 import { KEYS, load, save } from "@/lib/client/storage";
@@ -195,7 +195,8 @@ export function Game({
             return;
           }
         }
-        const retry = !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+        // 速すぎて断られたときも送り直せる（サーバーの時間は進み続けるので、少し待てば記録できる）
+        const retry = !(err instanceof ApiError) || err.status === 0 || err.status >= 500 || isTooFast(err);
         setOutcome({ state: "error", message: describeError(err), retry });
       }
     },
