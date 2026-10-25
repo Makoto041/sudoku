@@ -61,12 +61,13 @@ describe("記録があるか", () => {
     expect(hasLocalData()).toBe(false);
   });
 
-  it("名前・記録・途中の盤面・練習・今日の一問・履歴・通知のどれか 1 つでもあれば記録あり", () => {
+  it("名前・記録・途中の盤面・練習・ヒントを使った手筋・今日の一問・履歴・通知のどれか 1 つでもあれば記録あり", () => {
     const cases: [string, string][] = [
       [KEYS.player, JSON.stringify({ id: PLAYER, name: "名前" })],
       [KEYS.stats, JSON.stringify({ easy: { played: 1, bestMs: 1000, cleanBestMs: null } })],
       [KEYS.free, JSON.stringify({ version: 1 })],
       [KEYS.practice, JSON.stringify({ "naked-single": ["a"] })],
+      [KEYS.weak, JSON.stringify({ counts: { "x-wing": 1 } })],
       [KEYS.dailyResult("2026-10-01", "easy"), JSON.stringify({ date: "2026-10-01", difficulty: "easy" })],
       [KEYS.daily("2026-10-01", "hard"), JSON.stringify({ version: 1 })],
       [KEYS.historyCache, JSON.stringify([{ date: "2026-10-01", difficulty: "easy" }])],
@@ -81,7 +82,7 @@ describe("記録があるか", () => {
     }
   });
 
-  it("空の名前・空の記録・空の練習・true 以外の通知の印は記録なし", () => {
+  it("空の名前・空の記録・空の練習・空のヒントを使った手筋・true 以外の通知の印は記録なし", () => {
     const cases: [string, string][] = [
       [KEYS.player, JSON.stringify({ id: PLAYER, name: "" })],
       [KEYS.player, JSON.stringify({ id: PLAYER, name: 1 })],
@@ -89,6 +90,8 @@ describe("記録があるか", () => {
       [KEYS.stats, JSON.stringify({ junk: { played: 9 } })],
       [KEYS.practice, "{}"],
       [KEYS.practice, JSON.stringify({ "naked-single": [] })],
+      [KEYS.weak, JSON.stringify({ counts: {} })],
+      [KEYS.weak, JSON.stringify({ counts: { chain: 3, "x-wing": 0 } })],
       [KEYS.reminder, "false"],
       [KEYS.reminder, '"true"'],
       [KEYS.movedWithReminder, "false"],
@@ -108,6 +111,7 @@ describe("記録があるか", () => {
       KEYS.stats,
       KEYS.free,
       KEYS.practice,
+      KEYS.weak,
       KEYS.dailyResult("2026-10-01", "easy"),
       KEYS.daily("2026-10-01", "easy"),
       KEYS.historyCache,

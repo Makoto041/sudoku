@@ -12,6 +12,7 @@ import { useGame } from "@/lib/client/useGame";
 import { useGameKeys } from "@/lib/client/useGameKeys";
 import { useStuckAlert } from "@/lib/client/useStuckAlert";
 import { recordFreeClear, type FreeClear } from "@/lib/client/stats";
+import { recordHintTechnique } from "@/lib/client/weakTechniques";
 import type { Achievement } from "@/lib/client/achievements";
 import { formatPoints } from "@/lib/game/score";
 import { Board } from "./Board";
@@ -66,6 +67,9 @@ export function Game({
   const showHint = useCallback(
     (data: Hint) => {
       dispatch({ type: "hintUsed" });
+      // 手筋の名前を見せるので、ヒントを使った手筋として数える（同じヒントは 1 プレイ 1 回。描画のたびには呼ばない）
+      const g = gameRef.current;
+      recordHintTechnique({ mode: g.mode, id: g.seed }, data);
       sfx.hint(5);
       setHint({ data, stage: firstStage(data) });
     },

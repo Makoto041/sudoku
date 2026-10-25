@@ -281,6 +281,7 @@ describe("resetDevice・logoutDevice・deleteAccount", () => {
     KEYS.stats,
     KEYS.historyCache,
     KEYS.achievements,
+    KEYS.weak,
     KEYS.dailyResult("2026-10-19", "easy"),
     KEYS.dailyResult("2026-10-18", "extreme"),
     KEYS.daily("2026-10-19", "hard"),
@@ -300,7 +301,7 @@ describe("resetDevice・logoutDevice・deleteAccount", () => {
     for (const key of [...ERASED, ...KEPT]) store.set(key, "true");
   };
 
-  it("端末の記録（プレイヤー・記録・履歴・実績・今日の一問の結果と途中）だけを消し、通知の印や設定は残す", () => {
+  it("端末の記録（プレイヤー・記録・履歴・実績・ヒントを使った手筋・今日の一問の結果と途中）だけを消し、通知の印や設定は残す", () => {
     fill();
     account.resetDevice();
     expect([...store.keys()].sort()).toEqual([...KEPT].sort());
