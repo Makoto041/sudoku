@@ -557,21 +557,29 @@ export function App() {
     backToSignedOut();
   };
 
-  // 遊び方の「練習してみる」：一覧を開き、局面のデータが揃ったら最初の項目（ネイキッドシングル）を開く。
+  // 遊び方の「練習してみる」と記録の「ヒントを使った手筋」：一覧を開き、局面のデータが揃ったらその項目を開く
+  // （練習してみるは最初の項目のネイキッドシングル）。
   // 一覧の描画後に開くので、履歴は ホーム → 一覧 → 局面 になる（戻ると一覧、もう一度でホーム）。
   // 揃う前に一覧から離れたら開かない。読み込みに失敗しても、一覧の再試行で揃えばそのまま開く
-  const [tryPractice, setTryPractice] = useState(false);
+  const [tryPractice, setTryPractice] = useState<PracticeKey | null>(null);
   useEffect(() => {
     if (!tryPractice) return;
     const onList = view.name === "practiceList";
     if (onList && !practice) return;
-    setTryPractice(false);
-    if (onList) openPractice("naked-single");
+    setTryPractice(null);
+    if (onList) openPractice(tryPractice);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tryPractice, view.name, practice]);
   const startTryPractice = () => {
     setSheet(null);
-    setTryPractice(true);
+    setTryPractice("naked-single");
+    openPracticeList();
+  };
+  // 記録から開くときは、記録の履歴を一覧に置き換える（ホーム → 一覧 → 局面。一覧の「ホームに戻る」とブラウザの戻るがそろう。
+  // 記録の上に積むと、一覧から戻ったときに記録へ戻すための処理が別に要る）
+  const startWeakPractice = (key: PracticeKey) => {
+    history.replaceState({ v: "practiceList" }, "");
+    setTryPractice(key);
     openPracticeList();
   };
 
@@ -735,7 +743,9 @@ export function App() {
           }
         />
       )}
-      {view.name === "records" && <Records today={today} playerId={player.id} onBack={goHome} />}
+      {view.name === "records" && (
+        <Records today={today} playerId={player.id} onBack={goHome} onPractice={startWeakPractice} />
+      )}
       {view.name === "practiceList" && (
         <PracticeList
           items={practice}

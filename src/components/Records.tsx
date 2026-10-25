@@ -9,7 +9,8 @@ import { loadRecords } from "@/lib/client/history";
 import { monthView, summarize, type ClearRecord } from "@/lib/client/records";
 import { formatPlayTime, freeSummary, loadStats, totalPlayMs } from "@/lib/client/stats";
 import { ACHIEVEMENTS, loadUnlocked, updateAchievements, type Unlocked } from "@/lib/client/achievements";
-import { loadPractice, type PracticeItem } from "@/lib/sudoku/practice";
+import { loadWeakCounts, topWeakTechniques } from "@/lib/client/weakTechniques";
+import { loadPractice, type PracticeItem, type PracticeKey } from "@/lib/sudoku/practice";
 import { Check, ChevronLeft, ChevronRight } from "./icons";
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
@@ -19,9 +20,17 @@ const points = (n: number | null) => (n !== null ? formatPoints(n) : NONE);
 /** 「2026/10/17」 */
 const slashDate = (date: string) => date.split("-").map(Number).join("/");
 
-type Props = { today: string; playerId: string; onBack: () => void };
+type Props = {
+  today: string;
+  playerId: string;
+  onBack: () => void;
+  /** ヒントを使った手筋の行から、その手筋の練習を開く */
+  onPractice: (key: PracticeKey) => void;
+};
 
-export function Records({ today, playerId, onBack }: Props) {
+export function Records({ today, playerId, onBack, onPractice }: Props) {
+  // ヒントを使った手筋の上位 3 件（端末内だけの回数）。開いている間は増えないので、開いたときに 1 回読む
+  const [weak] = useState(() => topWeakTechniques(loadWeakCounts()));
   const [records, setRecords] = useState<ClearRecord[] | null>(null);
   const [offline, setOffline] = useState(false);
   const [ym, setYm] = useState(() => ({ y: Number(today.slice(0, 4)), m: Number(today.slice(5, 7)) }));
@@ -142,6 +151,28 @@ export function Records({ today, playerId, onBack }: Props) {
           </tbody>
         </table>
       </section>
+
+      {weak.length > 0 && (
+        <section className="card" aria-label="ヒントを使った手筋">
+          <h2 className="card-title">ヒントを使った手筋</h2>
+          <ul className="weak-list">
+            {weak.map((row) => (
+              <li key={row.key}>
+                <button
+                  type="button"
+                  className="weak-row"
+                  aria-label={`${row.name} ${row.count}回 練習を開く`}
+                  onClick={() => onPractice(row.key)}
+                >
+                  <span className="weak-name">{row.name}</span>
+                  <span className="weak-count mono">{row.count}回</span>
+                  <ChevronRight size={18} className="row-chevron" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <div className="diff-tabs" role="tablist" aria-label="難易度">
         {DIFFICULTIES.map((d) => (

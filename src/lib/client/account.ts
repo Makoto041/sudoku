@@ -295,10 +295,12 @@ export async function applyAccount(account: AccountView, device: Player): Promis
 }
 
 /** ログアウトで消す端末の記録。設定・途中のフリープレイ・練習の進み具合・案内・通知の印などは残す */
-const RESET_KEYS = [KEYS.player, KEYS.stats, KEYS.historyCache, KEYS.achievements];
+const RESET_KEYS = [KEYS.player, KEYS.stats, KEYS.historyCache, KEYS.achievements, KEYS.weak];
 const RESET_PREFIXES = ["sudoku:result:", "sudoku:daily:"];
 
-/** 端末の記録（プレイヤー・フリープレイの記録・履歴・実績・今日の一問の結果と途中の盤面）を消す */
+/**
+ * 端末の記録（プレイヤー・フリープレイの記録・履歴・実績・ヒントを使った手筋・今日の一問の結果と途中の盤面）を消す
+ */
 export function resetDevice() {
   for (const key of RESET_KEYS) remove(key);
   for (const prefix of RESET_PREFIXES) removeByPrefix(prefix);

@@ -2220,6 +2220,94 @@ test("遊び方の「練習してみる」でネイキッドシングルの練�
   }
 });
 
+/** 記録画面の「ヒントを使った手筋」のカード */
+const weakCard = (page: Page) => page.getByRole("region", { name: "ヒントを使った手筋", exact: true });
+
+test("ヒントを使った手筋：ヒントで見せた手筋を記録画面に回数で出し、行からその手筋の練習を開く。同じヒントは 1 回だけ数え、0 件なら出さない", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const records = page.getByRole("button", { name: "記録" });
+  // まだヒントを使っていなければ出さない
+  await records.click();
+  await expect(page.getByRole("region", { name: "全体", exact: true })).toBeVisible();
+  await expect(weakCard(page)).toHaveCount(0);
+  await page.getByRole("button", { name: "戻る" }).click();
+
+  await page
+    .getByRole("button", { name: /かんたん/ })
+    .last()
+    .click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const hintTool = page.locator(".tools").getByRole("button", { name: /ヒント$/ });
+  const panel = page.locator(".hint-panel");
+  await hintTool.click();
+  const title = (await panel.locator(".hint-title").textContent())!;
+  const item = PRACTICE.find((i) => i.name === title);
+  expect(item, `手筋 ${title}`).toBeDefined();
+  // 閉じて開き直した同じヒントは数えない（ヒントの回数は開くたびに増える）
+  await panel.getByRole("button", { name: "ヒントを閉じる" }).click();
+  await expect(panel).toBeHidden();
+  await hintTool.click();
+  await expect(panel.locator(".hint-title")).toHaveText(title);
+  await expect(page.locator(".tool-count")).toHaveText("2");
+  await panel.getByRole("button", { name: "ヒントを閉じる" }).click();
+  const stored = JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:weak")))!);
+  expect(Object.values(stored.counts)).toEqual([1]);
+
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await records.click();
+  const row = weakCard(page).getByRole("button", { name: `${title} 1回 練習を開く` });
+  await expect(weakCard(page).getByRole("button")).toHaveCount(1);
+  await expect(row).toBeVisible();
+  await expect(row.locator(".weak-count")).toHaveText("1回");
+  await shot(page, "records-weak");
+
+  // 行からその手筋の練習へ。戻ると一覧、もう一度でホーム
+  await row.click();
+  await expect(page.getByRole("heading", { name: item!.name })).toBeVisible();
+  await expect(page.locator(".bar-kicker")).toHaveText(`手筋の練習 · 1/${item!.positions.length}`);
+  // 練習のヒントも数える（別のプレイなので、同じ手筋でも数え直す）
+  await page.locator(".tools").getByRole("button", { name: "ヒント", exact: true }).click();
+  await expect(panel.locator(".hint-title")).toHaveText(item!.name);
+  await page.goBack();
+  await expect(page.locator(".practice-row")).toHaveCount(PRACTICE.length);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await records.click();
+  await expect(weakCard(page).getByRole("button", { name: `${title} 2回 練習を開く` })).toBeVisible();
+});
+
+test("ヒントを使った手筋：回数の多い 3 件だけを出す（ロックドキャンディデートはまとめる）。壊れた保存データでは出さず、落ちない", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() =>
+    localStorage.setItem(
+      "sudoku:weak",
+      JSON.stringify({
+        counts: { "naked-single": 1, "x-wing": 4, pointing: 2, claiming: 1, swordfish: 3 },
+      }),
+    ),
+  );
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(weakCard(page).locator(".weak-name")).toHaveText([
+    "X-Wing",
+    "ロックドキャンディデート",
+    "ソードフィッシュ",
+  ]);
+  await expect(weakCard(page).locator(".weak-count")).toHaveText(["4回", "3回", "3回"]);
+  await page.getByRole("button", { name: "戻る" }).click();
+
+  for (const raw of ["{", "[1]", JSON.stringify({ counts: { "x-wing": "4", chain: 2 } })]) {
+    await page.evaluate((v) => localStorage.setItem("sudoku:weak", v), raw);
+    await page.getByRole("button", { name: "記録" }).click();
+    await expect(page.getByRole("region", { name: "全体", exact: true }), raw).toBeVisible();
+    await expect(weakCard(page), raw).toHaveCount(0);
+    await page.getByRole("button", { name: "戻る" }).click();
+  }
+});
+
 test("初回の案内：閉じると、再読み込みしても出ない", async ({ page }) => {
   await page.goto("/");
   const hint = howtoHint(page);
@@ -4110,6 +4198,7 @@ test.describe("アカウント（パスキー）", () => {
       "sudoku:stats": { easy: EASY },
       "sudoku:result:2026-10-01:easy": result,
       "sudoku:daily:2026-10-01:easy": { version: 1 },
+      "sudoku:weak": { counts: { "x-wing": 2 } },
     });
     const registered = page.waitForResponse(isPushApi("POST"));
     await page.goto("/");
@@ -4143,6 +4232,7 @@ test.describe("アカウント（パスキー）", () => {
     expect(await stored(page, "sudoku:stats")).toBeNull();
     expect(await stored(page, "sudoku:result:2026-10-01:easy")).toBeNull();
     expect(await stored(page, "sudoku:daily:2026-10-01:easy")).toBeNull();
+    expect(await stored(page, "sudoku:weak")).toBeNull();
     expect(await reminderFlag(page)).toBe("true");
     expect(sent.map((s) => (s.body as { playerId: string }).playerId)).toEqual([owner.id, fresh.id]);
     expect(order).toEqual(["PUT /api/auth/stats", "POST /api/auth/logout"]);
