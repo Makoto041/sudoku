@@ -294,7 +294,115 @@ describe("sanitizeName", () => {
     }
   });
 
-  it("正当な結合（絵文字の ZWJ・異体字セレクタ・キーキャップ・肌の色、タイ語・ヒンディー語・チベット語）は残す", () => {
+  it("文字と結合文字の間の制御文字を除いてできた組は、1 回目で合成する（制御文字を NFKC より先に除く）", () => {
+    for (const [raw, expected] of [
+      // e・ゼロ幅スペース・アキュート → é（合成済みの U+00E9）
+      ["e\u200b\u0301x", "\u00e9x"],
+      // 半角のカ・ソフトハイフン・半角の濁点 → ガ（U+30AC）
+      ["\uff76\u00ad\uff9e", "\u30ac"],
+      // ハングルの字母 ᄀ・ゼロ幅スペース・ᅡ → 가（U+AC00）
+      ["\u1100\u200b\u1161", "\uac00"],
+      ["a\ufeff\u0308b\tc", "\u00e4bc"],
+    ]) {
+      expect([raw, sanitizeName(raw)]).toEqual([raw, expected]);
+      expect(sanitizeName(expected)).toBe(expected);
+    }
+  });
+
+  it("2 回通しても結果は変わらない（結合文字・制御文字・ZWJ の絵文字・半角カナ・ハングルを混ぜた 5,000 件）", () => {
+    const pieces = [
+      ..."abcexyz ",
+      "\uff21",
+      "\u3000",
+      "\u00a0",
+      "\u2028",
+      "\ufb01",
+      "\u2460",
+      "\u3300",
+      // 結合文字
+      "\u0301",
+      "\u0300",
+      "\u0308",
+      "\u0316",
+      "\u0327",
+      "\u3099",
+      "\u309a",
+      "\u20e3",
+      "\u034f",
+      // 制御文字・ゼロ幅の文字・向きを変える文字
+      "\u200b",
+      "\u200c",
+      "\u00ad",
+      "\ufeff",
+      "\u2060",
+      "\t",
+      "\n",
+      "\u0000",
+      "\u202e",
+      "\u2066",
+      "\u{e0041}",
+      "\ue000",
+      // ZWJ・異体字セレクタ・絵文字・国旗の文字・肌の色
+      "\u200d",
+      "\ufe0f",
+      "👨",
+      "👩",
+      "❤",
+      "🔥",
+      "🏽",
+      "🇯",
+      "🇵",
+      // かな・半角カナ・濁点
+      "か",
+      "は",
+      "\uff76",
+      "\uff8a",
+      "\uff9e",
+      "\uff9f",
+      "\uff73",
+      // ハングルの字母・音節・埋め字
+      "\u1100",
+      "\u1161",
+      "\u11a8",
+      "\uac00",
+      "\u3164",
+      "\uffa0",
+      "\u115f",
+      // タイ語・デーヴァナーガリー・チベット語・白紙に描かれる文字
+      "ท",
+      "\u0e35",
+      "\u0e48",
+      "क",
+      "\u094d",
+      "ष",
+      "བ",
+      "\u0f92",
+      "\u0f74",
+      "\u2800",
+      "\u{1d159}",
+    ];
+    // 決まった種の乱数（mulberry32）。失敗したときに同じ入力で再現できる
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    let named = 0;
+    for (let n = 0; n < 5000; n++) {
+      const length = 1 + Math.floor(random() * 24);
+      const raw = Array.from({ length }, () => pieces[Math.floor(random() * pieces.length)]).join("");
+      const once = sanitizeName(raw);
+      if (once === null) continue;
+      named++;
+      expect([raw, sanitizeName(once)]).toEqual([raw, once]);
+    }
+    // ほとんどの入力が名前として残る（空の判定だけを確かめていない）
+    expect(named).toBeGreaterThan(4000);
+  });
+
+  it("正当な名前（日本語・半角カナ・濁点・絵文字の ZWJ・異体字セレクタ・国旗・キーキャップ・肌の色、タイ語・ヒンディー語・チベット語）は壊さない", () => {
     for (const name of [
       "1\ufe0f\u20e3",
       "👨\u200d👩\u200d👧\u200d👦",
@@ -305,8 +413,16 @@ describe("sanitizeName", () => {
       "नमस्ते",
       "क्षत्रिय",
       "བསྒྲུབས",
+      "テスト太郎",
+      "ガギグゲゴ",
+      "カ\u3099キ\u3099",
+      "ﾃｽﾄﾀﾛｳ",
+      "ｶﾞｷﾞﾊﾟ",
+      "🇯🇵🇺🇸",
+      "#\ufe0f\u20e3",
     ]) {
       expect(sanitizeName(name)).toBe(name.normalize("NFKC"));
+      expect(sanitizeName(sanitizeName(name))).toBe(name.normalize("NFKC"));
     }
   });
 

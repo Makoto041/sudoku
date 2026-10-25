@@ -123,17 +123,18 @@ export function assertDate(value: unknown): string {
 const BLANK_NAME_RE = /^[\p{M}\p{Z}\u200d\ufe0f\u115f\u1160\u3164\uffa0\u2800\u{1d159}]*$/u;
 
 /**
- * 表示名を整える：NFKC 正規化、制御文字と前後の空白を除き、最大 NAME_MAX 文字。
+ * 表示名を整える：制御文字を除いてから NFKC 正規化し、前後の空白を除き、最大 NAME_MAX 文字。
  * 制御文字（\p{C}）には、向きを変える文字（U+202A〜202E・U+2066〜2069・U+200E/200F・U+061C）と、ゼロ幅の文字
  * （U+200B・U+200C・U+2060・U+FEFF など）も含む。絵文字の結合（ZWJ・異体字セレクタ）は残すが、続けて置ける結合文字と
  * ZWJ は MAX_MARK_RUN 個までにし、先頭の空白・結合文字・ZWJ と末尾の空白・ZWJ は落とす。見た目が空になる名前は受け付けない。
- * 2 回通しても結果は変わらない。保存済みの名前も、表示する前にこれを通す（getLeaderboard）
+ * 2 回通しても結果は変わらない（制御文字を NFKC より先に除くので、文字と結合文字の間に挟まった制御文字を除いて
+ * できた組も 1 回目で合成される。NFKC は制御文字を作らない）。保存済みの名前も、表示する前にこれを通す（getLeaderboard）
  */
 export function sanitizeName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const cleaned = value
-    .normalize("NFKC")
     .replace(/(?![\u200d\ufe0f])\p{C}/gu, "")
+    .normalize("NFKC")
     // 長さを数える前に減らす（重ねた結合文字で NAME_MAX を使い切らせない）
     .replace(MARK_RUN_RE, "$1")
     .replace(/\s+/g, " ")
