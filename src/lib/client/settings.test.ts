@@ -6,25 +6,26 @@ import { KEYS } from "./storage";
 const { store, memory } = installMemoryStorage();
 
 describe("設定", () => {
-  it("保存が無ければ既定（テーマは自動・文字サイズは標準）", () => {
+  it("保存が無ければ既定（テーマは自動・文字サイズは標準・時計と得点は隠さない）", () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
     expect(DEFAULT_SETTINGS.theme).toBe("auto");
     expect(DEFAULT_SETTINGS.textSize).toBe("normal");
+    expect(DEFAULT_SETTINGS.hideClock).toBe(false);
   });
 
-  it("保存したテーマと文字サイズを読み戻す。設定の保存先だけに書く", () => {
-    for (const [theme, textSize] of [
-      ["light", "large"],
-      ["dark", "xlarge"],
-      ["auto", "normal"],
+  it("保存したテーマ・文字サイズ・時計と得点を隠すかを読み戻す。設定の保存先だけに書く", () => {
+    for (const [theme, textSize, hideClock] of [
+      ["light", "large", true],
+      ["dark", "xlarge", false],
+      ["auto", "normal", true],
     ] as const) {
-      saveSettings({ ...DEFAULT_SETTINGS, sound: false, theme, textSize });
-      expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, sound: false, theme, textSize });
+      saveSettings({ ...DEFAULT_SETTINGS, sound: false, theme, textSize, hideClock });
+      expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, sound: false, theme, textSize, hideClock });
     }
     expect([...store.keys()]).toEqual([KEYS.settings]);
   });
 
-  it("前の版の保存データ（テーマ・文字サイズが無い）は、ほかの項目を残して既定のテーマと文字サイズにする", () => {
+  it("前の版の保存データ（テーマ・文字サイズ・時計と得点を隠すかが無い）は、ほかの項目を残して既定にする", () => {
     store.set(KEYS.settings, JSON.stringify({ sound: false, confirmHint: true }));
     expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, sound: false, confirmHint: true });
   });
