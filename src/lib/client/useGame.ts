@@ -141,10 +141,15 @@ export function useGame(
   /** 入力を反映する。状態が変わったかを返す */
   const dispatch = useCallback(
     (raw: Action): boolean => {
-      // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すかの設定を付ける
+      // 置く操作には経過時間（スコアの速さに使う）と、周りのメモを消すか・間違いの表示（ミスの上限が効くか）の設定を付ける
       const action: Action =
         raw.type === "input" || raw.type === "hint"
-          ? { ...raw, t: elapsedOf(gameRef.current), clearPeers: options.autoClearNotes }
+          ? {
+              ...raw,
+              t: elapsedOf(gameRef.current),
+              clearPeers: options.autoClearNotes,
+              showMistakes: options.showMistakes,
+            }
           : raw;
       const [next, effects] = reduce(gameRef.current, action);
       const changed = next !== gameRef.current;

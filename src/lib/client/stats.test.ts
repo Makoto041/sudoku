@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { formatPoints } from "@/lib/game/score";
-import { formatTime } from "@/lib/game/state";
+import { formatTime, newGame, reduce } from "@/lib/game/state";
 import type { Difficulty } from "@/lib/sudoku/core";
+import { generatePuzzle } from "@/lib/sudoku/generator";
+import { updateAchievements } from "./achievements";
 import { summarize } from "./records";
 import {
   MAX_COUNT,
@@ -81,6 +83,35 @@ describe("フリープレイの開始", () => {
     const s = loadStats();
     expect(s.easy).toEqual({ played: 0, bestMs: null, cleanBestMs: null, bestPoints: null, started: 3 });
     expect(s.hard?.abandonedMs).toBe(MAX_MS);
+  });
+
+  it("ミスが上限に達して終えた問題はクリアに数えず、同じ盤面でやり直す・新しく始めるときに途中でやめた時間に足す", () => {
+    const p = generatePuzzle("stats-mistake-limit", "easy");
+    const first = newGame({
+      mode: "free",
+      difficulty: "easy",
+      seed: "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+      mistakeLimit: 3,
+    });
+    // App の beginFree と同じ順：途中の問題（無ければ null）を渡して開始を数える
+    recordFreeStart("easy", null);
+    let failed = reduce(first, { type: "tick", ms: 42_000 })[0];
+    for (const cell of p.puzzle.flatMap((v, i) => (v ? [] : [i])).slice(0, 3)) {
+      failed = reduce(failed, { type: "select", cell })[0];
+      failed = reduce(failed, { type: "input", digit: (p.solution[cell] % 9) + 1, showMistakes: true })[0];
+    }
+    expect(failed.status).toBe("failed");
+    // 解き終えた問題だけを渡さない（beginFree）ので、上限で終えた問題は途中の問題として渡る
+    recordFreeStart("easy", failed.status !== "solved" ? failed : null);
+    const s = loadStats().easy!;
+    expect(s).toMatchObject({ played: 0, started: 2, abandonedMs: 42_000, bestMs: null, bestPoints: null });
+    expect(s.trackedClears).toBeUndefined();
+    expect(freeSummary(s)).toMatchObject({ started: 2, clears: 0, clearRate: 0, avgMs: null });
+    // フリープレイの実績（クリア数・最速から判定する）も解除しない
+    const { unlocked } = updateAchievements("2026-10-25", null, false);
+    expect(Object.keys(unlocked)).toEqual([]);
   });
 
   it("クリアしても開始数と途中でやめた時間は残る", () => {

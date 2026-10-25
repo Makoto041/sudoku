@@ -54,9 +54,6 @@ export function Result({
     const { counts, stalled } = techniqueProfile(game.puzzle);
     return { rows: techniqueRows(counts), stalled };
   }, [game.puzzle]);
-  // このプレイで最初に置いた解答と違う数字。端末の保存データにだけあり、共有する文には入れない
-  const mistake = firstMistakeLines(game.firstMistake);
-
   const share = async () => {
     sfx.tap();
     const label = DIFFICULTY_LABEL[game.difficulty];
@@ -170,15 +167,7 @@ export function Result({
           </section>
         )}
 
-        {mistake && (
-          <section className="result-techniques" aria-labelledby="result-mistake-title">
-            <h3 id="result-mistake-title" className="result-techniques-title">
-              最初の誤り
-            </h3>
-            <p className="result-mistake">{mistake.main}</p>
-            {mistake.technique && <p className="result-techniques-note">{mistake.technique}</p>}
-          </section>
-        )}
+        <FirstMistake game={game} />
 
         <div className="result-actions">
           {isDaily ? (
@@ -199,6 +188,61 @@ export function Result({
               ホーム
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * このプレイで最初に置いた解答と違う数字（クリアの結果と、ミスが上限に達した画面）。無ければ何も出さない。
+ * 端末の保存データにだけあり、共有する文には入れない
+ */
+function FirstMistake({ game }: { game: GameState }) {
+  const mistake = firstMistakeLines(game.firstMistake);
+  if (!mistake) return null;
+  return (
+    <section className="result-techniques" aria-labelledby="result-mistake-title">
+      <h3 id="result-mistake-title" className="result-techniques-title">
+        最初の誤り
+      </h3>
+      <p className="result-mistake">{mistake.main}</p>
+      {mistake.technique && <p className="result-techniques-note">{mistake.technique}</p>}
+    </section>
+  );
+}
+
+/**
+ * ミスが上限に達して終えたときの画面（フリープレイだけ）。クリアではないので、点数・記録・共有は出さない。
+ * 同じ盤面でやり直すか、ホームに戻る
+ */
+export function Failed({
+  game,
+  onRetry,
+  onHome,
+}: {
+  game: GameState;
+  onRetry: () => void;
+  onHome: () => void;
+}) {
+  return (
+    <div
+      className="sheet-backdrop result-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="ミスが上限に達しました"
+    >
+      <div className="sheet result">
+        <div className="result-kicker">フリープレイ · {DIFFICULTY_LABEL[game.difficulty]}</div>
+        <h2 className="result-title is-failed">ミスが上限に達しました</h2>
+        <FirstMistake game={game} />
+        <div className="result-actions">
+          <button type="button" className="btn primary" onClick={onRetry}>
+            同じ盤面でやり直す
+          </button>
+          <button type="button" className="btn" onClick={onHome}>
+            ホームに戻る
+          </button>
         </div>
       </div>
     </div>

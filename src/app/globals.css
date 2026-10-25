@@ -1781,6 +1781,13 @@ p {
   letter-spacing: 0.08em;
 }
 
+/* ミスが上限に達したときの見出し。クリアより長いので小さくし、幅 320px でも 1 行に収める（文字サイズの設定でも変えない） */
+.result-title.is-failed {
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  margin: 4px 0 12px;
+}
+
 .result-score {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;

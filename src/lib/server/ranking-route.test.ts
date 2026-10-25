@@ -4,10 +4,13 @@ import { POST as submitRoute } from "@/app/api/daily/submit/route";
 import { GET as leaderboardRoute } from "@/app/api/leaderboard/route";
 import { POST as renameRoute } from "@/app/api/player/route";
 import { POST as claimRoute } from "@/app/api/player/claim/route";
+import { GET as historyRoute } from "@/app/api/player/history/route";
 import { POST as transferRoute } from "@/app/api/player/transfer/route";
+import { PLAYER_ID_HEADER } from "@/lib/player-id-header";
 import { parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import { solve } from "@/lib/sudoku/solver";
 import { handle } from "./http";
+import { PLAYER_ID_QUERY_SUNSET } from "./player-id";
 import {
   MAX_MOVES,
   NAME_MAX,
@@ -31,6 +34,10 @@ const post = (path: string, body: string, headers: Record<string, string> = {}) 
     body,
     headers: { "content-type": "application/json", ...headers },
   });
+
+/** ランキングの表の取得（GET /api/leaderboard） */
+const get = (query: string, headers: HeadersInit = {}) =>
+  leaderboardRoute(new Request(`http://localhost/api/leaderboard?${query}`, { headers }));
 
 async function read(res: Response, secrets: string[] = []) {
   const text = await res.text();
@@ -214,22 +221,231 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
 });
 
 describe("ランキングの表の Cache-Control", () => {
-  const get = (query: string) => leaderboardRoute(new Request(`http://localhost/api/leaderboard?${query}`));
-
-  it("playerId の無い要求の成功は CDN に短くキャッシュさせ、playerId 付きとエラーは no-store", async () => {
+  it("playerId の無い要求の成功は CDN に短くキャッシュさせ、playerId 付きは private, no-store、エラーは no-store。どれも Vary: x-player-id", async () => {
     at(20);
     const shared = await get("scope=daily&difficulty=easy");
     expect(shared.status).toBe(200);
     expect(shared.headers.get("cache-control")).toBe("public, s-maxage=10, stale-while-revalidate=30");
     const best = await get("scope=best&difficulty=easy");
     expect(best.headers.get("cache-control")).toBe("public, s-maxage=10, stale-while-revalidate=30");
-    const mine = await get(`scope=daily&difficulty=easy&playerId=${ALICE}`);
-    expect(mine.status).toBe(200);
-    expect(mine.headers.get("cache-control")).toBe("no-store");
-    for (const query of ["scope=daily&difficulty=insane", `difficulty=easy&playerId=nope`]) {
-      const res = await get(query);
+    // クエリの空の playerId は今までどおり無いものとする
+    const empty = await get("scope=best&difficulty=easy&playerId=");
+    expect(empty.headers.get("cache-control")).toBe("public, s-maxage=10, stale-while-revalidate=30");
+    for (const res of [
+      await get("scope=daily&difficulty=easy", { [PLAYER_ID_HEADER]: ALICE }),
+      await get(`scope=daily&difficulty=easy&playerId=${ALICE}`),
+    ]) {
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+    }
+    for (const [query, headers] of [
+      ["scope=daily&difficulty=insane", {}],
+      ["difficulty=easy&playerId=nope", {}],
+      ["difficulty=easy", { [PLAYER_ID_HEADER]: "nope" }],
+    ] as const) {
+      const res = await get(query, headers);
       expect([query, res.status, res.headers.get("cache-control")]).toEqual([query, 400, "no-store"]);
     }
+    for (const res of [shared, best, empty, await get("difficulty=easy", { [PLAYER_ID_HEADER]: ALICE })]) {
+      expect(res.headers.get("vary")).toContain(PLAYER_ID_HEADER);
+    }
+  });
+});
+
+describe("GET の playerId（x-player-id ヘッダーと、移行期間のクエリ）", () => {
+  // ダミーの ID。英字を含める（大文字にすると形が変わる）。ほかのテストの記録と混ぜない
+  const ANN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const board = "scope=best&difficulty=expert";
+  const history = (query: string, headers: HeadersInit = {}) =>
+    historyRoute(new Request(`http://localhost/api/player/history${query}`, { headers }));
+  type Board = { me: { name: string | null } | null; entries: { name: string; isMe: boolean }[] };
+  /** 応答の本文とヘッダーに、どの playerId も含まないことを確かめて読む */
+  async function readBoard(res: Response) {
+    for (const [, value] of res.headers) for (const id of [ANN, BOB]) expect(value).not.toContain(id);
+    const { status, body } = await read(res, [ANN, BOB]);
+    return { status, body: body as Board, cache: res.headers.get("cache-control") };
+  }
+  const meOf = (b: Board) => [b.me?.name, b.entries.filter((e) => e.isMe).map((e) => e.name)];
+
+  beforeEach(async () => {
+    // 歴代の表に 2 人（どちらの playerId で読んだかを、自分の順位で見分ける）
+    const store = getStore()!;
+    await store.setName(ANN, "アリス");
+    await store.setName(BOB, "ボブ");
+    await store.record("2020-01-01", "expert", { playerId: ANN, timeMs: 600_000, points: 9000 });
+    await store.record("2020-01-01", "expert", { playerId: BOB, timeMs: 700_000, points: 8000 });
+    await store.addHistory(ANN, { date: "2020-01-01", difficulty: "expert", points: 9000, timeMs: 600_000 });
+    at(40);
+  });
+
+  it("ヘッダーの playerId で自分の順位を返す。クエリにもあればヘッダーを使う。応答に Deprecation は付けない", async () => {
+    const mine = await get(board, { [PLAYER_ID_HEADER]: ANN });
+    const both = await get(`${board}&playerId=${BOB}`, { [PLAYER_ID_HEADER]: ANN });
+    for (const res of [mine, both]) {
+      expect(res.headers.get("deprecation")).toBeNull();
+      expect(res.headers.get("sunset")).toBeNull();
+      const { status, body, cache } = await readBoard(res);
+      expect([status, cache, ...meOf(body)]).toEqual([200, "private, no-store", "アリス", ["アリス"]]);
+    }
+    const res = await history("", { [PLAYER_ID_HEADER]: ANN });
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("deprecation")).toBeNull();
+    expect(await read(res, [ANN])).toEqual({
+      status: 200,
+      body: { entries: [{ date: "2020-01-01", difficulty: "expert", points: 9000, timeMs: 600_000 }] },
+    });
+  });
+
+  it("ヘッダーが無ければ、期限の前はクエリの playerId も受け付け、成功した応答に Deprecation と Sunset を付ける。何も記録しない", async () => {
+    const log = (["error", "warn", "info", "log", "debug"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => {}),
+    );
+    const res = await get(`${board}&playerId=${BOB}`);
+    const old = await history(`?playerId=${ANN}`);
+    for (const r of [res, old]) {
+      // 2026-10-25 の日本時間 0 時と、2026-12-20 の日本時間 0 時
+      expect([r.headers.get("deprecation"), r.headers.get("sunset")]).toEqual([
+        "@1792854000",
+        "Sat, 19 Dec 2026 15:00:00 GMT",
+      ]);
+      expect(r.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(res.headers.get("vary")).toContain(PLAYER_ID_HEADER);
+    const { status, body } = await readBoard(res);
+    expect([status, ...meOf(body)]).toEqual([200, "ボブ", ["ボブ"]]);
+    expect((await read(old, [ANN])).status).toBe(200);
+    // 形の違うクエリの値は 400 で、Deprecation は付けない
+    const bad = await get(`${board}&playerId=nope`);
+    expect([bad.status, bad.headers.get("deprecation"), bad.headers.get("sunset")]).toEqual([
+      400,
+      null,
+      null,
+    ]);
+    for (const spy of log) expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("期限（PLAYER_ID_QUERY_SUNSET）からは、クエリに playerId があれば 400（ヘッダーがあっても）。1ms 前までは受け付ける", async () => {
+    const sunset = Date.parse(PLAYER_ID_QUERY_SUNSET);
+    expect(sunset).toBe(Date.parse("2026-12-19T15:00:00Z"));
+    vi.setSystemTime(sunset - 1);
+    expect((await get(`${board}&playerId=${BOB}`)).status).toBe(200);
+    expect((await history(`?playerId=${ANN}`)).status).toBe(200);
+    vi.setSystemTime(sunset);
+    for (const res of [
+      await get(`${board}&playerId=${BOB}`),
+      await get(`${board}&playerId=${BOB}`, { [PLAYER_ID_HEADER]: ANN }),
+      await get(`${board}&playerId=`),
+      await history(`?playerId=${ANN}`),
+      await history(`?playerId=${ANN}`, { [PLAYER_ID_HEADER]: ANN }),
+    ]) {
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("deprecation")).toBeNull();
+      expect(await read(res, [ANN, BOB])).toEqual({ status: 400, body: { error: "player id in query" } });
+    }
+    // ヘッダーだけの要求と、playerId の無い要求は今までどおり
+    const mine = await readBoard(await get(board, { [PLAYER_ID_HEADER]: ANN }));
+    expect([mine.status, mine.cache, ...meOf(mine.body)]).toEqual([
+      200,
+      "private, no-store",
+      "アリス",
+      ["アリス"],
+    ]);
+    const shared = await readBoard(await get(board));
+    expect([shared.status, shared.cache, ...meOf(shared.body)]).toEqual([
+      200,
+      "public, s-maxage=10, stale-while-revalidate=30",
+      undefined,
+      [],
+    ]);
+    expect((await history("", { [PLAYER_ID_HEADER]: ANN })).status).toBe(200);
+  });
+
+  it("ヘッダーの値の形が違えば（空・大文字・2 つ・余計な文字）400 invalid player id で、クエリの正しい値も使わない", async () => {
+    const twice = new Headers();
+    twice.append(PLAYER_ID_HEADER, ANN);
+    twice.append(PLAYER_ID_HEADER, BOB);
+    for (const headers of [
+      { [PLAYER_ID_HEADER]: "" },
+      { [PLAYER_ID_HEADER]: ANN.toUpperCase() },
+      { [PLAYER_ID_HEADER]: `${ANN}0` },
+      { [PLAYER_ID_HEADER]: `{${ANN}}` },
+      twice,
+    ]) {
+      for (const res of [
+        await get(board, headers),
+        await get(`${board}&playerId=${BOB}`, headers),
+        await history("", headers),
+        await history(`?playerId=${ANN}`, headers),
+      ]) {
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(await read(res, [ANN, BOB])).toEqual({ status: 400, body: { error: "invalid player id" } });
+      }
+    }
+    // 履歴は playerId が無ければ 400
+    expect(await read(await history(""))).toEqual({ status: 400, body: { error: "invalid player id" } });
+  });
+
+  it("URL と Vary のヘッダーで鍵を作る共有キャッシュ（CDN）を通しても、別の人や公開の応答を返さない", async () => {
+    /**
+     * CDN の代わり。GET の 200 で、Cache-Control に s-maxage があり private・no-store・no-cache が無い応答だけを、
+     * URL と Vary に挙げた要求ヘッダーの値で保存する（Vercel の CDN の保存の条件と鍵の作り方の要点。期限は見ない）。
+     * ignoreVary は Vary を見ない CDN（Vary が要る理由を確かめる）
+     */
+    function sharedCache({ ignoreVary = false } = {}) {
+      const saved: { url: string; vary: string[]; values: (string | null)[]; res: Response }[] = [];
+      const send = async (url: string, headers: Record<string, string> = {}) => {
+        const req = new Request(url, { headers });
+        const hit = saved.find(
+          (e) => e.url === req.url && e.vary.every((h, i) => req.headers.get(h) === e.values[i]),
+        );
+        if (hit) return { hit: true, res: hit.res.clone() };
+        const res = await leaderboardRoute(req);
+        const cc = res.headers.get("cache-control") ?? "";
+        if (res.status === 200 && /s-maxage/.test(cc) && !/private|no-store|no-cache/.test(cc)) {
+          const vary = ignoreVary
+            ? []
+            : (res.headers.get("vary") ?? "")
+                .split(",")
+                .map((h) => h.trim().toLowerCase())
+                .filter(Boolean);
+          saved.push({ url: req.url, vary, values: vary.map((h) => req.headers.get(h)), res: res.clone() });
+        }
+        return { hit: false, res };
+      };
+      return { saved, send };
+    }
+    const url = `http://localhost/api/leaderboard?${board}`;
+    const cdn = sharedCache();
+    const order = [
+      ["公開", {}],
+      ["アリス", { [PLAYER_ID_HEADER]: ANN }],
+      ["ボブ", { [PLAYER_ID_HEADER]: BOB }],
+      ["アリス", { [PLAYER_ID_HEADER]: ANN }],
+      ["公開", {}],
+    ] as const;
+    const got: unknown[][] = [];
+    for (const [who, headers] of order) {
+      const { hit, res } = await cdn.send(url, headers);
+      const { body } = await readBoard(res);
+      got.push([who, hit, body.me?.name ?? null]);
+    }
+    expect(got).toEqual([
+      ["公開", false, null],
+      ["アリス", false, "アリス"],
+      ["ボブ", false, "ボブ"],
+      ["アリス", false, "アリス"],
+      ["公開", true, null],
+    ]);
+    // 保存したのは公開の応答だけ
+    expect(cdn.saved).toHaveLength(1);
+    expect(cdn.saved[0].values).toEqual([null]);
+
+    // Vary を見ない CDN なら、ヘッダー付きの要求に公開の応答（自分の順位が無い）が返る
+    const blind = sharedCache({ ignoreVary: true });
+    await blind.send(url);
+    const { hit, res } = await blind.send(url, { [PLAYER_ID_HEADER]: ANN });
+    expect([hit, (await readBoard(res)).body.me]).toEqual([true, null]);
   });
 });
 

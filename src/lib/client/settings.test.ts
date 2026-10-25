@@ -57,6 +57,28 @@ describe("設定", () => {
     expect(loadSettings()).toMatchObject({ theme: "auto", textSize: "xlarge" });
   });
 
+  it("ミス上限は既定でなし（0）。3 回・5 回を保存して読み戻す", () => {
+    expect(DEFAULT_SETTINGS.mistakeLimit).toBe(0);
+    for (const mistakeLimit of [3, 5, 0] as const) {
+      saveSettings({ ...DEFAULT_SETTINGS, showMistakes: false, mistakeLimit });
+      expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, showMistakes: false, mistakeLimit });
+    }
+    // 前の版の保存データ（ミス上限が無い）はなし
+    store.set(KEYS.settings, JSON.stringify({ sound: false }));
+    expect(loadSettings()).toEqual({ ...DEFAULT_SETTINGS, sound: false });
+  });
+
+  it("ミス上限が決まった値（0・3・5）でなければ、ほかの項目を残してなしにする", () => {
+    for (const mistakeLimit of [1, 4, 6, -3, 3.5, "3", "5", null, true, [3], { n: 3 }, "none"]) {
+      store.set(KEYS.settings, JSON.stringify({ haptics: false, theme: "dark", mistakeLimit }));
+      expect(loadSettings(), JSON.stringify(mistakeLimit)).toEqual({
+        ...DEFAULT_SETTINGS,
+        haptics: false,
+        theme: "dark",
+      });
+    }
+  });
+
   it("壊れた保存データでは既定にする", () => {
     for (const raw of ["{", "null", "1", '"dark"']) {
       store.set(KEYS.settings, raw);

@@ -5,6 +5,7 @@ import type {
   RegistrationResponseJSON,
 } from "@simplewebauthn/browser";
 import type { MoveLog } from "@/lib/game/score";
+import { PLAYER_ID_HEADER } from "@/lib/player-id-header";
 import type { ClearRecord } from "./records";
 import type { Stats } from "./stats";
 import type { Difficulty } from "@/lib/sudoku/core";
@@ -77,14 +78,17 @@ export const api = {
     }),
   submit: (input: { sessionId: string; playerId: string; grid: string; name: string; moves: MoveLog }) =>
     request<SubmitResponse>("/api/daily/submit", { method: "POST", body: JSON.stringify(input) }),
+  // GET の playerId はヘッダーで送る（クエリに入れると、アクセスログ・CDN のキャッシュのキー・プロキシに残る）
   leaderboard: (q: { scope: "daily" | "best"; difficulty: Difficulty; date?: string; playerId?: string }) => {
     const params = new URLSearchParams({ scope: q.scope, difficulty: q.difficulty });
     if (q.date) params.set("date", q.date);
-    if (q.playerId) params.set("playerId", q.playerId);
-    return request<LeaderboardResponse>(`/api/leaderboard?${params}`);
+    return request<LeaderboardResponse>(
+      `/api/leaderboard?${params}`,
+      q.playerId ? { headers: { [PLAYER_ID_HEADER]: q.playerId } } : undefined,
+    );
   },
   history: (playerId: string) =>
-    request<{ entries: ClearRecord[] }>(`/api/player/history?${new URLSearchParams({ playerId })}`),
+    request<{ entries: ClearRecord[] }>("/api/player/history", { headers: { [PLAYER_ID_HEADER]: playerId } }),
   transfer: (input: { playerId: string; name: string | null; stats: unknown }) =>
     request<{ code: string; expiresAt: number }>("/api/player/transfer", {
       method: "POST",

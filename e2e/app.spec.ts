@@ -11,6 +11,7 @@ import {
   type TestInfo,
 } from "@playwright/test";
 import { formatPoints } from "../src/lib/game/score";
+import { PLAYER_ID_HEADER } from "../src/lib/player-id-header";
 import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
 import { TECHNIQUE_NAME } from "../src/lib/sudoku/hint";
@@ -55,6 +56,9 @@ type Saved = {
   history: unknown[];
   moves?: unknown[];
   colors?: number[];
+  status?: string;
+  mistakes?: number;
+  mistakeLimit?: number;
 };
 
 async function savedGame(page: Page, key: string): Promise<Saved> {
@@ -221,6 +225,190 @@ test("途中のフリープレイを上書きして始めると、開始数と�
   await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("1");
   await expect(metric(page, "フリープレイ", "クリア数")).toHaveText("0");
   await expect(metric(page, "フリープレイ", "クリア率")).toHaveText("0%");
+});
+
+/** ミスが上限に達したときの画面 */
+const failedDialog = (page: Page) => page.getByRole("dialog", { name: "ミスが上限に達しました" });
+/** プレイ画面の、上限があるときのミスの数（「n/上限」） */
+const mistakeLimitStat = (page: Page) => page.locator(".status-row .mistake-limit");
+const freeStats = async (page: Page) =>
+  JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:stats")))!);
+
+/** 空きマスの from 番目から n マスに、解答と違う数字を置く。置いたマスを返す */
+async function placeWrong(page: Page, puzzle: number[], solution: number[], n: number, from = 0) {
+  const cells = page.getByRole("gridcell");
+  const targets = puzzle.flatMap((v, i) => (v ? [] : [i])).slice(from, from + n);
+  for (const i of targets) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${(solution[i] % 9) + 1}`);
+  }
+  return targets;
+}
+
+test("ミス上限：設定で 3 回を選ぶと、フリープレイに「ミス n/3」を出し、3 回目のミスで終える。クリアに数えず、同じ盤面でやり直せる。ホームに戻ると続きからを出さない", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "設定" }).click();
+  const settings = page.getByRole("dialog", { name: "設定" });
+  const choice = settings.getByRole("radiogroup", { name: "ミス上限" });
+  await expect(choice.getByRole("radio", { name: "なし" })).toBeChecked();
+  await choice.getByRole("radio", { name: "3 回" }).check();
+  await expect(choice.getByRole("radio", { name: "3 回" })).toBeChecked();
+  await settings.getByRole("button", { name: "閉じる" }).click();
+  await expect(settings).toBeHidden();
+  expect(JSON.parse((await page.evaluate(() => localStorage.getItem("sudoku:settings")))!).mistakeLimit).toBe(
+    3,
+  );
+
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  const solution = g.solution!;
+  const empties = g.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const stat = mistakeLimitStat(page);
+  await expect(stat).toContainText("ミス");
+  await expect(stat.locator(".stat-value")).toHaveText("0/3");
+  // 「0/3」は日付や分数に読まれうるので、読み上げには言葉で渡す
+  await expect(stat.locator(".stat-value")).toHaveAttribute("aria-hidden", "true");
+  await expect(stat.locator(".sr-only")).toHaveText("0回 上限3回");
+
+  await placeWrong(page, g.puzzle, solution, 2);
+  await expect(stat.locator(".stat-value")).toHaveText("2/3");
+  await expect(stat.locator(".sr-only")).toHaveText("2回 上限3回");
+  // 1 秒以上たってから 3 回目のミス（やり直したときに、途中でやめた時間に足す）
+  await expect(page.getByLabel("経過時間")).not.toHaveText("00:00");
+  await placeWrong(page, g.puzzle, solution, 1, 2);
+  const dialog = failedDialog(page);
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "ミスが上限に達しました" })).toBeVisible();
+  await expect(boardLive(page)).toHaveText(/ 間違い ミスが上限に達しました$/);
+  // 最初の誤り（1 手目）も出す
+  const first = empties[0];
+  await expect(
+    dialog
+      .getByRole("region", { name: "最初の誤り", exact: true })
+      .getByText(`1手目 ${cellAt(first)} ${(solution[first] % 9) + 1}（正解 ${solution[first]}）`, {
+        exact: true,
+      }),
+  ).toBeVisible();
+  // クリアではないので、クリアの結果・点数・共有・次の問題へは出さない
+  await expect(page.getByRole("dialog", { name: "クリア" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: /結果を共有|次の問題へ/ })).toHaveCount(0);
+  await expect(dialog.locator(".result-score")).toHaveCount(0);
+  expect(await savedGame(page, "sudoku:free")).toMatchObject({
+    status: "failed",
+    mistakes: 3,
+    mistakeLimit: 3,
+  });
+  expect((await freeStats(page)).easy).toMatchObject({ played: 0, started: 1 });
+  await shot(page, "mistake-limit-failed");
+
+  // 同じ盤面でやり直す：ミスと手を消した、同じ問題の新しいゲーム
+  await dialog.getByRole("button", { name: "同じ盤面でやり直す" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  await expect(stat.locator(".stat-value")).toHaveText("0/3");
+  for (const i of empties.slice(0, 3))
+    await expect(page.getByRole("gridcell").nth(i)).toHaveAttribute("aria-label", `${cellAt(i)} 空き`);
+  await expect
+    .poll(async () => {
+      const r = await savedGame(page, "sudoku:free");
+      return { puzzle: r.puzzle, values: r.values, history: r.history.length, mistakes: r.mistakes };
+    })
+    .toEqual({ puzzle: g.puzzle, values: g.puzzle, history: 0, mistakes: 0 });
+  expect(await savedGame(page, "sudoku:free")).toMatchObject({ status: "playing", mistakeLimit: 3 });
+  // 新しく始めた数に数え、上限で終えた問題の時間は途中でやめた時間に足す（クリアには数えない）
+  const stats = (await freeStats(page)).easy;
+  expect(stats).toMatchObject({ played: 0, started: 2 });
+  expect(stats.abandonedMs).toBeGreaterThanOrEqual(1000);
+
+  // もう一度上限まで間違えてホームに戻ると、続きからは出さない
+  await placeWrong(page, g.puzzle, solution, 3);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "ホームに戻る" }).click();
+  await expect(page.getByRole("heading", { name: "ナンプレ" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /続きから/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(metric(page, "フリープレイ", "始めた数")).toHaveText("2");
+  await expect(metric(page, "フリープレイ", "クリア数")).toHaveText("0");
+  await expect(metric(page, "フリープレイ", "クリア率")).toHaveText("0%");
+});
+
+test("ミス上限：間違いの表示がオフなら効かせない（「n/上限」を出さず、上限を超えて間違えても終えない）", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("sudoku:settings", JSON.stringify({ showMistakes: false, mistakeLimit: 3 })),
+  );
+  await page.goto("/");
+  await page.locator(".free-easy").click();
+  await expect(page.getByRole("grid", { name: "ナンプレの盤面" })).toBeVisible();
+  const g = await savedGame(page, "sudoku:free");
+  await expect(mistakeLimitStat(page)).toHaveCount(0);
+  await placeWrong(page, g.puzzle, g.solution!, 4);
+  await expect.poll(async () => (await savedGame(page, "sudoku:free")).mistakes).toBe(4);
+  await page.waitForTimeout(1200);
+  await expect(failedDialog(page)).toHaveCount(0);
+  // 表示がオフの間に置いたので、この問題の上限は外れている
+  expect(await savedGame(page, "sudoku:free")).toMatchObject({ status: "playing", mistakeLimit: 0 });
+  await expect(mistakeLimitStat(page)).toHaveCount(0);
+});
+
+test("ミス上限：今日の一問と手筋の練習には効かない（「n/上限」を出さず、上限を超えて間違えても続けられる）", async ({
+  page,
+}, info) => {
+  await page.addInitScript(() =>
+    localStorage.setItem("sudoku:settings", JSON.stringify({ mistakeLimit: 3 })),
+  );
+  await page.goto("/");
+  await page.locator(".daily-row").first().click();
+  await page.getByPlaceholder("ニックネーム").fill(`上限${info.project.name}`);
+  await page.getByRole("button", { name: "はじめる" }).click();
+  await expect(page.getByLabel("ランキング戦")).toBeVisible();
+  const key = await page.evaluate(() =>
+    Object.keys(localStorage).find((k) => k.startsWith("sudoku:daily:"))!,
+  );
+  const g = await savedGame(page, key);
+  const solution = solve(g.puzzle)!;
+  await expect(mistakeLimitStat(page)).toHaveCount(0);
+  await placeWrong(page, g.puzzle, solution, 4);
+  await expect(page.locator(".status-row .stat-end .stat-pair")).toHaveText("ミス4");
+  await page.waitForTimeout(1200);
+  await expect(failedDialog(page)).toHaveCount(0);
+  const saved = await savedGame(page, key);
+  expect(saved).toMatchObject({ status: "playing", mistakes: 4 });
+  expect(saved).not.toHaveProperty("mistakeLimit");
+  // まだ置ける
+  const next = g.puzzle.flatMap((v, i) => (v ? [] : [i]))[4];
+  await page
+    .getByRole("gridcell")
+    .nth(next)
+    .dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${solution[next]}`);
+  await expect.poll(async () => (await savedGame(page, key)).values[next]).toBe(solution[next]);
+
+  // 手筋の練習：上限を超えて違う数字を置いても終えず、戻してから正解できる
+  await page.getByRole("button", { name: "ホームに戻る" }).click();
+  await openPracticeList(page);
+  const single = practiceItem("naked-single");
+  await openPracticeItem(page, single);
+  const position = await practicePosition(page, single);
+  const answer = answerOf(position).placement!;
+  const others = position.values.flatMap((v, i) => (v || i === answer.cell ? [] : [i])).slice(0, 4);
+  const cells = page.getByRole("gridcell");
+  for (const i of others) {
+    await cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+    await page.keyboard.press(`Digit${(position.solution[i] % 9) + 1}`);
+  }
+  await expect(page.locator(".stuck-bar")).toHaveText("違う数字があります");
+  await page.waitForTimeout(1200);
+  await expect(failedDialog(page)).toHaveCount(0);
+  for (let k = 0; k < others.length; k++) await page.keyboard.press("KeyZ");
+  await expect(page.locator(".stuck-bar")).toHaveCount(0);
+  await cells.nth(answer.cell).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+  await page.keyboard.press(`Digit${answer.digit}`);
+  await expect(page.locator(".practice-result")).toContainText("正解");
 });
 
 test("問題を作っている間に「次の問題へ」や難易度を続けて押しても、始めた数は 1 つしか増えない", async ({
@@ -3324,6 +3512,8 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
       const req = route.request();
       const url = new URL(req.url());
       routed.push(`${req.method()} ${url.origin}${url.pathname}`);
+      // GET の playerId はヘッダーで届く（落とすと履歴の取得が 400 になる）
+      const playerId = req.headers()[PLAYER_ID_HEADER];
       try {
         const response = await context.request.fetch(baseURL + url.pathname + url.search, {
           method: req.method(),
@@ -3331,6 +3521,7 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
           headers: {
             ...headers,
             "content-type": req.headers()["content-type"] ?? "",
+            ...(playerId === undefined ? {} : { [PLAYER_ID_HEADER]: playerId }),
             "accept-encoding": "identity",
           },
           maxRedirects: 0,
