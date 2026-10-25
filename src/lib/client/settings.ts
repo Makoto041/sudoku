@@ -23,8 +23,8 @@ export type Settings = {
   /** 文字サイズ。テーマと同じく <head> のスクリプトも読む */
   textSize: TextSize;
   /**
-   * プレイ中の時計・スコア・盤面に浮かべる得点を出さない。出さないだけで、時間と点数の計算・今日の一問の送信・
-   * 記録・実績は変わらず、クリアの結果にはタイムと点数を出す
+   * プレイ中の時計・スコア・盤面に浮かべる得点と、ホームの途中の経過時間を出さない。出さないだけで、時間と点数の計算・
+   * 今日の一問の送信・記録・実績は変わらず、クリアの結果にはタイムと点数を出す
    */
   hideClock: boolean;
 };
@@ -46,14 +46,8 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export function loadSettings(): Settings {
   const settings = { ...DEFAULT_SETTINGS, ...(load<Partial<Settings>>(KEYS.settings) ?? {}) };
-  // テーマと文字サイズは <html> の属性にするので、決まった値だけを通す（ほかは既定にする）。
-  // 時計と得点を隠すのは true のときだけ（"false" などの文字列で隠れないように）
-  return {
-    ...settings,
-    theme: parseTheme(settings.theme),
-    textSize: parseTextSize(settings.textSize),
-    hideClock: settings.hideClock === true,
-  };
+  // テーマと文字サイズは <html> の属性にするので、決まった値だけを通す（ほかは既定にする）
+  return { ...settings, theme: parseTheme(settings.theme), textSize: parseTextSize(settings.textSize) };
 }
 
 export function saveSettings(settings: Settings) {

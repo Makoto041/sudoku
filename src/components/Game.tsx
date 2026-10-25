@@ -52,7 +52,7 @@ export function Game({
   onRanking,
   onNewFree,
 }: Props) {
-  // 時計と得点を隠すのはプレイ中の表示だけ。時間と点数の計算・送信・記録・結果はそのまま
+  // 時計と得点を隠すのは表示だけ。時間と点数の計算・送信・記録・結果はそのまま
   const hideClock = settings.hideClock;
   const { game, fx, dispatch, announce } = useGame(initial, {
     showMistakes: settings.showMistakes,
@@ -317,19 +317,18 @@ export function Game({
             onToggle={onToggle}
             onExtend={onExtend}
           />
-          {!hideClock && (
-            <div className="popups" aria-hidden="true">
-              {fx.popups.map((p) => (
-                <span
-                  key={p.id}
-                  className={`popup ${p.kind}`}
-                  style={{ "--r": Math.floor(p.cell / 9), "--c": p.cell % 9 } as CSSProperties}
-                >
-                  {p.text}
-                </span>
-              ))}
-            </div>
-          )}
+          {/* 時計と得点を隠している間は、useGame が得点を作らず、残りも消すので空になる */}
+          <div className="popups" aria-hidden="true">
+            {fx.popups.map((p) => (
+              <span
+                key={p.id}
+                className={`popup ${p.kind}`}
+                style={{ "--r": Math.floor(p.cell / 9), "--c": p.cell % 9 } as CSSProperties}
+              >
+                {p.text}
+              </span>
+            ))}
+          </div>
           {game.status === "paused" && (
             <button
               type="button"

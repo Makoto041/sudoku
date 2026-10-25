@@ -49,8 +49,12 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
     }),
   );
   // 答え合わせのため、間違いは設定に関わらず見せる。置いた数字は周りのメモから消さない
-  // （違う数字を置いてから消すと、周りのメモから正解を消した跡が残るため。正解を置けば局面は終わる）
-  const { game, fx, dispatch, announce } = useGame(initial, { showMistakes: true, autoClearNotes: false });
+  // （違う数字を置いてから消すと、周りのメモから正解を消した跡が残るため。正解を置けば局面は終わる）。得点は出さない
+  const { game, fx, dispatch, announce } = useGame(initial, {
+    showMistakes: true,
+    autoClearNotes: false,
+    showPoints: false,
+  });
   const gameRef = useRef(game);
   gameRef.current = game;
 

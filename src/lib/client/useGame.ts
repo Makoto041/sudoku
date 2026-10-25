@@ -122,18 +122,18 @@ function playEffects(effects: Effect[]) {
 /**
  * ゲームの状態と入力。入力ごとに音・触覚・アニメーション・読み上げの知らせを出し、localStorage に保存する（練習は保存しない）。
  * フリープレイの時計はここで進め、画面が隠れたら自動で一時停止する。
- * showPoints が false の間（時計と得点を隠す設定）は、浮かべる得点を作らない（点数の計算は変わらない）。省略時は作る
+ * showPoints が false の間（時計と得点を隠す設定・練習）は、浮かべる得点を作らない（点数の計算は変わらない）
  */
 export function useGame(
   initial: GameState,
-  options: { showMistakes: boolean; autoClearNotes: boolean; showPoints?: boolean },
+  options: { showMistakes: boolean; autoClearNotes: boolean; showPoints: boolean },
 ) {
   const [game, setGame] = useState(initial);
   const [fx, setFx] = useState<Fx>(EMPTY_FX);
   const gameRef = useRef(game);
   gameRef.current = game;
   const fxKey = useRef(0);
-  const showPoints = options.showPoints ?? true;
+  const { showPoints } = options;
   // dispatch の依存に入れると、切り替えたときに時計の interval を作り直し、刻んでいない時間を落とすので ref で読む
   const showPointsRef = useRef(showPoints);
   showPointsRef.current = showPoints;

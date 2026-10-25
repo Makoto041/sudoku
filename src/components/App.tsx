@@ -669,6 +669,7 @@ export function App() {
             }}
             onNewFree={requestFree}
             streak={streak}
+            hideClock={settings.hideClock}
             onRecords={() => {
               sfx.tap();
               go({ name: "records" });
