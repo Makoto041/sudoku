@@ -26,6 +26,8 @@ type Props = {
   onSettings: () => void;
   onRecords: () => void;
   onPractice: () => void;
+  /** 盤面を入力する画面を開く */
+  onEntry: () => void;
   onHowto: () => void;
   /** 遊び方の案内を出すか（まだ閉じていない・遊び方を開いていない） */
   howtoHint: boolean;
@@ -205,6 +207,11 @@ export function Home(props: Props) {
             </button>
           ))}
         </div>
+        {/* 問題を作っている間は開かない（作り終えると、入力の画面からゲームに移ってしまう） */}
+        <button type="button" className="entry-open" onClick={props.onEntry} disabled={generating !== null}>
+          <span>盤面を入力</span>
+          <ChevronRight size={18} className="row-chevron" />
+        </button>
       </section>
 
       <button type="button" className="card practice-entry" onClick={props.onPractice}>

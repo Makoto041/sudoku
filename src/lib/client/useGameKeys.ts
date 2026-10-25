@@ -80,18 +80,21 @@ const modalOpen = () => document.querySelector('[role="dialog"][aria-modal="true
 /**
  * 盤面のキーボード操作。window の keydown を keyCommand で入力に変えて dispatch に送る。
  * H キーは onHint を呼ぶ。シートを開いている間は盤面を操作しない。
- * enabled が false の間（正解した練習の盤面など）は、既定の動作だけ止めて、入力も音も出さない
+ * enabled が false の間（正解した練習の盤面など）は、既定の動作だけ止めて、入力も音も出さない。
+ * accepts が false を返すキー（盤面の入力で使わないメモ・色など）は、操作にしない（既定の動作も止めず、音も出さない）
  */
 export function useGameKeys({
   dispatch,
   game,
   onHint,
   enabled = true,
+  accepts,
 }: {
   dispatch: (action: Action) => void;
   game: GameState;
   onHint: () => void;
   enabled?: boolean;
+  accepts?: (run: KeyCommand["run"]) => boolean;
 }) {
   const paused = game.status === "paused";
   useEffect(() => {
@@ -102,7 +105,7 @@ export function useGameKeys({
       // フォーカス中のボタンは Space/Enter で押せるようにし、一時停止に回さない
       if ((e.key === " " || e.key === "Enter") && target?.closest("button")) return;
       const cmd = keyCommand(e, paused);
-      if (!cmd) return;
+      if (!cmd || (accepts && !accepts(cmd.run))) return;
       if (cmd.prevent) e.preventDefault();
       if (!enabled) return;
       if (cmd.run === "hint") onHint();
@@ -114,5 +117,5 @@ export function useGameKeys({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dispatch, paused, onHint, enabled]);
+  }, [dispatch, paused, onHint, enabled, accepts]);
 }

@@ -28,7 +28,7 @@ export const MAX_SEARCH = 2048;
  */
 export const MAX_NODES = 200_000;
 /** 解が 1 つに定まる問題のヒントは 17 個以上 */
-const MIN_GIVENS = 17;
+export const MIN_GIVENS = 17;
 
 /** クエリの組（デコードしない。空の組は捨てる） */
 const pairs = (search: string) =>
@@ -47,23 +47,16 @@ function valueOf(pair: string): string | null {
 const inBand = (d: Difficulty, level: LogicLevel) =>
   PROFILES[d].minLevel <= level && level <= PROFILES[d].maxLevel;
 
+const fail = (reason: SharedError): SharedResult => ({ ok: false, reason });
+
 /**
- * URL のクエリ（location.search）から共有された盤面を読む。p が無ければ null。
- * 外から来る値なので、軽い検査から順に確かめる: 形（クエリが MAX_SEARCH 文字以内、p が 1 つで 81 桁の数字、0 は空き。
- * 値はデコードしない）→ ヒントの数（17〜80）→ 同じ行・列・ブロックの重複 → 解が 1 つか（2 つ目で打ち切り、
+ * 最初の配置（長さ 81、0〜9）をフリープレイとして始められるか確かめる（共有された盤面と、手で入力した盤面）。
+ * 軽い検査から順に: ヒントの数（17〜80）→ 同じ行・列・ブロックの重複 → 解が 1 つか（2 つ目で打ち切り、
  * 置く回数も MAX_NODES まで）。難易度は手筋の判定で決め、d はその範囲に入るときだけ使う
- * （極と鬼は判定では見分けられないので d で分ける）
+ * （極と鬼は判定では見分けられないので d で分ける。d が null なら判定のまま）。シードは shared:盤面
  */
-export function parseShared(search: string): SharedResult | null {
-  const fail = (reason: SharedError): SharedResult => ({ ok: false, reason });
-  // 長すぎるクエリは組に分けず、p の有無だけを見る
-  if (search.length > MAX_SEARCH) return /(?:^\??|&)p(?:[=&]|$)/.test(search) ? fail("format") : null;
-  const all = pairs(search);
-  const ps = all.filter((pair) => keyOf(pair) === "p");
-  if (ps.length === 0) return null;
-  const raw = ps.length === 1 ? valueOf(ps[0]) : null;
-  if (raw === null || !/^[0-9]{81}$/.test(raw)) return fail("format");
-  const puzzle = [...raw].map(Number);
+export function checkPuzzle(grid: readonly number[], d: string | null): SharedResult {
+  const puzzle = grid.slice();
   const givens = puzzle.filter((v) => v !== 0).length;
   // 81 個（空きマスが無い）だと、解き終えられない
   if (givens < MIN_GIVENS || givens === 81) return fail("givens");
@@ -75,10 +68,25 @@ export function parseShared(search: string): SharedResult | null {
   // 解が 1 つと確かめた探索と同じ順で最初の解までたどるので、確かめるより時間は掛からない
   const solution = solve(puzzle)!;
   const level = gradePuzzle(puzzle);
-  const ds = all.filter((pair) => keyOf(pair) === "d");
-  const d = ds.length === 1 ? valueOf(ds[0]) : null;
   const difficulty = isDifficulty(d) && inBand(d, level) ? d : DIFFICULTIES.find((x) => inBand(x, level))!;
-  return { ok: true, puzzle: { seed: `shared:${raw}`, difficulty, puzzle, solution } };
+  return { ok: true, puzzle: { seed: `shared:${serializeGrid(puzzle)}`, difficulty, puzzle, solution } };
+}
+
+/**
+ * URL のクエリ（location.search）から共有された盤面を読む。p が無ければ null。
+ * 外から来る値なので、軽い検査から順に確かめる: 形（クエリが MAX_SEARCH 文字以内、p が 1 つで 81 桁の数字、0 は空き。
+ * 値はデコードしない）→ checkPuzzle（ヒントの数・重複・解が 1 つか・難易度）
+ */
+export function parseShared(search: string): SharedResult | null {
+  // 長すぎるクエリは組に分けず、p の有無だけを見る
+  if (search.length > MAX_SEARCH) return /(?:^\??|&)p(?:[=&]|$)/.test(search) ? fail("format") : null;
+  const all = pairs(search);
+  const ps = all.filter((pair) => keyOf(pair) === "p");
+  if (ps.length === 0) return null;
+  const raw = ps.length === 1 ? valueOf(ps[0]) : null;
+  if (raw === null || !/^[0-9]{81}$/.test(raw)) return fail("format");
+  const ds = all.filter((pair) => keyOf(pair) === "d");
+  return checkPuzzle([...raw].map(Number), ds.length === 1 ? valueOf(ds[0]) : null);
 }
 
 /** クエリから共有の盤面（p・d）を除く。ほかのパラメータは残し、何も残らなければ空文字（? を残さない） */
