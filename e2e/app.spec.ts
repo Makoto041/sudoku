@@ -3581,6 +3581,8 @@ test.describe("盤面の入力", () => {
       await page.goto("/");
       await openEntry(page);
       const cells = entryScreen(page).getByRole("gridcell");
+      // 複数のマスは選べないので、複数選択の印を付けない
+      await expect(entryScreen(page).getByRole("grid")).not.toHaveAttribute("aria-multiselectable");
       await expect(entryScreen(page).locator("[tabindex='0']")).toHaveAttribute("data-i", "40");
       await cells.nth(40).focus();
       await page.keyboard.press("ArrowRight");
@@ -3610,6 +3612,27 @@ test.describe("盤面の入力", () => {
       const cells = entryScreen(page).getByRole("gridcell");
       const select = (i: number) =>
         cells.nth(i).dispatchEvent("pointerdown", { pointerType: "touch", button: 0 });
+
+      // 始められる盤面を変えた直後は、確かめ終わる（入力が 300ms 止まる）まで「始める」を押せない。
+      // 理由の欄は確かめている間も前の文のまま（空にして入れ直さない）。キーを押してすぐ、同じページの中で読む
+      await select(2);
+      const answer = solve(gridOf(ENTRY_PUZZLE))![2];
+      const justAfter = await page.evaluate(async (digit) => {
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", { key: String(digit), code: `Digit${digit}`, bubbles: true }),
+        );
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        return {
+          count: document.querySelector(".entry-status .stat-value")?.textContent,
+          disabled: document.querySelector<HTMLButtonElement>(".entry-start")?.disabled,
+          text: document.querySelector(".entry-check")?.textContent,
+        };
+      }, answer);
+      expect(justAfter).toEqual({ count: "31/81", disabled: true, text: "難易度 かんたん" });
+      await expect(entryStart(page)).toBeEnabled();
+      await expect(entryCheck(page)).toHaveText("難易度 かんたん");
+      await page.keyboard.press("Backspace");
+      await expect(entryCount(page)).toHaveText("30/81");
 
       // 1 行目の 3 マス目に、同じ行の 5 を入れる
       await select(2);

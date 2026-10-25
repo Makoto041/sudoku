@@ -215,8 +215,16 @@ export function Home(props: Props) {
             </button>
           ))}
         </div>
-        {/* 問題を作っている間は開かない（作り終えると、入力の画面からゲームに移ってしまう） */}
-        <button type="button" className="entry-open" onClick={props.onEntry} disabled={generating !== null}>
+        {/*
+         * 問題を作っている間・今日の一問を始める通信の間は開かない
+         * （終わるとゲームを開くので、入力の画面がゲームに置き換わり、入れた盤面が消える）
+         */}
+        <button
+          type="button"
+          className="entry-open"
+          onClick={props.onEntry}
+          disabled={generating !== null || starting !== null}
+        >
           <span>盤面を入力</span>
           <ChevronRight size={18} className="row-chevron" />
         </button>

@@ -1,6 +1,6 @@
 import { newGame, type Action, type GameState } from "@/lib/game/state";
-import { findConflicts } from "@/lib/sudoku/core";
-import { MIN_GIVENS, checkPuzzle, type SharedError, type SharedPuzzle } from "./sharedPuzzle";
+import { DIFFICULTY_LABEL, findConflicts } from "@/lib/sudoku/core";
+import { MIN_GIVENS, checkPuzzle, type SharedPuzzle } from "./sharedPuzzle";
 
 /** 入力した盤面を始められない理由 */
 export type EntryIssue = "few" | "full" | "conflict" | "no-solution" | "multiple" | "too-hard";
@@ -60,13 +60,6 @@ export function quickIssue(values: readonly number[]): EntryIssue | null {
   return null;
 }
 
-const ISSUE_OF: Record<Exclude<SharedError, "format" | "givens">, EntryIssue> = {
-  conflict: "conflict",
-  "no-solution": "no-solution",
-  multiple: "multiple",
-  "too-hard": "too-hard",
-};
-
 /**
  * 入力した盤面を始められるか。共有された盤面と同じ検査（checkPuzzle）で、解が 1 つか（置く回数は MAX_NODES まで）と
  * 難易度（手筋の判定のまま。レベル 6 は鬼）まで確かめる。重いので、入力が止まってから呼ぶ
@@ -77,5 +70,20 @@ export function checkEntry(values: readonly number[]): EntryCheck {
   const r = checkPuzzle(values, null);
   if (r.ok) return r;
   // 形と数は quickIssue で確かめ済み
-  return { ok: false, issue: r.reason === "format" || r.reason === "givens" ? "few" : ISSUE_OF[r.reason] };
+  return { ok: false, issue: r.reason === "format" || r.reason === "givens" ? "few" : r.reason };
+}
+
+/** 理由の欄の文。始められない理由か、始められるなら難易度 */
+export type EntryMessage = { text: string; issue: boolean };
+
+/**
+ * 理由の欄に出す文。result が null（解が 1 つか確かめている途中）の間は、前に出した文 prev を残す
+ * （入力のたびに欄を空にして入れ直すと、読み上げが同じ文を繰り返し、見た目でも理由が消える）
+ */
+export function entryMessage(result: EntryCheck | null, prev: EntryMessage): EntryMessage {
+  if (result === null) return prev;
+  const next = result.ok
+    ? { text: `難易度 ${DIFFICULTY_LABEL[result.puzzle.difficulty]}`, issue: false }
+    : { text: ENTRY_ISSUE_TEXT[result.issue], issue: true };
+  return next.text === prev.text && next.issue === prev.issue ? prev : next;
 }

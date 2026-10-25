@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { sfx } from "@/lib/audio";
-import { DIFFICULTY_LABEL, parseGrid, serializeGrid } from "@/lib/sudoku/core";
+import { parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import type { Action } from "@/lib/game/state";
 import {
-  ENTRY_ISSUE_TEXT,
   checkEntry,
   entryAction,
+  entryMessage,
   givensOf,
   newEntry,
   quickIssue,
   type EntryCheck,
+  type EntryMessage,
 } from "@/lib/client/entry";
 import type { Settings } from "@/lib/client/settings";
 import type { SharedPuzzle } from "@/lib/client/sharedPuzzle";
@@ -23,11 +24,12 @@ import { ChevronLeft, Eraser, Gear, Redo, Undo } from "./icons";
 
 /**
  * 入力が止まってから、解が 1 つかを確かめ始めるまでの時間（ms）。確かめる間は画面が止まる
- * （置く回数の上限で、手元の Mac で最悪 140ms ほど）ので、数字を入れるたびには確かめない
+ * （置く回数の上限で、手元の Mac で最悪 140ms ほど。README の「盤面の入力」）ので、数字を入れるたびには確かめない
  */
 const CHECK_DELAY_MS = 300;
 
 const NO_CELLS: ReadonlySet<number> = new Set();
+const NO_MESSAGE: EntryMessage = { text: "", issue: false };
 const noop = () => {};
 /** 入力で使うキーだけを受け付ける（メモ・色・ヒント・一時停止のキーは何もしない） */
 const accepts = (run: KeyCommand["run"]) => run !== "hint" && entryAction(run) !== null;
@@ -85,6 +87,11 @@ export function Entry({ settings, onBack, onOpenSettings, onStart }: Props) {
     : checked?.key === key
       ? checked.result
       : null;
+  // 理由の欄の文は、確かめている途中の間は前の文を残し、文が変わったときだけ入れ替える
+  // （入力のたびに空にして入れ直すと、読み上げが同じ文を繰り返し、見た目でも理由が消える）
+  const [message, setMessage] = useState<EntryMessage>(() => entryMessage(result, NO_MESSAGE));
+  const shown = entryMessage(result, message);
+  if (shown !== message) setMessage(shown);
 
   return (
     <div className="screen game entry">
@@ -106,13 +113,9 @@ export function Entry({ settings, onBack, onOpenSettings, onStart }: Props) {
           <span className="stat-label">ヒント</span>
           <span className="stat-value">{givensOf(game.values)}/81</span>
         </span>
-        {/* 始められない理由が変わったとき・始められるようになったときに読み上げる */}
-        <span className={`entry-check${result && !result.ok ? " is-issue" : ""}`} role="status">
-          {result === null
-            ? ""
-            : result.ok
-              ? `難易度 ${DIFFICULTY_LABEL[result.puzzle.difficulty]}`
-              : ENTRY_ISSUE_TEXT[result.issue]}
+        {/* 始められない理由が変わったとき・始められるようになったときだけ読み上げる */}
+        <span className={`entry-check${shown.issue ? " is-issue" : ""}`} role="status">
+          {shown.text}
         </span>
       </div>
 
@@ -126,6 +129,7 @@ export function Entry({ settings, onBack, onOpenSettings, onStart }: Props) {
             highlightPeers={settings.highlightPeers}
             unitFx={false}
             stuck={NO_CELLS}
+            multiselectable={false}
             onSelect={onSelect}
             onToggle={onSelect}
             onExtend={noop}

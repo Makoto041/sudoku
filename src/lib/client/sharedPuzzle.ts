@@ -50,12 +50,14 @@ const inBand = (d: Difficulty, level: LogicLevel) =>
 const fail = (reason: SharedError): SharedResult => ({ ok: false, reason });
 
 /**
- * 最初の配置（長さ 81、0〜9）をフリープレイとして始められるか確かめる（共有された盤面と、手で入力した盤面）。
- * 軽い検査から順に: ヒントの数（17〜80）→ 同じ行・列・ブロックの重複 → 解が 1 つか（2 つ目で打ち切り、
- * 置く回数も MAX_NODES まで）。難易度は手筋の判定で決め、d はその範囲に入るときだけ使う
+ * 最初の配置をフリープレイとして始められるか確かめる（共有された盤面と、手で入力した盤面）。
+ * 軽い検査から順に: 形（長さ 81、どれも 0〜9 の整数。0 は空き）→ ヒントの数（17〜80）→ 同じ行・列・ブロックの重複 →
+ * 解が 1 つか（2 つ目で打ち切り、置く回数も MAX_NODES まで）。難易度は手筋の判定で決め、d はその範囲に入るときだけ使う
  * （極と鬼は判定では見分けられないので d で分ける。d が null なら判定のまま）。シードは shared:盤面
  */
 export function checkPuzzle(grid: readonly number[], d: string | null): SharedResult {
+  if (grid.length !== 81 || !grid.every((v) => Number.isInteger(v) && v >= 0 && v <= 9))
+    return fail("format");
   const puzzle = grid.slice();
   const givens = puzzle.filter((v) => v !== 0).length;
   // 81 個（空きマスが無い）だと、解き終えられない

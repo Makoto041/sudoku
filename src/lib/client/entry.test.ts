@@ -2,16 +2,18 @@ import { describe, expect, it } from "vitest";
 import { announcementOf } from "@/lib/game/a11y";
 import { isShownWrong, isWrong, reduce, type Action, type GameState } from "@/lib/game/state";
 import { findConflicts, isValidSolution, parseGrid, serializeGrid } from "@/lib/sudoku/core";
-import { solve } from "@/lib/sudoku/solver";
+import { countSolutionsWithin, solve } from "@/lib/sudoku/solver";
 import {
   ENTRY_ISSUE_TEXT,
   checkEntry,
   entryAction,
+  entryMessage,
   givensOf,
   newEntry,
   quickIssue,
   type EntryCheck,
 } from "./entry";
+import { MAX_NODES } from "./sharedPuzzle";
 import { storageKeyFor } from "./useGame";
 
 // シングルだけで解ける問題（ヒント 30 個）
@@ -170,12 +172,28 @@ describe("入力した盤面を確かめる", () => {
     expect(issue(checkEntry(parseGrid(at(CLASSIC, 0, "1"))))).toBe("no-solution");
     // 最初の 2 つのヒントを消すと解が 2 つ以上
     expect(issue(checkEntry(parseGrid(`00${CLASSIC.slice(2)}`)))).toBe("multiple");
+    // 「確かめきれない」は、置く回数の上限で打ち切ったときだけ（解の数を数え切れば、解が無い・2 つ以上になる）
     for (const p of EXHAUSTING) {
-      const t = performance.now();
+      expect(countSolutionsWithin(parseGrid(p), 2, MAX_NODES), p).toBeNull();
       expect(issue(checkEntry(parseGrid(p))), p).toBe("too-hard");
-      // 置く回数の上限で打ち切る（手元の Mac で 1 回 100〜140ms ほど）
-      expect(performance.now() - t, p).toBeLessThan(2000);
     }
+  });
+
+  it("理由の欄の文は、確かめている途中（null）の間は前の文を残し、文が変わったときだけ入れ替える", () => {
+    const empty = { text: "", issue: false };
+    const few = entryMessage({ ok: false, issue: "few" }, empty);
+    expect(few).toEqual({ text: "ヒントが少なすぎます（17 個以上）", issue: true });
+    const ok = checkEntry(parseGrid(CLASSIC));
+    const easy = entryMessage(ok, few);
+    expect(easy).toEqual({ text: "難易度 かんたん", issue: false });
+    // 入力して確かめ直す間は、同じものを返す（欄を空にしない）
+    expect(entryMessage(null, easy)).toBe(easy);
+    // 確かめ直して同じ文なら、前のものを返す（読み上げ直さない）
+    expect(entryMessage(ok, easy)).toBe(easy);
+    expect(entryMessage({ ok: false, issue: "multiple" }, easy)).toEqual({
+      text: "解が 1 つに決まりません",
+      issue: true,
+    });
   });
 
   it("理由の文言は短い事実", () => {
