@@ -309,6 +309,11 @@ export function SettingsSheet({
           checked={settings.unitFx}
           onChange={(v) => set({ unitFx: v })}
         />
+        <Toggle
+          label="時計と得点を隠す"
+          checked={settings.hideClock}
+          onChange={(v) => set({ hideClock: v })}
+        />
         <h3 className="toggle-heading">入力</h3>
         <Toggle
           label="周りのメモを自動で消す"
