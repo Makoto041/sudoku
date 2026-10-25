@@ -32,6 +32,8 @@ type Props = {
   onCloseHowtoHint: () => void;
   /** 今日の一問の連続日数 */
   streak: number;
+  /** 時計と得点を隠す設定。途中の問題の経過時間を出さない */
+  hideClock: boolean;
   /** 旧 URL で開いたときに、新しい URL へ移るシートを開く（ある間は案内を出し、ホーム画面への追加は案内しない） */
   onMove?: () => void;
 };
@@ -45,7 +47,7 @@ function longDate(date: string) {
 }
 
 export function Home(props: Props) {
-  const { today, daily, free, starting, generating, error } = props;
+  const { today, daily, free, starting, generating, error, hideClock } = props;
   const best = bestScores();
   // ミスの上限で終えた問題は続けられないので出さない
   const freeInProgress = free && isInProgress(free) ? free : null;
@@ -151,7 +153,9 @@ export function Home(props: Props) {
                     ) : unsent ? (
                       <span className="accent">未送信</span>
                     ) : playing ? (
-                      <span className="accent">続ける · {formatTime(elapsedOf(st.game!))}</span>
+                      <span className="accent">
+                        {hideClock ? "続ける" : `続ける · ${formatTime(elapsedOf(st.game!))}`}
+                      </span>
                     ) : (
                       <span className="muted">挑戦する</span>
                     )}
@@ -177,8 +181,11 @@ export function Home(props: Props) {
             <span>
               <span className="continue-label">続きから</span>
               <span className="continue-meta">
-                {DIFFICULTY_LABEL[freeInProgress.difficulty]} · {formatTime(freeInProgress.elapsedMs)} ·{" "}
-                {progress(freeInProgress)}%
+                {[
+                  DIFFICULTY_LABEL[freeInProgress.difficulty],
+                  ...(hideClock ? [] : [formatTime(freeInProgress.elapsedMs)]),
+                  `${progress(freeInProgress)}%`,
+                ].join(" · ")}
               </span>
             </span>
             <ChevronRight size={20} />

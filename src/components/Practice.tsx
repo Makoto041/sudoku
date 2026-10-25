@@ -8,6 +8,7 @@ import type { Settings } from "@/lib/client/settings";
 import { useGame } from "@/lib/client/useGame";
 import { useGameKeys } from "@/lib/client/useGameKeys";
 import { useStuckAlert } from "@/lib/client/useStuckAlert";
+import { recordHintTechnique } from "@/lib/client/weakTechniques";
 import { haptic } from "@/lib/haptics";
 import { findHint, type Hint } from "@/lib/sudoku/hint";
 import { answerOf, checkPractice, startNotes, type PracticeItem } from "@/lib/sudoku/practice";
@@ -49,8 +50,12 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
     }),
   );
   // 答え合わせのため、間違いは設定に関わらず見せる。置いた数字は周りのメモから消さない
-  // （違う数字を置いてから消すと、周りのメモから正解を消した跡が残るため。正解を置けば局面は終わる）
-  const { game, fx, dispatch, announce } = useGame(initial, { showMistakes: true, autoClearNotes: false });
+  // （違う数字を置いてから消すと、周りのメモから正解を消した跡が残るため。正解を置けば局面は終わる）。得点は出さない
+  const { game, fx, dispatch, announce } = useGame(initial, {
+    showMistakes: true,
+    autoClearNotes: false,
+    showPoints: false,
+  });
   const gameRef = useRef(game);
   gameRef.current = game;
 
@@ -107,9 +112,11 @@ export function Practice({ item, index, settings, onBack, onNext, onSolved, onOp
       sfx.blocked();
       return;
     }
+    // 手筋の名前を見せるので、ヒントを使った手筋として数える（同じヒントは 1 局面 1 回。描画のたびには呼ばない）
+    recordHintTechnique({ mode: "practice", id: position.id }, data);
     sfx.hint(5);
     setHint({ data, stage: firstStage(data) });
-  }, [hint]);
+  }, [hint, position.id]);
   // 盤面かメモが変わったらヒントは古くなるので閉じる
   useEffect(() => setHint(null), [game.values, game.notes]);
   const onApplyHint = () => {

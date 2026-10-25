@@ -19,6 +19,7 @@ import { useGame } from "@/lib/client/useGame";
 import { useGameKeys } from "@/lib/client/useGameKeys";
 import { useStuckAlert } from "@/lib/client/useStuckAlert";
 import { recordFreeClear, type FreeClear } from "@/lib/client/stats";
+import { recordHintTechnique } from "@/lib/client/weakTechniques";
 import type { Achievement } from "@/lib/client/achievements";
 import { formatPoints } from "@/lib/game/score";
 import { Board } from "./Board";
@@ -62,9 +63,12 @@ export function Game({
   onNewFree,
   onRetry,
 }: Props) {
+  // 時計と得点を隠すのは表示だけ。時間と点数の計算・送信・記録・結果はそのまま
+  const hideClock = settings.hideClock;
   const { game, fx, dispatch, announce } = useGame(initial, {
     showMistakes: settings.showMistakes,
     autoClearNotes: settings.autoClearNotes,
+    showPoints: !hideClock,
   });
   const gameRef = useRef(game);
   gameRef.current = game;
@@ -76,6 +80,9 @@ export function Game({
   const showHint = useCallback(
     (data: Hint) => {
       dispatch({ type: "hintUsed" });
+      // 手筋の名前を見せるので、ヒントを使った手筋として数える（同じヒントは 1 プレイ 1 回。描画のたびには呼ばない）
+      const g = gameRef.current;
+      recordHintTechnique({ mode: g.mode, id: g.seed }, data);
       sfx.hint(5);
       setHint({ data, stage: firstStage(data) });
     },
@@ -279,13 +286,18 @@ export function Game({
       </header>
 
       <div className="status-row">
+        {/* 隠すときも 3 列の枠は残す（右のミス・一時停止を右に置いたままにする）。時計は描かず、読み上げにも出さない */}
         <div className="stat score-stat">
-          <span className="stat-label">スコア</span>
-          <span key={game.score?.points ?? 0} className="stat-value score-value">
-            {formatPoints(game.score?.points ?? 0)}
-          </span>
+          {!hideClock && (
+            <>
+              <span className="stat-label">スコア</span>
+              <span key={game.score?.points ?? 0} className="stat-value score-value">
+                {formatPoints(game.score?.points ?? 0)}
+              </span>
+            </>
+          )}
         </div>
-        <Clock game={game} />
+        {hideClock ? <div /> : <Clock game={game} />}
         <div className="stat stat-end">
           {mistakeLimit ? (
             // 「2/3」は読み上げで日付や分数に読まれうるので、読み上げには言葉で渡す
@@ -342,6 +354,7 @@ export function Game({
             onToggle={onToggle}
             onExtend={onExtend}
           />
+          {/* 時計と得点を隠している間は、useGame が得点を作らず、残りも消すので空になる */}
           <div className="popups" aria-hidden="true">
             {fx.popups.map((p) => (
               <span

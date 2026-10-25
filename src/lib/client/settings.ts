@@ -24,6 +24,11 @@ export type Settings = {
   /** 文字サイズ。テーマと同じく <head> のスクリプトも読む */
   textSize: TextSize;
   /**
+   * プレイ中の時計・スコア・盤面に浮かべる得点と、ホームの途中の経過時間を出さない。出さないだけで、時間と点数の計算・
+   * 今日の一問の送信・記録・実績は変わらず、クリアの結果にはタイムと点数を出す
+   */
+  hideClock: boolean;
+  /**
    * フリープレイのミスの上限（0 は上限なし）。新しく始める問題に付ける（GameState の mistakeLimit）。
    * 効くのは間違いの表示がオンの間だけ。端末にだけ保存し、サーバーには送らない
    */
@@ -42,6 +47,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmHint: false,
   theme: "auto",
   textSize: "normal",
+  hideClock: false,
   mistakeLimit: 0,
 };
 
