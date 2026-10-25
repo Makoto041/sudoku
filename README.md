@@ -150,14 +150,15 @@ iPhone では Safari の共有メニューから「ホーム画面に追加」�
 
 ### GET での playerId の受け渡し
 
-- playerId は持ち主を示す秘密なので、GET（`/api/leaderboard`・`/api/player/history`）では `x-player-id` ヘッダーで送る（名前は `src/lib/player-id-header.ts`）。クエリは Vercel のアクセスログ・プロキシ・ブラウザの履歴・Referer に残りうる。GET 以外は今までどおり本文で送る。
+- playerId は持ち主を示す秘密なので、GET（`/api/leaderboard`・`/api/player/history`）では `x-player-id` ヘッダーで送る（名前は `src/lib/player-id-header.ts`）。fetch の URL のクエリは、Vercel のアクセスログ・CDN のキャッシュのキー・途中のプロキシ・開発者ツールと HAR に残りうる（fetch の URL はブラウザの履歴と Referer には入らない）。GET 以外は今までどおり本文で送る。
 - サーバーはヘッダーを先に見る（`src/lib/server/player-id.ts` の `requestPlayerId`）。ヘッダーがあれば（空でも）その値を検査し、形が違えば 400 `invalid player id`（クエリに正しい値があっても使わない）。
-- 移行期間: ヘッダーを送らない古い端末（開いたままのタブなど）のため、`2026-12-20T00:00:00+09:00`（`PLAYER_ID_QUERY_SUNSET`。この時刻から受け付けない）より前は、ヘッダーの無い要求ではクエリの `playerId` も受け付ける（8 週間）。その応答には `Deprecation`（RFC 9745）と `Sunset`（RFC 8594）を付ける。サーバーは playerId を記録しない（Vercel のアクセスログには要求の URL が残る）。
+- 移行期間: ヘッダーを送らない古い端末（開いたままのタブなど）のため、`2026-12-20T00:00:00+09:00`（`PLAYER_ID_QUERY_SUNSET`。この時刻から受け付けない）より前は、ヘッダーの無い要求ではクエリの `playerId` も受け付ける（8 週間）。その成功した応答には `Deprecation`（RFC 9745）と `Sunset`（RFC 8594）を付ける（エラーには付けない）。サーバーは playerId を記録しない（Vercel のアクセスログには要求の URL が残る）。
 - 期限からは、クエリに `playerId` があれば（ヘッダーがあっても、空でも）400 `player id in query`。クエリを無視しないのは、表では playerId の入った URL への応答が公開の応答になり、ID を含む URL が CDN のキャッシュのキーになるため。期限後に消すものは「やること」を参照。
 - キャッシュ: playerId のある成功した応答は `Cache-Control: private, no-store`（どのキャッシュにも載せない）。表の playerId の無い成功した応答は今までどおり CDN にキャッシュさせる。表の応答にはすべて `Vary: x-player-id` を付ける。アプリの要求は公開の要求と URL が同じなので、付けないと CDN がヘッダー付きの要求に、保存した公開の応答（自分の順位が無い）を返す。Vercel の CDN は、Vary に挙げた要求ヘッダーの値をキャッシュのキーに入れる（Vercel のドキュメント「Vercel CDN Cache」の Vary header）。
 - Service Worker（`public/sw.js`）は `/api/` を扱わない（キャッシュしない）ので、ヘッダーはそのキャッシュに関わらない。端末の fetch は `cache: "no-store"`。
 - CORS の許可（`Access-Control-Allow-*`）はどこにも付けていない。ほかの origin のページからは `x-player-id` を付けた要求を送れない（カスタムヘッダーには preflight が要り、許可が無いので通らない）。同じ origin の要求には preflight が要らず、CSP の `connect-src 'self'` のままでよい。
 - 既知の限界:
+  - この変更より前の要求と、期限後に届く古い端末の要求の URL には ID が入っており、保持期間のあいだ Vercel のログに残る。
   - Vary を見ない CDN やプロキシを前に置くと、ヘッダー付きの要求に公開の応答（自分の順位が無い）が最大 40 秒返りうる。別の人の順位は返らない（playerId のある応答は保存されない）。
   - 本番の Vercel で、ヘッダー付きの要求が公開の応答のキャッシュに当たらないことは確かめていない（テストは応答のヘッダーと、Vary を見るキャッシュの模型で確かめる）。
 
@@ -275,6 +276,10 @@ Vercel（Next.js）にデプロイし、Vercel Marketplace の **Upstash for Red
 ## やること
 
 - 2026-12-20 の日本時間 0 時（`PLAYER_ID_QUERY_SUNSET`）を過ぎたら、GET の playerId をクエリで受け付ける分岐を消す（「GET での playerId の受け渡し」）。
-  - 消すもの: `src/lib/server/player-id.ts` の `requestPlayerId` のクエリを使う分岐・`PLAYER_ID_QUERY_DEPRECATED`・`QUERY_DEPRECATION`（Deprecation と Sunset）、`src/lib/server/ranking-route.test.ts` の移行期間のテスト、README の移行期間の記述（「GET での playerId の受け渡し」とアカウントの既知の限界）。
-  - 残すもの: クエリに `playerId` があれば 400 `player id in query` にする検査（ID を含む URL を CDN のキャッシュのキーにしない）。
+  - 消すもの:
+    - `src/lib/server/player-id.ts`: `requestPlayerId` のクエリの値を使う分岐と `fromQuery`、`handlePlayerGet` の `fromQuery` で Deprecation と Sunset を付ける分岐、`PLAYER_ID_QUERY_DEPRECATED`・`QUERY_DEPRECATION`、冒頭とコメントの移行期間の記述。
+    - route のコメントの移行期間の記述（`src/app/api/leaderboard/route.ts`・`src/app/api/player/history/route.ts`）。
+    - `src/lib/server/ranking-route.test.ts`: 「GET の playerId」の describe の、クエリを受け付けるテストと期限の 1ms 前の確かめ。「ランキングの表の Cache-Control」の describe の、クエリを前提にした期待（空のクエリで公開の応答、クエリの playerId で private, no-store、クエリの形の違う値で 400 invalid player id。どれも 400 player id in query に変わる）。
+    - README の移行期間の記述（この節、「ランキング API の回数制限と本文の上限」の `GET /api/leaderboard` の行、アカウントの既知の限界）。
+  - 残すもの: クエリに `playerId` があれば 400 `player id in query` にする検査（ID を含む URL を CDN のキャッシュのキーにしない）。期限後は無条件にする（`PLAYER_ID_QUERY_SUNSET` と時刻の比較を消す）。
   - 消す前に、Vercel のログで、クエリに playerId を付けた要求がまだ届いているかを確かめる。

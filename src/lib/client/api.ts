@@ -78,7 +78,7 @@ export const api = {
     }),
   submit: (input: { sessionId: string; playerId: string; grid: string; name: string; moves: MoveLog }) =>
     request<SubmitResponse>("/api/daily/submit", { method: "POST", body: JSON.stringify(input) }),
-  // GET の playerId はヘッダーで送る（クエリに入れると、アクセスログ・履歴・Referer に残る）
+  // GET の playerId はヘッダーで送る（クエリに入れると、アクセスログ・CDN のキャッシュのキー・プロキシに残る）
   leaderboard: (q: { scope: "daily" | "best"; difficulty: Difficulty; date?: string; playerId?: string }) => {
     const params = new URLSearchParams({ scope: q.scope, difficulty: q.difficulty });
     if (q.date) params.set("date", q.date);

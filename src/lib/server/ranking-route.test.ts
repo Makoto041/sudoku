@@ -10,7 +10,7 @@ import { PLAYER_ID_HEADER } from "@/lib/player-id-header";
 import { parseGrid, serializeGrid } from "@/lib/sudoku/core";
 import { solve } from "@/lib/sudoku/solver";
 import { handle } from "./http";
-import { PLAYER_ID_QUERY_DEPRECATED, PLAYER_ID_QUERY_SUNSET } from "./player-id";
+import { PLAYER_ID_QUERY_SUNSET } from "./player-id";
 import {
   MAX_MOVES,
   NAME_MAX,
@@ -33,6 +33,10 @@ const post = (path: string, body: string, headers: Record<string, string> = {}) 
     body,
     headers: { "content-type": "application/json", ...headers },
   });
+
+/** ランキングの表の取得（GET /api/leaderboard） */
+const get = (query: string, headers: HeadersInit = {}) =>
+  leaderboardRoute(new Request(`http://localhost/api/leaderboard?${query}`, { headers }));
 
 async function read(res: Response, secrets: string[] = []) {
   const text = await res.text();
@@ -208,9 +212,6 @@ describe("ランキング API の回数制限（route は要求元の IP で数�
 });
 
 describe("ランキングの表の Cache-Control", () => {
-  const get = (query: string, headers: HeadersInit = {}) =>
-    leaderboardRoute(new Request(`http://localhost/api/leaderboard?${query}`, { headers }));
-
   it("playerId の無い要求の成功は CDN に短くキャッシュさせ、playerId 付きは private, no-store、エラーは no-store。どれも Vary: x-player-id", async () => {
     at(20);
     const shared = await get("scope=daily&difficulty=easy");
@@ -247,8 +248,6 @@ describe("GET の playerId（x-player-id ヘッダーと、移行期間のクエ
   const ANN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const board = "scope=best&difficulty=expert";
-  const get = (query: string, headers: HeadersInit = {}) =>
-    leaderboardRoute(new Request(`http://localhost/api/leaderboard?${query}`, { headers }));
   const history = (query: string, headers: HeadersInit = {}) =>
     historyRoute(new Request(`http://localhost/api/player/history${query}`, { headers }));
   type Board = { me: { name: string | null } | null; entries: { name: string; isMe: boolean }[] };
@@ -289,21 +288,31 @@ describe("GET の playerId（x-player-id ヘッダーと、移行期間のクエ
     });
   });
 
-  it("ヘッダーが無ければ、期限の前はクエリの playerId も受け付け、Deprecation と Sunset を付ける。何も記録しない", async () => {
+  it("ヘッダーが無ければ、期限の前はクエリの playerId も受け付け、成功した応答に Deprecation と Sunset を付ける。何も記録しない", async () => {
     const log = (["error", "warn", "info", "log", "debug"] as const).map((m) =>
       vi.spyOn(console, m).mockImplementation(() => {}),
     );
     const res = await get(`${board}&playerId=${BOB}`);
-    expect(res.headers.get("deprecation")).toBe(`@${Date.parse(PLAYER_ID_QUERY_DEPRECATED) / 1000}`);
-    expect(res.headers.get("sunset")).toBe("Sat, 19 Dec 2026 15:00:00 GMT");
-    expect(Date.parse(res.headers.get("sunset")!)).toBe(Date.parse(PLAYER_ID_QUERY_SUNSET));
-    expect(res.headers.get("vary")).toContain(PLAYER_ID_HEADER);
-    const { status, body, cache } = await readBoard(res);
-    expect([status, cache, ...meOf(body)]).toEqual([200, "private, no-store", "ボブ", ["ボブ"]]);
     const old = await history(`?playerId=${ANN}`);
-    expect(old.headers.get("cache-control")).toBe("private, no-store");
-    expect(old.headers.get("deprecation")).toMatch(/^@\d+$/);
+    for (const r of [res, old]) {
+      // 2026-10-25 の日本時間 0 時と、2026-12-20 の日本時間 0 時
+      expect([r.headers.get("deprecation"), r.headers.get("sunset")]).toEqual([
+        "@1792854000",
+        "Sat, 19 Dec 2026 15:00:00 GMT",
+      ]);
+      expect(r.headers.get("cache-control")).toBe("private, no-store");
+    }
+    expect(res.headers.get("vary")).toContain(PLAYER_ID_HEADER);
+    const { status, body } = await readBoard(res);
+    expect([status, ...meOf(body)]).toEqual([200, "ボブ", ["ボブ"]]);
     expect((await read(old, [ANN])).status).toBe(200);
+    // 形の違うクエリの値は 400 で、Deprecation は付けない
+    const bad = await get(`${board}&playerId=nope`);
+    expect([bad.status, bad.headers.get("deprecation"), bad.headers.get("sunset")]).toEqual([
+      400,
+      null,
+      null,
+    ]);
     for (const spy of log) expect(spy).not.toHaveBeenCalled();
   });
 

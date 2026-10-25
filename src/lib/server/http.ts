@@ -9,40 +9,29 @@ export const NO_STORE = { "Cache-Control": "no-store" };
  * ランキング API 共通：保存先の用意、エラーの HTTP 変換（RankingError の retryAfterSec は Retry-After にする）、
  * キャッシュ無効化。想定外のエラーは、エラーの名前だけを記録する（Upstash のエラーには送ったコマンド＝playerId・引き継ぎコード・
  * 記録・通知の endpoint や鍵が含まれうる）。どの route かは Vercel のログの要求のパスで分かる。
- * cacheControl を渡すと、成功した応答だけその Cache-Control にする（エラーは no-store のまま）。
- * headers は、エラーを含むすべての応答に足す（Vary など）
+ * cacheControl を渡すと、成功した応答だけその Cache-Control にする（エラーは no-store のまま）
  */
 export async function handle<T>(
   fn: (store: RankingStore) => Promise<T>,
-  opts: { cacheControl?: string; headers?: Record<string, string> } = {},
+  opts: { cacheControl?: string } = {},
 ) {
-  const extra = opts.headers ?? {};
   const store = getStore();
   if (!store) {
-    return NextResponse.json(
-      { error: "ranking unavailable" },
-      { status: 503, headers: { ...NO_STORE, ...extra } },
-    );
+    return NextResponse.json({ error: "ranking unavailable" }, { status: 503, headers: NO_STORE });
   }
   try {
     const headers = opts.cacheControl ? { "Cache-Control": opts.cacheControl } : NO_STORE;
-    return NextResponse.json(await fn(store), { headers: { ...headers, ...extra } });
+    return NextResponse.json(await fn(store), { headers });
   } catch (err) {
     if (err instanceof RankingError) {
       const headers =
         err.retryAfterSec === undefined
           ? NO_STORE
           : { ...NO_STORE, "Retry-After": String(err.retryAfterSec) };
-      return NextResponse.json(
-        { error: err.message },
-        { status: err.status, headers: { ...headers, ...extra } },
-      );
+      return NextResponse.json({ error: err.message }, { status: err.status, headers });
     }
     console.error(`request failed (${err instanceof Error ? err.name : typeof err})`);
-    return NextResponse.json(
-      { error: "internal error" },
-      { status: 500, headers: { ...NO_STORE, ...extra } },
-    );
+    return NextResponse.json({ error: "internal error" }, { status: 500, headers: NO_STORE });
   }
 }
 

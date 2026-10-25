@@ -10,6 +10,7 @@ import {
   type Response,
   type TestInfo,
 } from "@playwright/test";
+import { PLAYER_ID_HEADER } from "../src/lib/player-id-header";
 import { LEGACY_HOST, SITE_ORIGIN } from "../src/lib/site";
 import { digitsOf } from "../src/lib/sudoku/core";
 import { TECHNIQUE_NAME } from "../src/lib/sudoku/hint";
@@ -3180,7 +3181,7 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
       const url = new URL(req.url());
       routed.push(`${req.method()} ${url.origin}${url.pathname}`);
       // GET の playerId はヘッダーで届く（落とすと履歴の取得が 400 になる）
-      const playerId = req.headers()["x-player-id"];
+      const playerId = req.headers()[PLAYER_ID_HEADER];
       try {
         const response = await context.request.fetch(baseURL + url.pathname + url.search, {
           method: req.method(),
@@ -3188,7 +3189,7 @@ async function routeHosts(context: BrowserContext, baseURL: string, headers: Rec
           headers: {
             ...headers,
             "content-type": req.headers()["content-type"] ?? "",
-            ...(playerId === undefined ? {} : { "x-player-id": playerId }),
+            ...(playerId === undefined ? {} : { [PLAYER_ID_HEADER]: playerId }),
             "accept-encoding": "identity",
           },
           maxRedirects: 0,

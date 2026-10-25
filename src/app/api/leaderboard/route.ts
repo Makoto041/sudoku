@@ -19,7 +19,7 @@ export function GET(req: Request) {
         scope: params.get("scope") ?? "daily",
         date: params.get("date") ?? undefined,
         difficulty: params.get("difficulty"),
-        playerId: playerId ?? undefined,
+        playerId,
       }),
     { publicCacheControl: SHARED_CACHE },
   );
