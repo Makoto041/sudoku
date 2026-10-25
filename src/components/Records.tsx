@@ -138,11 +138,18 @@ export function Records({ today, playerId, onBack, onPractice }: Props) {
                 aria-label={`${d.day}日 ${status}`}
               >
                 {d.day}
-                {/* 休みは色だけでなく、文字と点線の枠でも示す（読み上げは日の aria-label の「休み」） */}
+                {/*
+                  休みは色だけでなく、文字と点線の枠でも示す。読み上げは「休」ではなく「休み」にする。
+                  role の無い要素の aria-label を読まない環境（ブラウズモードなど）でも伝わるよう、中身にも入れる
+                  （aria-label を読む環境では、名前が中身に置き換わるので二重には読まない）
+                */}
                 {d.isRest && (
-                  <span className="cal-rest" aria-hidden="true">
-                    休
-                  </span>
+                  <>
+                    <span className="cal-rest" aria-hidden="true">
+                      休
+                    </span>
+                    <span className="sr-only">休み</span>
+                  </>
                 )}
               </span>
             );
