@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { formatPoints } from "@/lib/game/score";
 import { formatTime } from "@/lib/game/state";
+import { jstDateKey } from "@/lib/sudoku/generator";
+import { createRng } from "@/lib/sudoku/rng";
 import {
   addDays,
   isDateKey,
   mergeRecords,
   monthView,
+  REST_WINDOW_DAYS,
+  streaks,
   summarize,
   validRecords,
   type ClearRecord,
@@ -42,6 +46,307 @@ describe("連続日数", () => {
   it("月をまたいでも続く", () => {
     expect(addDays("2026-10-31", 1)).toBe("2026-11-01");
     expect(summarize([r("2026-10-31", "easy"), r("2026-11-01", "easy")], "2026-11-01").streak).toBe(2);
+  });
+});
+
+/** 2026 年 10 月の日 */
+const oct = (...days: number[]) => days.map((d) => `2026-10-${String(d).padStart(2, "0")}`);
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+/** day の前の 6 日（休みにするのに要る日） */
+const before6 = (day: string) => range(1, 6).map((k) => addDays(day, -k));
+
+describe("連続日数の休み", () => {
+  it("休みが無ければ今までと同じで、休みの日も無い", () => {
+    expect(streaks(oct(...range(1, 5)), "2026-10-05")).toEqual({
+      streak: 5,
+      longest: 5,
+      restDays: new Set(),
+    });
+  });
+
+  it("前の 6 日をすべてクリアしていて次の日もクリアすれば、クリアしなかった日は休み。休みの日は日数に数えない", () => {
+    const dates = oct(...range(1, 6), 8, 9);
+    expect(streaks(dates, "2026-10-09")).toEqual({ streak: 8, longest: 8, restDays: new Set(oct(7)) });
+    const s = summarize(
+      dates.map((d) => r(d, "easy")),
+      "2026-10-09",
+    );
+    expect([s.streak, s.longest, [...s.restDays]]).toEqual([8, 8, oct(7)]);
+  });
+
+  it("前の 6 日にクリアしなかった日があれば休みにしない（休みの日を含む 7 日に、クリアしなかった日は 1 日まで）", () => {
+    // 10-01 をクリアしていないので、10-07 は休みにならない
+    expect(streaks(oct(...range(2, 6), 8, 9), "2026-10-09")).toEqual({
+      streak: 2,
+      longest: 5,
+      restDays: new Set(),
+    });
+    // 10-07 に休み。10-14 は前の 6 日（10-08〜13）がそろうので休み、10-13 は 10-07 が窓に入るので途切れる
+    expect(streaks(oct(...range(1, 6), ...range(8, 13), 15), "2026-10-15")).toEqual({
+      streak: 13,
+      longest: 13,
+      restDays: new Set(oct(7, 14)),
+    });
+    expect(streaks(oct(...range(1, 6), ...range(8, 12), 14), "2026-10-14")).toEqual({
+      streak: 1,
+      longest: 11,
+      restDays: new Set(oct(7)),
+    });
+  });
+
+  it("2 日続けてクリアしないと途切れ、休みにもしない", () => {
+    expect(streaks(oct(...range(1, 6), 9, 10), "2026-10-10")).toEqual({
+      streak: 2,
+      longest: 6,
+      restDays: new Set(),
+    });
+  });
+
+  it("過去の日が増えても、休みは休みのまま。連続日数と最長は減らない", () => {
+    const grow = (dates: string[], added: string, today: string) => {
+      const a = streaks(dates, today);
+      const b = streaks([...dates, added], today);
+      expect(b.streak, added).toBeGreaterThanOrEqual(a.streak);
+      expect(b.longest, added).toBeGreaterThanOrEqual(a.longest);
+      return [a, b].map(({ streak, longest, restDays }) => [streak, longest, [...restDays].sort()]);
+    };
+    // 前に休みを使った日から数える決め方では、10-02 が増えると 10-03 が休みになり、10-09 を休めなくなって 26 日から 21 日に減っていた
+    expect(grow(oct(1, ...range(4, 8), ...range(10, 30)), "2026-10-02", "2026-10-30")).toEqual([
+      [21, 21, []],
+      [21, 21, []],
+    ]);
+    expect(grow(oct(1, ...range(4, 8)), "2026-10-02", "2026-10-08")).toEqual([
+      [5, 5, []],
+      [5, 5, []],
+    ]);
+    // 休みの日がクリアになれば、休みでなくなり日数に数える
+    expect(grow(oct(...range(1, 6), 8, 9), "2026-10-07", "2026-10-09")).toEqual([
+      [8, 8, oct(7)],
+      [9, 9, []],
+    ]);
+    // 前の 6 日がそろえば、休みになってつながる
+    expect(grow(oct(...range(2, 6), 8, 9), "2026-10-01", "2026-10-09")).toEqual([
+      [2, 5, []],
+      [8, 8, oct(7)],
+    ]);
+    // 10-11 が増えて 10-14 の前の 6 日がそろうと、10-07 と 10-14 の両方が休みになる
+    expect(grow(oct(...range(1, 6), 8, 9, 10, 12, 13, 15), "2026-10-11", "2026-10-15")).toEqual([
+      [1, 9, oct(7)],
+      [13, 13, oct(7, 14)],
+    ]);
+  });
+
+  it("今日は休みにしない。今日がまだで昨日をクリアしておらず、昨日の前の 6 日がそろっていれば、昨日を暫定の休みにして続ける", () => {
+    const dates = oct(...range(1, 6));
+    expect(streaks(dates, "2026-10-07")).toEqual({ streak: 6, longest: 6, restDays: new Set() });
+    expect(streaks(dates, "2026-10-08")).toEqual({ streak: 6, longest: 6, restDays: new Set(oct(7)) });
+    // 今日も解かずに次の日になると途切れ、休みでもなくなる
+    expect(streaks(dates, "2026-10-09")).toEqual({ streak: 0, longest: 6, restDays: new Set() });
+    // 今日解けば、そのまま休み
+    expect(streaks([...dates, "2026-10-08"], "2026-10-08")).toEqual({
+      streak: 7,
+      longest: 7,
+      restDays: new Set(oct(7)),
+    });
+    // 昨日の前の 6 日がそろっていなければ、今日がまだでも 0
+    expect(streaks(oct(...range(2, 6)), "2026-10-08")).toEqual({
+      streak: 0,
+      longest: 5,
+      restDays: new Set(),
+    });
+    expect(streaks(oct(...range(1, 6), ...range(8, 12)), "2026-10-14")).toEqual({
+      streak: 0,
+      longest: 11,
+      restDays: new Set(oct(7)),
+    });
+    expect(streaks(oct(...range(1, 6), ...range(8, 13)), "2026-10-15")).toEqual({
+      streak: 12,
+      longest: 12,
+      restDays: new Set(oct(7, 14)),
+    });
+  });
+
+  it("先の日付の記録（時計のずれ・書き換え）は今日の連続に入れず、今日より後を休みにしない", () => {
+    // 今日の 10-07 をはさんで 10-08 があっても、10-07 は休みにしない
+    expect(streaks(oct(...range(1, 6), 8), "2026-10-07")).toEqual({
+      streak: 6,
+      longest: 6,
+      restDays: new Set(),
+    });
+    // 今日より後の 10-07 は、前の 6 日がそろっていても休みにしない。最長は今までどおり先の日付の連続も数える
+    expect(streaks(oct(...range(1, 6), 8), "2026-10-05")).toEqual({
+      streak: 5,
+      longest: 6,
+      restDays: new Set(),
+    });
+  });
+
+  it("月・年・うるう年の 2 月の終わりをまたいでも休みにする", () => {
+    for (const [rest, next] of [
+      ["2026-11-01", "2026-11-02"],
+      ["2027-01-01", "2027-01-02"],
+      ["2028-02-29", "2028-03-01"],
+      ["2027-03-01", "2027-03-02"],
+    ]) {
+      expect(addDays(rest, 1)).toBe(next);
+      expect(streaks([...before6(rest), next], next), rest).toEqual({
+        streak: 7,
+        longest: 7,
+        restDays: new Set([rest]),
+      });
+    }
+    expect(before6("2027-03-01")[0]).toBe("2027-02-28");
+  });
+
+  it("日付は日本時間の 0 時で区切る（サーバーと同じ jstDateKey の日付）", () => {
+    const key = (iso: string) => jstDateKey(new Date(iso));
+    // 日本時間の 10-15 23:59:59 と 10-17 0:00:00。UTC では続いた 2 日だが、日本時間では 10-16 が休み
+    const edges = [key("2026-10-15T14:59:59Z"), key("2026-10-16T15:00:00Z")];
+    expect(edges).toEqual(oct(15, 17));
+    expect(streaks([...oct(...range(10, 14)), ...edges], key("2026-10-17T03:00:00Z"))).toEqual({
+      streak: 7,
+      longest: 7,
+      restDays: new Set(oct(16)),
+    });
+    // 日本時間の 10-16 0:00:00 と 23:59:59 は同じ日
+    const sameDay = [key("2026-10-15T15:00:00Z"), key("2026-10-16T14:59:59Z")];
+    expect(streaks(sameDay, "2026-10-16")).toEqual({ streak: 1, longest: 1, restDays: new Set() });
+    // 今日が日本時間で変わった直後（10-18 0:00）。10-17 はまだ解いていないが、今日の 10-18 が残っているので暫定の休みで続く
+    expect(streaks(oct(...range(11, 16)), key("2026-10-17T15:00:00Z"))).toEqual({
+      streak: 6,
+      longest: 6,
+      restDays: new Set(oct(17)),
+    });
+  });
+
+  it("端末のタイムゾーンによらず同じ結果になる（日付は UTC の 0 時として計算する）", () => {
+    const tz = process.env.TZ;
+    // 米国の夏時間の終わり（2026-11-01）をまたぐ。日付変更線の両側（UTC+14 と UTC-11）でも試す
+    const dates = [...before6("2026-11-01"), ...before6("2026-11-08"), "2026-11-09"];
+    const results = [];
+    try {
+      for (const zone of [
+        "UTC",
+        "Asia/Tokyo",
+        "America/New_York",
+        "Pacific/Kiritimati",
+        "Pacific/Pago_Pago",
+      ]) {
+        process.env.TZ = zone;
+        results.push(streaks(dates, "2026-11-09"));
+      }
+      // タイムゾーンを切り替えられている（切り替えられない環境ではこのテストは意味がない）
+      process.env.TZ = "Pacific/Kiritimati";
+      const east = new Date(0).getTimezoneOffset();
+      process.env.TZ = "Pacific/Pago_Pago";
+      expect(new Date(0).getTimezoneOffset()).not.toBe(east);
+    } finally {
+      if (tz === undefined) delete process.env.TZ;
+      else process.env.TZ = tz;
+    }
+    expect(results).toHaveLength(5);
+    for (const s of results)
+      expect(s).toEqual({ streak: 13, longest: 13, restDays: new Set(["2026-11-01", "2026-11-08"]) });
+  });
+});
+
+/** 休みの無かったときの数え方（休みを入れる前の summarize） */
+function strict(dates: string[], today: string) {
+  const set = new Set(dates);
+  let streak = 0;
+  let day = set.has(today) ? today : addDays(today, -1);
+  while (set.has(day)) {
+    streak++;
+    day = addDays(day, -1);
+  }
+  let longest = 0;
+  let run = 0;
+  let prev: string | null = null;
+  for (const d of [...set].sort()) {
+    run = prev !== null && addDays(prev, 1) === d ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    prev = d;
+  }
+  return { streak, longest };
+}
+
+const START = "2026-09-01";
+/** 60 日のうち、遊ぶ割合を変えて選んだ日付と、範囲の中か少し後の今日（先の日付の記録も混じる） */
+function randomCase(rng: () => number) {
+  const p = 0.3 + rng() * 0.7;
+  const dates = range(0, 59)
+    .filter(() => rng() < p)
+    .map((i) => addDays(START, i));
+  return { dates, today: addDays(START, Math.floor(rng() * 64)) };
+}
+/** 日付を作る範囲のすべての日 */
+const ALL_DAYS = range(0, 63).map((i) => addDays(START, i));
+
+describe("休みで連続日数が減らない", () => {
+  it("休みの無い連続は前と同じ値になる", () => {
+    for (const [dates, today] of [
+      [oct(1, 2, 3, 6, 7), "2026-10-07"],
+      [oct(1, 2, 3, 6, 7), "2026-10-08"],
+      [oct(1, 2, 3, 6, 7), "2026-10-20"],
+      [oct(5, 6, 7, 8), "2026-10-03"],
+      [[], "2026-10-07"],
+    ] as const) {
+      const { streak, longest } = streaks(dates, today);
+      expect({ streak, longest }, `${dates.join(",")} ${today}`).toEqual(strict([...dates], today));
+    }
+  });
+
+  it("どんな日付の列でも、休みの無かったときの数え方より減らない。休みの日は規則どおりで、規則に合う日はすべて休み", () => {
+    const rng = createRng("streak-rest");
+    for (let n = 0; n < 2000; n++) {
+      const { dates, today } = randomCase(rng);
+      const s = streaks(dates, today);
+      const old = strict(dates, today);
+      const label = `${dates.join(",")} ${today}`;
+      expect(s.streak, label).toBeGreaterThanOrEqual(old.streak);
+      expect(s.longest, label).toBeGreaterThanOrEqual(old.longest);
+      expect(s.longest, label).toBeGreaterThanOrEqual(s.streak);
+
+      const played = new Set(dates);
+      const yesterday = addDays(today, -1);
+      // 規則で休みになる日: 今日より前のクリアしなかった日で、前の 6 日をすべてクリアし、次の日もクリアしているか、今日がまだのときの昨日
+      const isRest = (g: string) =>
+        !played.has(g) &&
+        g < today &&
+        before6(g).every((d) => played.has(d)) &&
+        (played.has(addDays(g, 1)) || (g === yesterday && !played.has(today)));
+      const expected = ALL_DAYS.filter(isRest);
+      expect([...s.restDays].sort(), label).toEqual(expected);
+      // 休みの日を含む 7 日に休みは 1 日まで
+      for (let i = 1; i < expected.length; i++)
+        expect(addDays(expected[i - 1], REST_WINDOW_DAYS) <= expected[i], label).toBe(true);
+
+      // 並びと重複によらず同じ結果
+      const shuffled = [...dates, ...dates.slice(0, 3)].sort(() => rng() - 0.5);
+      expect(streaks(shuffled, today), label).toEqual(s);
+    }
+  });
+
+  it("どんな日付の列でも、クリアした日を 1 つ足して（ほかの端末やアカウントから届いた過去の日など）連続日数と最長が減らない", () => {
+    const rng = createRng("streak-rest-grow");
+    let checked = 0;
+    for (let n = 0; n < 3000; n++) {
+      const { dates, today } = randomCase(rng);
+      const played = new Set(dates);
+      // 足す日は今日より前（過去の日）を中心に、今日と先の日もときどき選ぶ
+      const missing = ALL_DAYS.filter((d) => !played.has(d) && (d < today || rng() < 0.2));
+      if (!missing.length) continue;
+      const added = missing[Math.floor(rng() * missing.length)];
+      const a = streaks(dates, today);
+      const b = streaks([...dates, added], today);
+      const label = `${dates.join(",")} ${today} +${added}`;
+      expect(b.streak, label).toBeGreaterThanOrEqual(a.streak);
+      expect(b.longest, label).toBeGreaterThanOrEqual(a.longest);
+      // 休みが休みでなくなるのは、その日をクリアしたときだけ
+      for (const d of a.restDays) expect(b.restDays.has(d) || d === added, label).toBe(true);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(2000);
   });
 });
 
@@ -171,6 +476,25 @@ describe("カレンダー", () => {
     expect(m.days[2].isToday).toBe(true);
     const later = monthView(summarize(recs, "2026-10-05"), 2026, 10, "2026-10-05");
     expect(later.perfect).toBe(false);
+  });
+
+  it("休みの日を持つ。休みの日は遊んだ日にも皆勤にも数えない", () => {
+    const recs = oct(...range(1, 6), 8).map((d) => r(d, "easy"));
+    const m = monthView(summarize(recs, "2026-10-08"), 2026, 10, "2026-10-08");
+    expect(m.days.filter((d) => d.isRest).map((d) => d.date)).toEqual(oct(7));
+    expect(m.days[6]).toMatchObject({ count: 0, isRest: true });
+    expect([m.played, m.target, m.perfect]).toEqual([7, 8, false]);
+    // 前の月の休みは、その月の日として持つ
+    const over = monthView(
+      summarize(
+        [...before6("2026-09-30"), "2026-10-01"].map((d) => r(d, "easy")),
+        "2026-10-01",
+      ),
+      2026,
+      9,
+      "2026-10-01",
+    );
+    expect(over.days.filter((d) => d.isRest).map((d) => d.date)).toEqual(["2026-09-30"]);
   });
 
   it("その日にクリアした難易度の数を持つ", () => {

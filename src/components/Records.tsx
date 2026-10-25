@@ -128,16 +128,32 @@ export function Records({ today, playerId, onBack, onPractice }: Props) {
           {Array.from({ length: month.firstWeekday }, (_, k) => (
             <span key={`b${k}`} />
           ))}
-          {month.days.map((d) => (
-            <span
-              key={d.date}
-              className={`cal-day${d.count ? " is-played" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
-              style={d.count ? { ["--n" as string]: d.count } : undefined}
-              aria-label={`${d.day}日 ${d.count ? `${d.count}問クリア` : ""}`}
-            >
-              {d.day}
-            </span>
-          ))}
+          {month.days.map((d) => {
+            const status = d.count ? `${d.count}問クリア` : d.isRest ? "休み" : "";
+            return (
+              <span
+                key={d.date}
+                className={`cal-day${d.count ? " is-played" : ""}${d.isRest ? " is-rest" : ""}${d.isToday ? " is-today" : ""}${d.isFuture ? " is-future" : ""}`}
+                style={d.count ? { ["--n" as string]: d.count } : undefined}
+                aria-label={`${d.day}日 ${status}`}
+              >
+                {d.day}
+                {/*
+                  休みは色だけでなく、文字と点線の枠でも示す。読み上げは「休」ではなく「休み」にする。
+                  role の無い要素の aria-label を読まない環境（ブラウズモードなど）でも伝わるよう、中身にも入れる
+                  （aria-label を読む環境では、名前が中身に置き換わるので二重には読まない）
+                */}
+                {d.isRest && (
+                  <>
+                    <span className="cal-rest" aria-hidden="true">
+                      休
+                    </span>
+                    <span className="sr-only">休み</span>
+                  </>
+                )}
+              </span>
+            );
+          })}
         </div>
         <div className="cal-foot muted small">
           {month.played} / {month.target} 日

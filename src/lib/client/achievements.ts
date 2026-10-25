@@ -52,6 +52,7 @@ export function evaluate({ stats, daily, today, practice }: AchievementInputs): 
   const add = (id: AchievementId, ok: boolean) => ok && out.add(id);
 
   add("daily-first", daily.byDate.size > 0);
+  // 連続の実績は、記録画面と同じ数え方の最長（休みを挟んだ連続も 1 つ。休みの日は日数に数えない。records.ts の streaks）
   add("streak-3", daily.longest >= 3);
   add("streak-7", daily.longest >= 7);
   add("streak-30", daily.longest >= 30);

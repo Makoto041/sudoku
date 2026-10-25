@@ -2908,6 +2908,84 @@ test("実績：端末の結果に日付でない記録や年が 1000 未満の�
   await expectAchievementCount(page, 1);
 });
 
+test("連続日数の休み：ホームと記録画面の連続日数・最長・実績は休みを挟んで数える。カレンダーの休みの日に「休」の文字と点線の枠を付け、読み上げは「休み」。幅 320px・特大の文字でもマスに収まる", async ({
+  page,
+}) => {
+  // 日本時間の 2026-10-20 12:00。10-08 は休み（前の 6 日と次の日をクリア）、10-19 は今日がまだなので暫定の休み。
+  // 10-12 は前の 6 日に 10-08 が入るので休みにしない。連続は 10-13〜18 の 6 日、最長は 10-02〜11 の 9 日
+  await page.clock.setFixedTime(new Date("2026-10-20T03:00:00Z"));
+  await page.addInitScript(() => {
+    for (const day of [2, 3, 4, 5, 6, 7, 9, 10, 11, 13, 14, 15, 16, 17, 18]) {
+      const date = `2026-10-${String(day).padStart(2, "0")}`;
+      localStorage.setItem(
+        `sudoku:result:${date}:easy`,
+        JSON.stringify({ date, difficulty: "easy", timeMs: 60_000, points: 100, rank: 1, total: 1 }),
+      );
+    }
+  });
+  await page.goto("/");
+  await expect(page.locator(".streak-chip")).toHaveText("6日連続");
+  await page.getByRole("button", { name: "記録" }).click();
+  await expect(page.locator(".streak-num")).toHaveText("6");
+  await expect(page.locator(".streak-sub")).toHaveText(/^最長 9日/);
+
+  const calendar = page.getByRole("region", { name: "カレンダー", exact: true });
+  await expect(calendar.getByText("2026年10月", { exact: true })).toBeVisible();
+  // 休みの日は遊んだ日に数えない
+  await expect(calendar.getByText("15 / 20 日", { exact: true })).toBeVisible();
+  const rests = calendar.locator(".cal-day.is-rest");
+  await expect(rests).toHaveCount(2);
+  await expect(rests.nth(0)).toHaveAttribute("aria-label", "8日 休み");
+  await expect(rests.nth(1)).toHaveAttribute("aria-label", "19日 休み");
+  await expect(calendar.locator('.cal-day[aria-label^="12日"]')).not.toHaveClass(/is-rest/);
+  // 色だけでなく文字と点線の枠で示す。「休」は読ませず、読み上げ用の「休み」を中身にも入れる
+  // （role の無い要素の aria-label を読まない環境では中身を読む）
+  for (const i of [0, 1]) {
+    await expect(rests.nth(i).locator(".cal-rest")).toHaveText("休");
+    await expect(rests.nth(i).locator(".cal-rest")).toHaveAttribute("aria-hidden", "true");
+    await expect(rests.nth(i)).toHaveCSS("border-top-style", "dashed");
+  }
+  const spoken = await rests.evaluateAll((els) =>
+    els.map((el) => {
+      const copy = el.cloneNode(true) as HTMLElement;
+      for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+      return copy.textContent;
+    }),
+  );
+  expect(spoken).toEqual(["8休み", "19休み"]);
+  await expect(calendar.locator(".cal-day.is-played.is-rest")).toHaveCount(0);
+  // 実績も休みを挟んだ最長（9 日）で数える
+  await expect(doneMark(achievementItem(page, "7日連続"))).toBeVisible();
+  await expect(doneMark(achievementItem(page, "30日連続"))).toHaveCount(0);
+  await shot(page, "records-rest");
+
+  // 幅 320px・特大の文字でも、「休」が日付のマスに収まり、カレンダーが画面からはみ出さない
+  // （文字サイズは設定の applyDisplay と同じく <html> の属性で変える）
+  const restSize = () =>
+    rests
+      .first()
+      .locator(".cal-rest")
+      .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+  const normal = await restSize();
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.evaluate(() => document.documentElement.setAttribute("data-text-size", "xlarge"));
+  expect(await restSize()).toBeCloseTo(normal * 1.3, 0);
+  const inside = await rests.evaluateAll((els) =>
+    els.map((el) => {
+      const cell = el.getBoundingClientRect();
+      const mark = el.querySelector(".cal-rest")!.getBoundingClientRect();
+      return (
+        mark.left >= cell.left - 0.5 &&
+        mark.right <= cell.right + 0.5 &&
+        mark.top >= cell.top - 0.5 &&
+        mark.bottom <= cell.bottom + 0.5
+      );
+    }),
+  );
+  expect(inside).toEqual([true, true]);
+  await expectWithin(calendar.locator(".cal-day").last(), 320);
+});
+
 test("実績：判定が例外を投げても、フリープレイのクリアを記録して結果を出す", async ({ page }) => {
   // 起動時に裏で取る履歴は、届くとホームの連続日数を計算し直す（判定と違って例外を受けない）ので、届いてから日付を壊す
   const history = page.waitForResponse((r) => r.url().includes("/api/player/history"));

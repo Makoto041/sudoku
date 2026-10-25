@@ -18,9 +18,12 @@ export type DifficultySummary = {
 };
 
 export type RecordSummary = {
-  /** 今日まで（今日がまだなら昨日まで）続いている連続日数 */
+  /** 今日まで（今日がまだなら昨日まで）続いている連続日数。休みの日は数えない（streaks を参照） */
   streak: number;
+  /** 最も長かった連続日数（休みを挟んだ連続も 1 つに数える） */
   longest: number;
+  /** 連続を途切れさせなかった休みの日（streaks を参照） */
+  restDays: Set<string>;
   /** 日付ごとのクリアした難易度 */
   byDate: Map<string, Set<Difficulty>>;
   perDifficulty: Record<Difficulty, DifficultySummary>;
@@ -74,6 +77,64 @@ export function mergeRecords(...lists: ClearRecord[][]): ClearRecord[] {
   return [...map.values()];
 }
 
+/** 休みを判定する窓の日数。休みの日を含むこの日数の間に、クリアしなかった日は休みの 1 日だけ */
+export const REST_WINDOW_DAYS = 7;
+
+export type Streaks = Pick<RecordSummary, "streak" | "longest" | "restDays">;
+
+/**
+ * 今日の一問をクリアした日（日本時間の「2026-10-17」。順番と重複は問わない）から、連続日数・最長・休みの日を決める。
+ * 同じ日付の列と今日からは、いつも同じ結果になる。
+ *
+ * 休み: クリアしなかった日 g は、その前の 6 日（g−6〜g−1）をすべてクリアしていて、次の日（g+1）もクリアしていれば休みにし、
+ * 連続を途切れさせない。休みの日は連続日数に数えない。
+ * - 休みの日を含む 7 日（g−6〜g）の間に、クリアしなかった日は g だけ。窓に 2 日以上あれば休みにしない。
+ *   そのため休みは 7 日に 1 日までで、2 日続けてクリアしないと途切れる
+ * - 休みかどうかは g の前後の日だけで決まり、ほかの休みには左右されない。別の端末やアカウントの同期で過去の日のクリアが
+ *   増えても、休みが休みでなくなるのは、その日がクリアになったときだけなので、連続日数と最長は減らない
+ *   （前に休みを使った日から数える決め方だと、過去の日が増えて前の休みが前にずれ、後の休みが使えなくなって減る）
+ * - 今日（と、時計のずれなどで付いた先の日）は休みにしない（まだ解ける）。今日がまだで、昨日をクリアしておらず、
+ *   昨日の前の 6 日をすべてクリアしていれば、昨日を暫定の休みとして連続が続く。今日クリアすれば休みのまま、
+ *   今日も解かなければ次の日には途切れ、昨日は休みでなくなる
+ * - 休みの無い連続は前と同じに数えるので、休みが無かったときの数え方より連続日数と最長が減ることもない
+ */
+export function streaks(dates: Iterable<string>, today: string): Streaks {
+  // 記録が無くても日付の計算を 1 回する（日付を読めない環境では例外にして、実績の判定を止める。achievements.ts）
+  const yesterday = addDays(today, -1);
+  const played = new Set(dates);
+  /** g の前の 6 日をすべてクリアしていて、g が今日より前なら、g を休みにできる（g の次の日は呼び出し側で見る） */
+  const restable = (g: string) => {
+    if (g >= today) return false;
+    for (let k = 1; k < REST_WINDOW_DAYS; k++) if (!played.has(addDays(g, -k))) return false;
+    return true;
+  };
+  const restDays = new Set<string>();
+  /** クリアした日ごとの、その日までの連続日数 */
+  const runAt = new Map<string, number>();
+  let run = 0;
+  let longest = 0;
+  let prev: string | null = null;
+  for (const d of [...played].sort()) {
+    const next: string | null = prev === null ? null : addDays(prev, 1);
+    if (next === d) run++;
+    else if (next !== null && addDays(next, 1) === d && restable(next)) {
+      restDays.add(next);
+      run++;
+    } else run = 1;
+    longest = Math.max(longest, run);
+    runAt.set(d, run);
+    prev = d;
+  }
+
+  // 先の日付の記録は、今日までの連続には入れない（その日までの値を使う）
+  let streak = runAt.get(today) ?? runAt.get(yesterday) ?? 0;
+  if (!played.has(today) && !played.has(yesterday) && restable(yesterday)) {
+    restDays.add(yesterday);
+    streak = runAt.get(addDays(today, -2)) ?? 0;
+  }
+  return { streak, longest, restDays };
+}
+
 /** 6 段階のどれか 1 問でもクリアした日を「遊んだ日」として数える */
 export function summarize(records: ClearRecord[], today: string): RecordSummary {
   const byDate = new Map<string, Set<Difficulty>>();
@@ -116,23 +177,8 @@ export function summarize(records: ClearRecord[], today: string): RecordSummary 
     if (points[d].n) s.avgPoints = Math.round(points[d].sum / points[d].n);
   }
 
-  let streak = 0;
-  let day = byDate.has(today) ? today : addDays(today, -1);
-  while (byDate.has(day)) {
-    streak++;
-    day = addDays(day, -1);
-  }
-
-  let longest = 0;
-  let run = 0;
-  let prev: string | null = null;
-  for (const d of [...byDate.keys()].sort()) {
-    run = prev !== null && addDays(prev, 1) === d ? run + 1 : 1;
-    longest = Math.max(longest, run);
-    prev = d;
-  }
-
-  return { streak, longest, byDate, perDifficulty };
+  const { streak, longest, restDays } = streaks(byDate.keys(), today);
+  return { streak, longest, restDays, byDate, perDifficulty };
 }
 
 export type MonthView = {
@@ -140,8 +186,9 @@ export type MonthView = {
   month: number;
   /** 1 日の曜日（0 = 日曜） */
   firstWeekday: number;
-  days: { date: string; day: number; count: number; isToday: boolean; isFuture: boolean }[];
-  /** その月で遊んだ日数と、数える対象の日数（今月は今日まで） */
+  /** count はその日にクリアした難易度の数。isRest は連続を途切れさせなかった休みの日（count は 0） */
+  days: { date: string; day: number; count: number; isRest: boolean; isToday: boolean; isFuture: boolean }[];
+  /** その月で遊んだ日数と、数える対象の日数（今月は今日まで）。休みの日は遊んだ日に数えない */
   played: number;
   target: number;
   /** 対象の日をすべて遊んだ（今月は今日まで） */
@@ -157,6 +204,7 @@ export function monthView(summary: RecordSummary, year: number, month: number, t
       date: d,
       day: Number(d.slice(8)),
       count: summary.byDate.get(d)?.size ?? 0,
+      isRest: summary.restDays.has(d),
       isToday: d === today,
       isFuture: d > today,
     });
