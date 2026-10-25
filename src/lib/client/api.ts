@@ -148,12 +148,21 @@ export const api = {
     }),
 };
 
+/**
+ * 今日の一問の送信が、記録できる最短の時間より前だった（422 too fast）。時間はサーバーが開始から測り、断った送信は
+ * 完了にならないので、送り直せば記録できる
+ */
+export function isTooFast(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 422 && err.message === "too fast";
+}
+
 export function describeError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return "オフラインです";
     if (err.status === 503) return "ランキングは準備中です";
     if (err.status === 404) return "記録の期限が切れています";
     if (err.status === 409) return "記録済みです";
+    if (isTooFast(err)) return "速すぎるため記録できませんでした";
     if (err.status === 422) return "記録できませんでした";
     if (err.status === 429) return "しばらくしてからもう一度試してください";
   }

@@ -16,7 +16,8 @@
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
     "gen:icons": "node scripts/gen-icons.mjs",
-    "gen:practice": "GEN_PRACTICE=1 vitest run src/lib/sudoku/practice-gen.test.ts"
+    "gen:practice": "GEN_PRACTICE=1 vitest run src/lib/sudoku/practice-gen.test.ts",
+    "audit:ranking": "node --experimental-strip-types scripts/ranking-audit.mjs"
   },
   "dependencies": {
     "@simplewebauthn/browser": "14.0.0",

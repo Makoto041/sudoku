@@ -367,6 +367,8 @@ test("今日の一問を解くとランキングに載る", async ({ page }) => 
 
   await page.getByRole("button", { name: "ランキングを見る" }).click();
   await expect(page.locator(".row.is-me")).toBeVisible();
+  // 名前は文字の向きを周りから切り離して出す
+  await expect(page.locator(".row.is-me .name bdi")).toHaveText(`テスト${test.info().project.name}`);
   await shot(page, "ranking");
 });
 

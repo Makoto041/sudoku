@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { DIFFICULTIES, type Difficulty } from "@/lib/sudoku/core";
+import { fromRankValue, rankValue } from "./rank-value";
 
 export type Session = {
   id: string;
@@ -17,18 +18,7 @@ export type BoardKey =
 
 export type BoardRow = { playerId: string; timeMs: number; points: number };
 
-/**
- * 並べ順の値。点数が高いほど、同点ならタイムが速いほど小さくなる（小さいほど上位）。
- * timeMs は 10 億 ms（約 11 日）未満なので、点数と時間を 1 つの数に詰めて元に戻せる
- */
-const SCALE = 1e9;
-export function rankValue(points: number, timeMs: number): number {
-  return Math.min(SCALE - 1, Math.max(0, Math.round(timeMs))) - Math.max(0, Math.round(points)) * SCALE;
-}
-export function fromRankValue(v: number): { points: number; timeMs: number } {
-  const points = Math.max(0, Math.ceil(-v / SCALE));
-  return { points, timeMs: v + points * SCALE };
-}
+export { fromRankValue, rankValue };
 
 /** ランキングの保存先。本番は Upstash Redis、ローカル開発とテストはメモリ */
 export interface RankingStore {

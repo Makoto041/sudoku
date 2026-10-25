@@ -1,14 +1,26 @@
-import { isDifficulty, isValidSolution, parseGrid, serializeGrid, type Difficulty } from "@/lib/sudoku/core";
+import {
+  isDifficulty,
+  isValidSolution,
+  parseGrid,
+  serializeGrid,
+  type Difficulty,
+  type Grid,
+} from "@/lib/sudoku/core";
 import { generateDaily, jstDateKey } from "@/lib/sudoku/generator";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { CODE_ALPHABET, CODE_LENGTH, normalizeCode } from "@/lib/transfer-code";
 import { countIp, ipCountsWithin, withinIpLimit } from "./ip";
+import { minPlausibleMs } from "./ranking-floor";
 import { rateWindowResetSec, type BoardKey, type RankingStore, type Session } from "./store";
 
-/** 人が解けるとは考えにくい速さ。これより速い送信は記録しない */
-export const MIN_PLAUSIBLE_MS = 15_000;
 export const LEADERBOARD_LIMIT = 50;
 export const NAME_MAX = 12;
+/**
+ * 名前の中で続けて置ける結合文字（と ZWJ）の数。これより多い分は落とす（Zalgo のように重ねて表示を崩させない）。
+ * 正当な並び（タイ語の母音と声調・チベット文字の重ね字・キーキャップの絵文字の FE0F と U+20E3 など）は 4 個に収まる
+ */
+export const MAX_MARK_RUN = 4;
+const MARK_RUN_RE = new RegExp(`([\\p{M}\\u200d]{${MAX_MARK_RUN}})[\\p{M}\\u200d]+`, "gu");
 
 /** 本文の上限（今日の一問の開始・名前の変更・引き継ぎコードの使用） */
 export const RANKING_MAX_BODY_BYTES = 1024;
@@ -105,16 +117,26 @@ export function assertDate(value: unknown): string {
 
 /**
  * 表示名を整える：NFKC 正規化、制御文字と前後の空白を除き、最大 NAME_MAX 文字。
- * 絵文字の結合（ZWJ・異体字セレクタ）は残し、見た目が空になる名前は受け付けない。
+ * 制御文字（\p{C}）には、向きを変える文字（U+202A〜202E・U+2066〜2069・U+200E/200F・U+061C）と、ゼロ幅の文字
+ * （U+200B・U+200C・U+2060・U+FEFF など）も含む。絵文字の結合（ZWJ・異体字セレクタ）は残すが、続けて置ける結合文字と
+ * ZWJ は MAX_MARK_RUN 個までにし、先頭の結合文字・ZWJ と末尾の ZWJ は落とす。見た目が空になる名前は受け付けない。
+ * 保存済みの名前も、表示する前にこれを通す（getLeaderboard）
  */
 export function sanitizeName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const cleaned = value
     .normalize("NFKC")
     .replace(/(?![\u200d\ufe0f])\p{C}/gu, "")
+    // 長さを数える前に減らす（重ねた結合文字で NAME_MAX を使い切らせない）
+    .replace(MARK_RUN_RE, "$1")
     .replace(/\s+/g, " ")
-    .trim();
-  const name = [...cleaned].slice(0, NAME_MAX).join("");
+    .trim()
+    .replace(/^[\p{M}\u200d]+/u, "");
+  // 切り詰めで ZWJ の並びの途中で切れたときも、末尾に ZWJ を残さない
+  const name = [...cleaned]
+    .slice(0, NAME_MAX)
+    .join("")
+    .replace(/\u200d+$/u, "");
   if (!name || /^[\p{M}\p{Z}\u200d\ufe0f\u115f\u1160\u3164\u2800\uffa0]*$/u.test(name)) return null;
   return name;
 }
@@ -198,8 +220,13 @@ export async function submitDaily(
   if (!isValidSolution(puzzle, solution)) {
     throw new RankingError(422, "incorrect solution");
   }
+  // 時間はサーバーが開始から測る（一時停止なし）。下限で断った送信はセッションを完了にしないので、送り直せる
   const timeMs = now - session.startedAt;
-  if (timeMs < MIN_PLAUSIBLE_MS) throw new RankingError(422, "too fast");
+  const empties = puzzle.filter((v) => !v).length;
+  if (timeMs < minPlausibleMs(session.difficulty, empties, moves.length)) {
+    throw new RankingError(422, "too fast");
+  }
+  if (!placesEveryEmpty(puzzle, solution, moves)) throw new RankingError(422, "incomplete moves");
   // 点数は送られてきた手の記録をサーバーで計算し直す（端末の点数は使わない）。
   // 解は 1 つなので、正しいと確かめた盤面がそのまま解答になる
   const bonus = timeBonus(session.difficulty, puzzle, timeMs);
@@ -227,7 +254,17 @@ export async function submitDaily(
 
 export const MAX_MOVES = 2000;
 
-/** 手の記録 [開始からの ms, マス, 数字][] を検査する。無ければ空（古い端末から） */
+/**
+ * 手の記録に、空きマスのすべてに正しい数字を置いた手があるか（時刻は見ない）。今日の一問はヒントが使えず、数字は
+ * 置く操作でしか入らない（戻す・進む・巻き戻しでも手の記録は消えない）ので、今の端末の送信は必ず満たす
+ */
+function placesEveryEmpty(puzzle: Grid, solution: Grid, moves: MoveLog): boolean {
+  const placed = new Set<number>();
+  for (const [, cell, digit] of moves) if (!puzzle[cell] && solution[cell] === digit) placed.add(cell);
+  return placed.size === puzzle.filter((v) => !v).length;
+}
+
+/** 手の記録 [開始からの ms, マス, 数字][] を検査する。無ければ空（古い端末から。空きマスを埋めた手が無いので、記録はしない） */
 function parseMoves(value: unknown): MoveLog {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > MAX_MOVES) throw new RankingError(400, "invalid moves");
@@ -265,8 +302,14 @@ export async function getLeaderboard(
     store.size(board),
     playerId ? store.position(board, playerId) : Promise.resolve(null),
   ]);
-  const names = await store.getNames(rows.map((r) => r.playerId));
-  if (playerId && !names[playerId]) Object.assign(names, await store.getNames([playerId]));
+  const stored = await store.getNames(rows.map((r) => r.playerId));
+  if (playerId && !stored[playerId]) Object.assign(stored, await store.getNames([playerId]));
+  // 今の規則より前に保存された名前（結合文字を重ねたものなど）も、今の規則で整えてから出す
+  const names: Record<string, string> = {};
+  for (const [id, raw] of Object.entries(stored)) {
+    const name = sanitizeName(raw);
+    if (name) names[id] = name;
+  }
 
   // 点数もタイムも同じなら同順位にする
   let last = "";

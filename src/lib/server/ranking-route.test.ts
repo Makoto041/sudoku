@@ -20,6 +20,7 @@ import {
   createTransfer,
   startDaily,
 } from "./ranking";
+import { MIN_MS_PER_MOVE } from "./ranking-floor";
 import { MemoryStore, getStore } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
@@ -96,13 +97,21 @@ describe("ランキング API の本文の上限", () => {
     );
     expect(started.status).toBe(200);
     const { sessionId, puzzle } = started.body as { sessionId: string; puzzle: string };
-    const grid = serializeGrid(solve(parseGrid(puzzle))!);
-    const moves = Array.from({ length: MAX_MOVES }, () => [-Number.MAX_SAFE_INTEGER, 80, 9]);
+    const p = parseGrid(puzzle);
+    const solution = solve(p)!;
+    const grid = serializeGrid(solution);
+    // 空きマスをすべて正しく埋めた手（記録の条件）のあとを、上限の手数まで埋める
+    const filled = p.flatMap((v, i) => (v ? [] : [[-Number.MAX_SAFE_INTEGER, i, solution[i]]]));
+    const moves = [
+      ...filled,
+      ...Array.from({ length: MAX_MOVES - filled.length }, () => [-Number.MAX_SAFE_INTEGER, 80, 9]),
+    ];
     const body = JSON.stringify({ sessionId, playerId: ALICE, grid, name: "𠮷".repeat(NAME_MAX), moves });
     const bytes = new TextEncoder().encode(body).length;
     expect(bytes).toBeGreaterThan(48 * 1024);
     expect(bytes).toBeLessThanOrEqual(SUBMIT_MAX_BODY_BYTES);
-    at(2, 60_000);
+    // 手の記録の件数から決まる下限（2,000 件 × 0.05 秒）ちょうどに送る
+    at(2, MAX_MOVES * MIN_MS_PER_MOVE);
     const res = await read(await submitRoute(post("/api/daily/submit", body)));
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ rank: 1, total: 1 });
