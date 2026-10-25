@@ -3,6 +3,7 @@ import { normalizeCode } from "@/lib/transfer-code";
 import { reminderOn } from "./push";
 import { loadStats } from "./stats";
 import { KEYS, isPlainObject, load, loadByPrefix, save } from "./storage";
+import { loadWeakCounts } from "./weakTechniques";
 
 /** 前の本番の URL で開いているか（完全一致。プレビューやローカルは含めない） */
 export const isLegacyHost = (hostname: string) => hostname === LEGACY_HOST;
@@ -34,6 +35,7 @@ export function hasLocalData(): boolean {
   if (loadByPrefix("sudoku:result:").length > 0 || loadByPrefix("sudoku:daily:").length > 0) return true;
   const history = load<unknown>(KEYS.historyCache);
   if (Array.isArray(history) && history.length > 0) return true;
+  if (Object.keys(loadWeakCounts()).length > 0) return true;
   return reminderOn() || movedWithReminder();
 }
 
