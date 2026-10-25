@@ -116,11 +116,18 @@ export function assertDate(value: unknown): string {
 }
 
 /**
+ * 見た目が空になる名前：結合文字・空白・ZWJ・異体字セレクタと、白紙に描かれる文字だけのもの。
+ * 白紙に描かれる文字は、ハングルの埋め字（U+115F・U+1160。U+3164 と U+FFA0 は NFKC で U+1160 になる）、
+ * 点のない点字（U+2800）、音符の空の符頭（U+1D159）。クメール文字の見えない母音（U+17B4・U+17B5）は結合文字に入る
+ */
+const BLANK_NAME_RE = /^[\p{M}\p{Z}\u200d\ufe0f\u115f\u1160\u3164\uffa0\u2800\u{1d159}]*$/u;
+
+/**
  * 表示名を整える：NFKC 正規化、制御文字と前後の空白を除き、最大 NAME_MAX 文字。
  * 制御文字（\p{C}）には、向きを変える文字（U+202A〜202E・U+2066〜2069・U+200E/200F・U+061C）と、ゼロ幅の文字
  * （U+200B・U+200C・U+2060・U+FEFF など）も含む。絵文字の結合（ZWJ・異体字セレクタ）は残すが、続けて置ける結合文字と
- * ZWJ は MAX_MARK_RUN 個までにし、先頭の結合文字・ZWJ と末尾の ZWJ は落とす。見た目が空になる名前は受け付けない。
- * 保存済みの名前も、表示する前にこれを通す（getLeaderboard）
+ * ZWJ は MAX_MARK_RUN 個までにし、先頭の空白・結合文字・ZWJ と末尾の空白・ZWJ は落とす。見た目が空になる名前は受け付けない。
+ * 2 回通しても結果は変わらない。保存済みの名前も、表示する前にこれを通す（getLeaderboard）
  */
 export function sanitizeName(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -130,14 +137,15 @@ export function sanitizeName(value: unknown): string | null {
     // 長さを数える前に減らす（重ねた結合文字で NAME_MAX を使い切らせない）
     .replace(MARK_RUN_RE, "$1")
     .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^[\p{M}\u200d]+/u, "");
-  // 切り詰めで ZWJ の並びの途中で切れたときも、末尾に ZWJ を残さない
+    // 先頭の空白・結合文字・ZWJ（空白の後ろの結合文字も）と、末尾の空白を落とす
+    .replace(/^[\s\p{M}\u200d]+/u, "")
+    .trimEnd();
+  // 切り詰めたところが空白や ZWJ の並びの途中でも、末尾に残さない
   const name = [...cleaned]
     .slice(0, NAME_MAX)
     .join("")
-    .replace(/\u200d+$/u, "");
-  if (!name || /^[\p{M}\p{Z}\u200d\ufe0f\u115f\u1160\u3164\u2800\uffa0]*$/u.test(name)) return null;
+    .replace(/[\s\u200d]+$/u, "");
+  if (!name || BLANK_NAME_RE.test(name)) return null;
   return name;
 }
 
@@ -220,13 +228,14 @@ export async function submitDaily(
   if (!isValidSolution(puzzle, solution)) {
     throw new RankingError(422, "incorrect solution");
   }
+  const empties = puzzle.filter((v) => !v).length;
+  // 手の記録が足りない送信は、送り直しても記録できないので、下限より先に断る（端末は再送信を出さない）
+  if (!placesEveryEmpty(puzzle, solution, moves, empties)) throw new RankingError(422, "incomplete moves");
   // 時間はサーバーが開始から測る（一時停止なし）。下限で断った送信はセッションを完了にしないので、送り直せる
   const timeMs = now - session.startedAt;
-  const empties = puzzle.filter((v) => !v).length;
   if (timeMs < minPlausibleMs(session.difficulty, empties, moves.length)) {
     throw new RankingError(422, "too fast");
   }
-  if (!placesEveryEmpty(puzzle, solution, moves)) throw new RankingError(422, "incomplete moves");
   // 点数は送られてきた手の記録をサーバーで計算し直す（端末の点数は使わない）。
   // 解は 1 つなので、正しいと確かめた盤面がそのまま解答になる
   const bonus = timeBonus(session.difficulty, puzzle, timeMs);
@@ -255,13 +264,13 @@ export async function submitDaily(
 export const MAX_MOVES = 2000;
 
 /**
- * 手の記録に、空きマスのすべてに正しい数字を置いた手があるか（時刻は見ない）。今日の一問はヒントが使えず、数字は
- * 置く操作でしか入らない（戻す・進む・巻き戻しでも手の記録は消えない）ので、今の端末の送信は必ず満たす
+ * 手の記録に、空きマス（empties 個）のすべてに正しい数字を置いた手があるか（時刻は見ない）。今日の一問はヒントが
+ * 使えず、数字は置く操作でしか入らない（戻す・進む・巻き戻しでも手の記録は消えない）ので、今の端末の送信は必ず満たす
  */
-function placesEveryEmpty(puzzle: Grid, solution: Grid, moves: MoveLog): boolean {
+function placesEveryEmpty(puzzle: Grid, solution: Grid, moves: MoveLog, empties: number): boolean {
   const placed = new Set<number>();
   for (const [, cell, digit] of moves) if (!puzzle[cell] && solution[cell] === digit) placed.add(cell);
-  return placed.size === puzzle.filter((v) => !v).length;
+  return placed.size === empties;
 }
 
 /** 手の記録 [開始からの ms, マス, 数字][] を検査する。無ければ空（古い端末から。空きマスを埋めた手が無いので、記録はしない） */

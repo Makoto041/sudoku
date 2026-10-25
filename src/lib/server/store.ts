@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { DIFFICULTIES, type Difficulty } from "@/lib/sudoku/core";
-import { fromRankValue, rankValue } from "./rank-value";
+import { bestsKey, fromRankValue, rankValue } from "./rank-value";
 
 export type Session = {
   id: string;
@@ -17,8 +17,6 @@ export type BoardKey =
   { scope: "daily"; date: string; difficulty: Difficulty } | { scope: "best"; difficulty: Difficulty };
 
 export type BoardRow = { playerId: string; timeMs: number; points: number };
-
-export { fromRankValue, rankValue };
 
 /** ランキングの保存先。本番は Upstash Redis、ローカル開発とテストはメモリ */
 export interface RankingStore {
@@ -109,9 +107,10 @@ const SESSION_TTL_SEC = 3 * 24 * 60 * 60;
 const DAILY_TTL_SEC = 400 * 24 * 60 * 60;
 const PREFIX = "sdk";
 
-// スコア制になってからの表（タイム順だった頃の sdk:lb / sdk:best は使わない）
+// スコア制になってからの表（タイム順だった頃の sdk:lb / sdk:best は使わない）。歴代ベストのキーは
+// 点検のスクリプト（scripts/ranking-audit.mjs）と同じものを使う
 const boardKey = (b: BoardKey) =>
-  b.scope === "daily" ? `${PREFIX}:lbs:${b.date}:${b.difficulty}` : `${PREFIX}:bests:${b.difficulty}`;
+  b.scope === "daily" ? `${PREFIX}:lbs:${b.date}:${b.difficulty}` : bestsKey(b.difficulty);
 const startKey = (s: Pick<Session, "playerId" | "date" | "difficulty">) =>
   `${PREFIX}:start:${s.date}:${s.difficulty}:${s.playerId}`;
 const sessionKey = (id: string) => `${PREFIX}:sess:${id}`;

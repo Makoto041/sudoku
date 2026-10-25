@@ -21,7 +21,8 @@ import {
 import { normalizeCode } from "@/lib/transfer-code";
 import { scoreMoves, timeBonus, type MoveLog } from "@/lib/game/score";
 import { DIFFICULTY_FLOOR_MS, MIN_MS_PER_CELL, MIN_MS_PER_MOVE, minPlausibleMs } from "./ranking-floor";
-import { MemoryStore, fromRankValue, rankValue } from "./store";
+import { fromRankValue, rankValue } from "./rank-value";
+import { MemoryStore } from "./store";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
 const BOB = "22222222-2222-4222-8222-222222222222";
@@ -247,8 +248,50 @@ describe("sanitizeName", () => {
     expect(sanitizeName(`  ${marks(3)}ab`)).toBe("ab");
     expect(sanitizeName("\u200d\ufe0fab")).toBe("ab");
     expect(sanitizeName("ab\u200d")).toBe("ab");
+    // 落としたあとに空白を残さない
+    expect(sanitizeName("\u0301 abc")).toBe("abc");
+    expect(sanitizeName(" \u0301 \u200d abc")).toBe("abc");
+    expect(sanitizeName("abc \u200d")).toBe("abc");
+    expect(sanitizeName("abcdefghijk lmn")).toBe("abcdefghijk");
     // 長さで切ったところが ZWJ の並びの途中でも、末尾に ZWJ を残さない
     expect(sanitizeName("abcdefghij👨\u200d👩\u200d👧")).toBe("abcdefghij👨");
+  });
+
+  it("白紙に描かれる文字だけの名前は、見た目が空として受け付けない", () => {
+    for (const blank of [
+      "\u{1d159}",
+      "\u{1d159}\u{1d159}\u{1d159}",
+      "\u115f\u1160",
+      "\u3164",
+      "\uffa0",
+      "\u2800\u2800",
+      "\u17b4\u17b5",
+      "\u3164 \u2800 \u{1d159}\u0301",
+    ]) {
+      expect([blank, sanitizeName(blank)]).toEqual([blank, null]);
+    }
+    // ほかの文字と一緒なら名前として受け付ける
+    expect(sanitizeName("a\u{1d159}")).toBe("a\u{1d159}");
+  });
+
+  it("2 回通しても結果は変わらない", () => {
+    const samples = [
+      "  ＡＢＣ  ",
+      "\u0301 abc",
+      " \u0301 \u200d abc \u200d ",
+      "abcdefghijk lmn",
+      "abcdefghij👨\u200d👩\u200d👧",
+      `x${"\u0301".repeat(20)}`.repeat(3),
+      "x" + "\u200d\u0301".repeat(5) + "y",
+      "ab\u202ecd\u200b ef",
+      "👨\u200d👩\u200d👧\u200d👦 テスト",
+      "1\ufe0f\u20e3 ที่สุด",
+      "あいうえおかきくけこさしすせそ",
+    ];
+    for (const raw of samples) {
+      const once = sanitizeName(raw);
+      expect([raw, once === null ? null : sanitizeName(once)]).toEqual([raw, once]);
+    }
   });
 
   it("正当な結合（絵文字の ZWJ・異体字セレクタ・キーキャップ・肌の色、タイ語・ヒンディー語・チベット語）は残す", () => {
@@ -398,6 +441,9 @@ describe("記録できる最短の時間（下限）", () => {
     ]) {
       await expectError(submitDaily(store, { ...base, moves }, at), 422, "incomplete moves");
     }
+    // 下限より速くても、手の記録が足りなければ incomplete moves（送り直しても記録できないので、too fast にしない）
+    await expectError(submitDaily(store, { ...base, moves: [] }, T0 + 1), 422, "incomplete moves");
+    await expectError(submitDaily(store, { ...base, moves: filled }, T0 + 1), 422, "too fast");
     // 時刻が開始より前や、経過時間より後でも、置いた手があれば足りる（時刻は端末が決めるので見ない）
     const shifted: MoveLog = filled.map(([, c, d], k) => [k % 2 ? -1000 : 10_000_000, c, d]);
     await expect(submitDaily(store, { ...base, moves: shifted }, at)).resolves.toMatchObject({ rank: 1 });
