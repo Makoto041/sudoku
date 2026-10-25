@@ -16,6 +16,7 @@ import { ApiError, describeError, describeIssueError } from "@/lib/client/api";
 import { disablePush, enablePush, loadPushState, type PushError, type PushState } from "@/lib/client/push";
 import type { TextSize, Theme } from "@/lib/client/display";
 import type { Settings } from "@/lib/client/settings";
+import type { MistakeLimit } from "@/lib/game/state";
 import { SITE_HOST } from "@/lib/site";
 import { formatCode } from "@/lib/transfer-code";
 import { ChevronRight, Close } from "./icons";
@@ -136,31 +137,57 @@ const TEXT_SIZE_OPTIONS: [TextSize, string][] = [
   ["xlarge", "特大"],
 ];
 
+const MISTAKE_LIMIT_OPTIONS: [MistakeLimit, string][] = [
+  [0, "なし"],
+  [3, "3 回"],
+  [5, "5 回"],
+];
+
 /** いくつかから 1 つを選ぶ項目（ラジオボタン。矢印キーでも選べる） */
-function Choice<T extends string>({
+function Choice<T extends string | number>({
   label,
+  hint,
   value,
   options,
   onChange,
 }: {
   label: string;
+  hint?: string;
   value: T;
   options: [T, string][];
   onChange: (v: T) => void;
 }) {
   const id = useId();
+  const hintId = useId();
+  const name = (
+    <span id={id} className="toggle-label">
+      {label}
+    </span>
+  );
   return (
-    <div className="choice-row" role="radiogroup" aria-labelledby={id}>
-      <span id={id} className="toggle-label">
-        {label}
-      </span>
+    <div
+      className="choice-row"
+      role="radiogroup"
+      aria-labelledby={id}
+      aria-describedby={hint ? hintId : undefined}
+    >
+      {hint ? (
+        <span>
+          {name}
+          <span id={hintId} className="toggle-hint">
+            {hint}
+          </span>
+        </span>
+      ) : (
+        name
+      )}
       <div className="segmented">
         {options.map(([v, text]) => (
-          <label key={v} className={v === value ? "is-active" : undefined}>
+          <label key={String(v)} className={v === value ? "is-active" : undefined}>
             <input
               type="radio"
               name={id}
-              value={v}
+              value={String(v)}
               checked={v === value}
               onChange={() => {
                 onChange(v);
@@ -320,6 +347,14 @@ export function SettingsSheet({
           label="ヒントの前に確認"
           checked={settings.confirmHint}
           onChange={(v) => set({ confirmHint: v })}
+        />
+        <h3 className="toggle-heading">フリープレイ</h3>
+        <Choice
+          label="ミス上限"
+          hint="間違いをすぐ表示がオンのとき。次に始める問題から"
+          value={settings.mistakeLimit}
+          options={MISTAKE_LIMIT_OPTIONS}
+          onChange={(v) => set({ mistakeLimit: v })}
         />
         <Reminder playerId={playerId} />
       </div>

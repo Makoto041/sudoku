@@ -14,21 +14,28 @@ import { createRng } from "@/lib/sudoku/rng";
 import { countSolutions, countSolutionsWithin } from "@/lib/sudoku/solver";
 import { scoreMoves } from "./score";
 import {
+  activeMistakeLimit,
   elapsedOf,
   formatTime,
   isGiven,
+  isInProgress,
   isShownWrong,
   isSolved,
   isWrong,
+  MISTAKE_LIMITS,
   newGame,
+  parseMistakeLimit,
   persisted,
   reduce,
+  restartGame,
   REWIND_MAX_NODES,
   selectedCells,
   stuckCells,
   withSolution,
   type Action,
   type GameState,
+  type MistakeLimit,
+  type Mode,
 } from "./state";
 
 function freeGame() {
@@ -1461,5 +1468,248 @@ describe("最初の誤り", () => {
     const later = run(withSolution(s), ...put(b, wrongOf(p.solution[b]))).s;
     expect(later.mistakes).toBe(2);
     expect(later.firstMistake).toBeUndefined();
+  });
+});
+
+describe("ミスの上限", () => {
+  const p = generatePuzzle("mistake-limit", "easy");
+  const empties = p.puzzle.flatMap((v, i) => (v ? [] : [i]));
+  const wrongOf = (i: number) => (p.solution[i] % 9) + 1;
+  /** mode のゲームを、設定の上限 limit で始める（日次も解答を持たせる。開いたときに withSolution で付くのと同じ） */
+  const start = (mode: Mode, limit: number) =>
+    newGame({
+      mode,
+      difficulty: "easy",
+      seed: mode === "daily" ? "2026-10-25" : "x",
+      puzzle: p.puzzle,
+      solution: p.solution,
+      daily: mode === "daily" ? { sessionId: "s", date: "2026-10-25", startedAt: 0, clockOffset: 0 } : null,
+      mistakeLimit: limit as MistakeLimit,
+    });
+  /** cell に数字を置く。show は間違いの表示の設定（dispatch が付けるもの） */
+  const put = (cell: number, digit: number, show = true): Action[] => [
+    { type: "select", cell },
+    { type: "input", digit, showMistakes: show },
+  ];
+  /** 空きマスの from 番目から n マスに、違う数字を置く */
+  const wrongs = (n: number, show = true, from = 0) =>
+    empties.slice(from, from + n).flatMap((i) => put(i, wrongOf(i), show));
+
+  it("効くのはフリープレイで、間違いの表示がオンのときだけ。日次と練習には上限を持たせない", () => {
+    for (const mode of ["free", "daily", "practice"] as const) {
+      for (const limit of MISTAKE_LIMITS) {
+        const g = start(mode, limit);
+        expect(g.mistakeLimit ?? 0, `${mode} ${limit}`).toBe(mode === "free" ? limit : 0);
+        for (const show of [true, false]) {
+          expect(activeMistakeLimit(g, show), `${mode} ${limit} ${show}`).toBe(
+            mode === "free" && show ? limit : 0,
+          );
+        }
+      }
+      // 書き換えた保存データで日次・練習に上限が付いていても効かせない
+      expect(activeMistakeLimit({ ...start(mode, 0), mistakeLimit: 3 }, true), mode).toBe(
+        mode === "free" ? 3 : 0,
+      );
+    }
+    // 上限なしでは、上限の項目を持たない
+    expect(start("free", 0)).not.toHaveProperty("mistakeLimit");
+  });
+
+  it("ミスの数が上限に達した手で終える（failed）。上限の手前までは続けられる", () => {
+    for (const limit of [3, 5] as const) {
+      const before = run(start("free", limit), ...wrongs(limit - 1));
+      expect(before.s.mistakes).toBe(limit - 1);
+      expect(before.s.status).toBe("playing");
+      expect(before.effects.map((e) => e.kind)).toEqual(["place"]);
+      const last = empties[limit - 1];
+      const { s, effects } = run(before.s, ...put(last, wrongOf(last)));
+      expect(s.mistakes).toBe(limit);
+      expect(s.status).toBe("failed");
+      expect(s.selected).toBe(null);
+      expect(s.values[last]).toBe(wrongOf(last));
+      expect(effects).toEqual([
+        expect.objectContaining({ kind: "place", cell: last, wrong: true }),
+        { kind: "failed", cell: last },
+      ]);
+      // 終えた問題は続けられず、行き詰まりも知らせない
+      expect(isInProgress(s)).toBe(false);
+      expect(stuckCells(s)).toEqual([]);
+    }
+  });
+
+  it("終えた後は、数字・メモ・消す・戻す・進む・ヒント・間違える前まで戻す・時計・一時停止が効かない", () => {
+    const failed = run(start("free", 3), ...wrongs(3)).s;
+    const cell = empties[5];
+    const actions: Action[] = [
+      { type: "select", cell },
+      { type: "move", dr: 0, dc: 1 },
+      { type: "input", digit: p.solution[cell], showMistakes: true },
+      { type: "input", digit: 1, asNote: true },
+      { type: "erase" },
+      { type: "undo" },
+      { type: "redo" },
+      { type: "hint", showMistakes: true },
+      { type: "hintUsed" },
+      { type: "autoNotes" },
+      { type: "rewind" },
+      { type: "toggleNotes" },
+      { type: "toggleColors" },
+      { type: "tick", ms: 1000 },
+      { type: "pause" },
+      { type: "resume" },
+      { type: "finalize", ms: 1000 },
+    ];
+    for (const a of actions) {
+      const [next, effects] = reduce(failed, a);
+      expect(next, a.type).toBe(failed);
+      expect(effects, a.type).toEqual([]);
+    }
+  });
+
+  it("戻す・進む・間違える前まで戻す・消すでミスは減らず、同じマスにもう一度間違えても数えて、上限で終える", () => {
+    const [a, b] = empties;
+    let s = run(start("free", 3), ...put(a, wrongOf(a)), { type: "undo" }, { type: "redo" }).s;
+    expect(s.mistakes).toBe(1);
+    s = run(s, { type: "rewind" }).s;
+    expect(s.values[a]).toBe(0);
+    expect(s.mistakes).toBe(1);
+    s = run(s, ...put(a, wrongOf(a)), { type: "erase" }).s;
+    expect(s.values[a]).toBe(0);
+    expect(s.mistakes).toBe(2);
+    expect(s.status).toBe("playing");
+    const done = run(s, ...put(b, wrongOf(b))).s;
+    expect(done).toMatchObject({ status: "failed", mistakes: 3 });
+  });
+
+  it("重複していても解答どおりの数字と、ヒントで置いた数字はミスに数えない", () => {
+    const [a] = empties;
+    // a と同じ行の空きマス b の正解を a に置く（間違い 1 回）。続けて b に正解を置くと、a と重複するが間違いではない
+    const b = empties.find((i) => i !== a && Math.floor(i / 9) === Math.floor(a / 9));
+    expect(b).toBeDefined();
+    const one = run(start("free", 3), ...put(a, p.solution[b!])).s;
+    expect(one.mistakes).toBe(1);
+    const { s, effects } = run(one, ...put(b!, p.solution[b!]));
+    expect(effects[0]).toMatchObject({ kind: "place", wrong: false, conflict: true });
+    expect(s.mistakes).toBe(1);
+    const hinted = run(
+      s,
+      { type: "hint", showMistakes: true },
+      { type: "hint", showMistakes: true },
+      { type: "hint", showMistakes: true },
+    ).s;
+    expect(hinted.hints).toBe(3);
+    expect(hinted).toMatchObject({ status: "playing", mistakes: 1 });
+  });
+
+  it("間違いの表示がオフの間に数字を置くと（ヒントを含む）、その問題では上限を外す。オンに戻しても付け直さない", () => {
+    const two = run(start("free", 3), ...wrongs(2)).s;
+    const cell = empties[2];
+    const offs: Action[][] = [
+      put(cell, p.solution[cell], false),
+      put(cell, wrongOf(cell), false),
+      [{ type: "hint", cell, showMistakes: false }],
+    ];
+    for (const off of offs) {
+      const { s } = run(two, ...off);
+      expect(s.status).toBe("playing");
+      expect(s.mistakeLimit).toBe(0);
+      expect(activeMistakeLimit(s, true)).toBe(0);
+      // 表示をオンに戻して、上限を超えて間違えても終えない（見えない間違いを上限に数えない）
+      const after = run(s, ...wrongs(4, true, 3)).s;
+      expect(after.status).toBe("playing");
+      expect(after.mistakes).toBe(s.mistakes + 4);
+    }
+  });
+
+  it("数字を置かなければ（選ぶ・メモ・消す・戻す・進む・色）、間違いの表示がオフでも上限は残る", () => {
+    const c = empties[2];
+    const two = run(start("free", 3), ...wrongs(2)).s;
+    const s = run(
+      two,
+      { type: "select", cell: c },
+      { type: "input", digit: 4, asNote: true, showMistakes: false },
+      { type: "erase" },
+      { type: "undo" },
+      { type: "redo" },
+      { type: "toggleColors" },
+      { type: "input", digit: 2, showMistakes: false },
+      { type: "toggleColors" },
+    ).s;
+    expect(s.mistakeLimit).toBe(3);
+    expect(s.values[c]).toBe(0);
+    expect(run(s, ...put(c, wrongOf(c))).s.status).toBe("failed");
+  });
+
+  it("日次と練習では、間違いの表示がオンで上限を超えて間違えても終えない", () => {
+    for (const mode of ["daily", "practice"] as const) {
+      // 書き換えた保存データで上限が付いていても効かせない
+      const g = { ...start(mode, 0), mistakeLimit: 3 } as GameState;
+      const { s, effects } = run(g, ...wrongs(6));
+      expect(s.status, mode).toBe("playing");
+      expect(s.mistakes, mode).toBe(6);
+      expect(
+        effects.map((e) => e.kind),
+        mode,
+      ).toEqual(["place"]);
+    }
+  });
+
+  it("上限と終えた状態は、保存して開き直しても残る。途中の問題は同じ上限で続く", () => {
+    const reopen = (s: GameState) => withSolution(JSON.parse(JSON.stringify(persisted(s))) as GameState);
+    const failed = reopen(run(start("free", 5), ...wrongs(5)).s);
+    expect(failed).toMatchObject({ status: "failed", mistakes: 5, mistakeLimit: 5 });
+    expect(reduce(failed, { type: "select", cell: empties[6] })[0]).toBe(failed);
+    const two = reopen(run(start("free", 3), ...wrongs(2)).s);
+    expect(two).toMatchObject({ status: "playing", mistakes: 2, mistakeLimit: 3 });
+    expect(run(two, ...put(empties[2], wrongOf(empties[2]))).s.status).toBe("failed");
+  });
+
+  it("上限を持たない古い保存データと、決まった値でない上限（書き換えたもの）は上限なしとして扱う", () => {
+    const { mistakeLimit: _, ...old } = start("free", 3);
+    expect(run(old as GameState, ...wrongs(6)).s).toMatchObject({ status: "playing", mistakes: 6 });
+    for (const limit of [1, 4, 6, -3, 3.5, "3", "5", null, true, [3], { n: 3 }]) {
+      const label = JSON.stringify(limit);
+      expect(parseMistakeLimit(limit), label).toBe(0);
+      // 設定から決まった値でないものが渡っても付けない
+      expect(start("free", limit as number), label).not.toHaveProperty("mistakeLimit");
+      const broken = { ...start("free", 0), mistakeLimit: limit } as unknown as GameState;
+      expect(activeMistakeLimit(broken, true), label).toBe(0);
+      expect(run(broken, ...wrongs(6)).s.status, label).toBe("playing");
+    }
+    expect(MISTAKE_LIMITS.map(parseMistakeLimit)).toEqual([0, 3, 5]);
+  });
+
+  it("同じ盤面でやり直すと、同じ問題の新しいゲームになる（ミス・手・最初の誤り・時間・色・メモを消す）。上限は今の設定", () => {
+    // メモは、後で置く違う数字と同じだと周りのメモの自動消去で消えるので、それ以外の数字にする
+    const note = [1, 2, 3, 4, 5, 6, 7, 8, 9].find((d) => !empties.slice(0, 3).some((i) => wrongOf(i) === d))!;
+    const played = run(
+      start("free", 3),
+      { type: "tick", ms: 5000 },
+      { type: "select", cell: empties[3] },
+      { type: "toggleColors" },
+      { type: "input", digit: 4 },
+      { type: "toggleColors" },
+      { type: "input", digit: note, asNote: true },
+      ...wrongs(3),
+    ).s;
+    expect(played).toMatchObject({ status: "failed", mistakes: 3, elapsedMs: 5000, placed: 3 });
+    expect(played.firstMistake).toBeDefined();
+    expect(played.colors![empties[3]]).toBe(4);
+    expect(played.notes[empties[3]]).toBe(1 << note);
+    for (const limit of MISTAKE_LIMITS) {
+      const again = restartGame(played, limit);
+      expect(again).toEqual(start("free", limit));
+      expect(again).toMatchObject({ status: "playing", mistakes: 0, history: [], placed: 0, elapsedMs: 0 });
+      expect(again.values).toEqual(p.puzzle);
+      expect(again.puzzle).not.toBe(played.puzzle);
+      expect(again.firstMistake).toBeUndefined();
+      expect(activeMistakeLimit(again, true)).toBe(limit);
+    }
+  });
+
+  it("途中の問題は、遊んでいる・一時停止中のものだけ（解き終えた・上限で終えたものは続けられない）", () => {
+    expect(
+      (["playing", "paused", "solved", "failed"] as const).map((status) => isInProgress({ status })),
+    ).toEqual([true, true, false, false]);
   });
 });

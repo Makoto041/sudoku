@@ -1,3 +1,4 @@
+import { parseMistakeLimit, type MistakeLimit } from "@/lib/game/state";
 import { parseTextSize, parseTheme, type TextSize, type Theme } from "./display";
 import { KEYS, load, save } from "./storage";
 
@@ -22,6 +23,11 @@ export type Settings = {
   theme: Theme;
   /** 文字サイズ。テーマと同じく <head> のスクリプトも読む */
   textSize: TextSize;
+  /**
+   * フリープレイのミスの上限（0 は上限なし）。新しく始める問題に付ける（GameState の mistakeLimit）。
+   * 効くのは間違いの表示がオンの間だけ。端末にだけ保存し、サーバーには送らない
+   */
+  mistakeLimit: MistakeLimit;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -36,12 +42,19 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmHint: false,
   theme: "auto",
   textSize: "normal",
+  mistakeLimit: 0,
 };
 
 export function loadSettings(): Settings {
   const settings = { ...DEFAULT_SETTINGS, ...(load<Partial<Settings>>(KEYS.settings) ?? {}) };
-  // テーマと文字サイズは <html> の属性にするので、決まった値だけを通す（ほかは既定にする）
-  return { ...settings, theme: parseTheme(settings.theme), textSize: parseTextSize(settings.textSize) };
+  // テーマと文字サイズは <html> の属性にするので、決まった値だけを通す（ほかは既定にする）。
+  // ミスの上限も決まった値（0・3・5）だけを通す
+  return {
+    ...settings,
+    theme: parseTheme(settings.theme),
+    textSize: parseTextSize(settings.textSize),
+    mistakeLimit: parseMistakeLimit(settings.mistakeLimit),
+  };
 }
 
 export function saveSettings(settings: Settings) {
